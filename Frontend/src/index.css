@@ -1,0 +1,68 @@
+/* src/index.css */
+
+/* Google Fonts se Inter font import karein (clean UI ke liye recommended) */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+/* Tailwind CSS ki base styles */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Aapke Logo par based Color Scheme */
+:root {
+  /* ===== Base Colors ===== */
+  --color-background: #0d1117; /* Ek bahut dark, almost black-blue background */
+  --color-surface: #1a202c; /* Cards, Sidebar aur Header ke liye halka blue-gray */
+  --color-border: #30363d; /* Subtle borders aur dividers ke liye */
+
+  /* ===== Primary & Accent Colors (Logo se inspired) ===== */
+  --color-primary: #2a4376; /* Logo ke gear ka gehra Navy Blue */
+  --color-primary-light: #4a6ead; /* Hover effects ke liye halka shade */
+  --color-accent: #34d399; /* CTAs (jaise 'New Estimate' button) ke liye ek vibrant green */
+  --color-accent-dark: #10b981; /* Accent color par hover ke liye gehra shade */
+
+  /* ===== Text Colors ===== */
+  --color-text-primary: #f0f6fc; /* Main text ke liye bright off-white */
+  --color-text-secondary: #8b949e; /* Subtitles aur placeholders ke liye halka gray */
+
+  /* ===== Status Colors ===== */
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-text-primary);
+  font-family: 'Inter', sans-serif; /* Poore app mein Inter font apply karein */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ===== Custom Scrollbar Styles (Starts Here) ===== */
+
+/* Firefox */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) var(--color-background);
+}
+
+/* WebKit Browsers (Chrome, Safari, Edge) */
+::-webkit-scrollbar {
+  width: 10px; /* Width of the vertical scrollbar */
+  height: 10px; /* Height of the horizontal scrollbar */
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-background); /* Make the track blend in */
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--color-border); /* Use the subtle border color */
+  border-radius: 20px; /* Round the corners of the thumb */
+  border: 2px solid var(--color-background); /* Create a padding effect */
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-primary); /* Use primary color on hover */
+}
