@@ -1,0 +1,11 @@
+# Railway Deployment - Alternative Configuration
+# Agar nixpacks.toml se issue aa raha hai to ye try karen
+
+[phases.setup]
+nixPkgs = ["python311"]
+
+[phases.install]
+cmds = ["python -m pip install --upgrade pip setuptools wheel", "python -m pip install -r requirements.txt"]
+
+[start]
+cmd = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
