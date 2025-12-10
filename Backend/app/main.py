@@ -12,9 +12,16 @@ app = FastAPI(
 )
 
 # CORS Middleware - Allow frontend to communicate with backend
+origins = [
+    "http://localhost:5173",  # Local Vite
+    "http://localhost:3000",  # Local fallback
+    "https://frontend-production-1aae.up.railway.app",  # Railway Frontend
+    settings.PORTAL_BASE_URL,  # Configured URL
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins in development
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],  # Allow all HTTP methods
     allow_headers=["*"],  # Allow all headers
