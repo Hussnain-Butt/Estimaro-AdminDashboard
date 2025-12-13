@@ -92,6 +92,7 @@ class PartItemSchema(BaseModel):
     markup: Decimal = Field(default=Decimal("0"), ge=0, le=100, description="Markup percentage")
     total: Decimal = Field(..., ge=0, description="Total part cost")
     vendor: Optional[str] = Field(None, max_length=100, description="Vendor name")
+    reason_badge: Optional[str] = Field(None, description="Reason for auto-added item")
 
     class Config:
         json_schema_extra = {
@@ -176,12 +177,29 @@ class CalculationRequestSchema(BaseModel):
 # Estimate Response Schemas
 # ============================================================================
 
+class CleaningKitSchema(BaseModel):
+    """Cleaning kit information (replaces shop fees)"""
+    name: str = Field(..., description="Cleaning kit name")
+    includes: Optional[List[str]] = Field(None, description="Items included in kit")
+    price: Decimal = Field(..., description="Cleaning kit price")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "Brake Service Cleaning Kit",
+                "includes": ["Brake cleaner", "Caliper grease", "Disposable gloves"],
+                "price": "15.00"
+            }
+        }
+
+
 class CalculationBreakdownSchema(BaseModel):
     """Breakdown of calculation results"""
     laborTotal: Decimal = Field(..., description="Total labor cost")
     partsTotal: Decimal = Field(..., description="Total parts cost")
     subtotal: Decimal = Field(..., description="Subtotal before tax")
     taxAmount: Decimal = Field(..., description="Tax amount")
+    cleaningKit: Optional[CleaningKitSchema] = Field(None, description="Service cleaning kit (replaces shop fees)")
     total: Decimal = Field(..., description="Grand total")
 
     class Config:

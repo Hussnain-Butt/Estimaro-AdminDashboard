@@ -13,7 +13,9 @@ app = FastAPI(
 
 # CORS Middleware - Allow frontend to communicate with backend
 origins = [
-    "http://localhost:5173",  # Local Vite
+    "http://localhost:5173",
+    "http://localhost:5174",  # Local Vite
+    # Local Vite
     "http://localhost:3000",  # Local fallback
     "https://frontend-production-1aae.up.railway.app",  # Railway Frontend
     settings.PORTAL_BASE_URL,  # Configured URL

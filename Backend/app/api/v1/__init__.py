@@ -4,7 +4,7 @@ API v1 Router
 Aggregates all v1 API routes.
 """
 from fastapi import APIRouter
-from app.api.v1 import estimates, public, vehicles, labor, parts, auto_generate
+from app.api.v1 import estimates, public, vehicles, labor, parts, auto_generate, tekmetric, approval
 
 # Create main v1 router
 api_router = APIRouter()
@@ -12,7 +12,7 @@ api_router = APIRouter()
 # Include sub-routers
 api_router.include_router(
     auto_generate.router,
-    prefix="/auto",
+    prefix="/auto-generate",
     tags=["🚀 Auto-Generate - One-Click Estimate"]
 )
 
@@ -44,4 +44,16 @@ api_router.include_router(
     parts.router,
     prefix="/parts",
     tags=["Parts - Search"]
+)
+
+api_router.include_router(
+    tekmetric.router,
+    prefix="/tekmetric",
+    tags=["Tekmetric Integration"]
+)
+
+api_router.include_router(
+    approval.router,
+    prefix="/approval",
+    tags=["Customer Approval Portal"]
 )

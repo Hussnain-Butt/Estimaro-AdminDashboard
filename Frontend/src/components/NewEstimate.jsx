@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { gsap } from 'gsap'
 import { ExclamationCircleIcon, TrashIcon, PlusIcon, SparklesIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline'
-import { autoGenerateEstimate } from '../services/api'
+import { autoGenerateEstimate, pushToTekmetric, generateApprovalLink } from '../services/api'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
+import VendorCompareStep from './estimate-steps/VendorCompareStep'
 
 // ===================================================================================
 //  STEP COMPONENTS
@@ -146,8 +147,14 @@ const PartsStep = ({ data }) => {
                   {part.partNumber || 'N/A'} • Vendor: {part.vendor || 'Unknown'}
                 </p>
                 {part.isOEM && (
-                  <span className="inline-block mt-1 px-2 py-0.5 bg-accent/20 text-accent text-xs rounded">
+                  <span className="inline-block mt-1 mr-2 px-2 py-0.5 bg-accent/20 text-accent text-xs rounded">
                     OEM
+                  </span>
+                )}
+                {part.reasonBadge && (
+                  <span className="inline-block mt-1 px-2 py-0.5 bg-info/20 text-info text-xs rounded border border-info/30 flex items-center gap-1 w-fit">
+                    <SparklesIcon className="h-3 w-3" />
+                    {part.reasonBadge}
                   </span>
                 )}
                 <div className="mt-2 flex items-center gap-2 text-sm">
@@ -167,19 +174,9 @@ const PartsStep = ({ data }) => {
   )
 }
 
-const VendorCompareStep = () => (
-  <div className="space-y-6">
-    <h2 className="text-2xl font-bold text-text-primary">Vendor Compare (Worldpac / SSF)</h2>
-    <div className="bg-background p-8 rounded-lg border border-border text-center">
-      <p className="text-text-secondary mb-4">Vendor comparison coming soon!</p>
-      <p className="text-sm text-text-secondary">
-        Currently using best prices from PartsLink24
-      </p>
-    </div>
-  </div>
-)
 
-const PreviewStep = ({ data, calculatedTotals }) => {
+
+const PreviewStep = ({ data, calculatedTotals, onPushToTekmetric, onSendApproval, isPushing, isSending }) => {
   const PreviewRow = ({ label, value, isTotal = false }) => (
     <div
       className={`flex justify-between items-center py-4 ${isTotal ? '' : 'border-b border-border/50'
@@ -236,12 +233,37 @@ const PreviewStep = ({ data, calculatedTotals }) => {
         </div>
       </div>
 
-      <div className="flex items-center space-x-4">
-        <button className="bg-accent hover:bg-accent-dark text-background font-bold py-3 px-6 rounded-lg transition-colors shadow-lg shadow-accent/20">
-          Push to Tekmetric
+      <div className="flex flex-col sm:flex-row items-center gap-4">
+        <button
+          onClick={onPushToTekmetric}
+          disabled={isPushing}
+          className="bg-accent hover:bg-accent-dark text-background font-bold py-3 px-6 rounded-lg transition-all shadow-lg shadow-accent/20 flex items-center justify-center gap-2 w-full sm:w-auto"
+        >
+          {isPushing ? (
+            <>
+              <div className="animate-spin h-5 w-5 border-2 border-background border-t-transparent rounded-full"></div>
+              Pushing...
+            </>
+          ) : (
+            'Push to Tekmetric'
+          )}
         </button>
-        <button className="bg-surface border border-border text-text-secondary font-bold py-3 px-6 rounded-lg hover:bg-primary-light hover:text-text-primary transition-colors">
-          Send Approval Link
+        <button
+          onClick={onSendApproval}
+          disabled={isSending}
+          className="bg-surface border border-border text-text-secondary font-bold py-3 px-6 rounded-lg hover:bg-primary-light hover:text-text-primary transition-all flex items-center justify-center gap-2 w-full sm:w-auto"
+        >
+          {isSending ? (
+            <>
+              <div className="animate-spin h-5 w-5 border-2 border-text-secondary border-t-transparent rounded-full"></div>
+              Generating...
+            </>
+          ) : (
+            <>
+              <ArrowDownTrayIcon className="h-5 w-5 rotate-180" />
+              Send Approval Link
+            </>
+          )}
         </button>
       </div>
     </div>
@@ -333,6 +355,8 @@ const steps = ['Intake', 'Labor', 'Parts', 'Vendor Compare', 'Preview', 'Actions
 const NewEstimate = () => {
   const [currentStep, setCurrentStep] = useState(0)
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isPushing, setIsPushing] = useState(false)
+  const [isSending, setIsSending] = useState(false)
   const contentRef = useRef(null)
 
   const [formData, setFormData] = useState({
@@ -344,7 +368,7 @@ const NewEstimate = () => {
     odometer: '',
     vehicleInfo: null,
     laborRate: 150,
-    taxRate: 0.08,
+    taxRate: 0.0925,
     laborItems: [],
     partsItems: [],
   })
@@ -354,8 +378,14 @@ const NewEstimate = () => {
     partsTotal: '0.00',
     subtotal: '0.00',
     taxAmount: '0.00',
+    cleaningKit: null,
     total: '0.00',
   })
+
+  // New state for enhanced features
+  const [vendorData, setVendorData] = useState(null)
+  const [flags, setFlags] = useState([])
+  const [confidenceScore, setConfidenceScore] = useState(null)
 
   // Auto-Generate Handler
   const handleAutoGenerate = async () => {
@@ -379,8 +409,10 @@ const NewEstimate = () => {
     })
 
     if (result.success) {
-      const estimateData = result.data.estimate_data
+      const responseData = result.data
+      const estimateData = responseData.estimate_data
 
+      // Update form data
       setFormData(prev => ({
         ...prev,
         vehicleInfo: estimateData.vehicleInfo,
@@ -400,18 +432,36 @@ const NewEstimate = () => {
           cost: item.cost,
           markup: item.markup,
           total: item.total,
-          vendor: item.vendor
+          vendor: item.vendor,
+          reasonBadge: item.reason_badge // Map reason badge
         }))
       }))
 
+      // Update totals with cleaning kit
       if (estimateData.breakdown) {
         setCalculatedTotals({
           laborTotal: estimateData.breakdown.laborTotal,
           partsTotal: estimateData.breakdown.partsTotal,
           subtotal: estimateData.breakdown.subtotal,
           taxAmount: estimateData.breakdown.taxAmount,
+          cleaningKit: estimateData.breakdown.cleaningKit,
           total: estimateData.breakdown.total,
         })
+      }
+
+      // Set vendor comparison data
+      if (estimateData.vendorComparison) {
+        setVendorData(estimateData.vendorComparison)
+      }
+
+      // Set flags (recall alerts, warranty alerts, etc.)
+      if (responseData.flags && responseData.flags.length > 0) {
+        setFlags(responseData.flags)
+      }
+
+      // Set confidence score
+      if (responseData.confidence_score) {
+        setConfidenceScore(responseData.confidence_score)
       }
 
       autoProgressSteps()
@@ -420,6 +470,57 @@ const NewEstimate = () => {
     }
 
     setIsGenerating(false)
+    setIsGenerating(false)
+  }
+
+  // Push to Tekmetric
+  const handlePushToTekmetric = async () => {
+    setIsPushing(true)
+    const result = await pushToTekmetric({
+      customer: {
+        name: formData.customerName,
+        phone: formData.customerPhone,
+        email: formData.customerEmail
+      },
+      vehicleInfo: formData.vehicleInfo,
+      laborItems: formData.laborItems,
+      partsItems: formData.partsItems,
+      breakdown: calculatedTotals,
+      odometer: formData.odometer ? parseInt(formData.odometer) : null
+    })
+
+    if (result.success) {
+      alert(`Successfully pushed to Tekmetric!\nRO #: ${result.data.tekmetric.ro_number}`)
+    } else {
+      alert(`Failed to push: ${result.error}`)
+    }
+    setIsPushing(false)
+  }
+
+  // Send Approval Link
+  const handleSendApproval = async () => {
+    setIsSending(true)
+    const result = await generateApprovalLink("EST-TEMP-ID", {
+      customer: {
+        name: formData.customerName,
+        phone: formData.customerPhone,
+        email: formData.customerEmail
+      },
+      vehicleInfo: formData.vehicleInfo,
+      laborItems: formData.laborItems,
+      partsItems: formData.partsItems,
+      breakdown: calculatedTotals,
+      odometer: formData.odometer
+    })
+
+    if (result.success) {
+      // In a real app we would email/SMS this. For now just show it.
+      const url = result.data.approval_url
+      prompt("Approval Link Generated (Copy and send to customer):", url)
+    } else {
+      alert(`Failed to generate link: ${result.error}`)
+    }
+    setIsSending(false)
   }
 
   // Auto-progress through steps
@@ -576,9 +677,16 @@ const NewEstimate = () => {
       case 2:
         return <PartsStep data={formData} />
       case 3:
-        return <VendorCompareStep />
+        return <VendorCompareStep vendorData={vendorData} />
       case 4:
-        return <PreviewStep data={formData} calculatedTotals={calculatedTotals} />
+        return <PreviewStep
+          data={formData}
+          calculatedTotals={calculatedTotals}
+          onPushToTekmetric={handlePushToTekmetric}
+          onSendApproval={handleSendApproval}
+          isPushing={isPushing}
+          isSending={isSending}
+        />
       case 5:
         return <ActionsStep data={formData} calculatedTotals={calculatedTotals} onDownloadPDF={handleDownloadPDF} />
       default:
@@ -623,23 +731,48 @@ const NewEstimate = () => {
       </div>
 
       {/* Bottom: Auto-Generate Button */}
-      <div className="flex justify-center items-center mt-8">
+      {/* Bottom: Navigation & Actions */}
+      <div className="flex justify-between items-center w-full max-w-4xl px-4 mt-8 mx-auto">
         <button
-          onClick={handleAutoGenerate}
-          disabled={isGenerating}
-          className="bg-gradient-to-r from-accent to-accent-dark hover:from-accent-dark hover:to-accent text-background font-bold px-12 py-4 rounded-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-3 shadow-lg shadow-accent/30 transform hover:scale-105"
+          onClick={() => setCurrentStep(Math.max(0, currentStep - 1))}
+          disabled={currentStep === 0}
+          className={`px-6 py-3 rounded-lg font-semibold transition-all ${currentStep === 0
+            ? 'bg-surface border border-border text-text-secondary opacity-50 cursor-not-allowed'
+            : 'bg-surface border border-border text-text-primary hover:bg-primary-light hover:border-accent/50'
+            }`}
         >
-          {isGenerating ? (
-            <>
-              <div className="animate-spin h-6 w-6 border-2 border-background border-t-transparent rounded-full"></div>
-              Generating Magic...
-            </>
-          ) : (
-            <>
-              <SparklesIcon className="h-6 w-6" />
-              Auto-Generate Estimate
-            </>
-          )}
+          ← Back
+        </button>
+
+        {currentStep === 0 && (
+          <button
+            onClick={handleAutoGenerate}
+            disabled={isGenerating}
+            className="bg-gradient-to-r from-accent to-accent-dark hover:from-accent-dark hover:to-accent text-background font-bold px-12 py-3 rounded-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-3 shadow-lg shadow-accent/30 transform hover:scale-105"
+          >
+            {isGenerating ? (
+              <>
+                <div className="animate-spin h-6 w-6 border-2 border-background border-t-transparent rounded-full"></div>
+                Generating...
+              </>
+            ) : (
+              <>
+                <SparklesIcon className="h-6 w-6" />
+                Auto-Generate
+              </>
+            )}
+          </button>
+        )}
+
+        <button
+          onClick={() => setCurrentStep(Math.min(steps.length - 1, currentStep + 1))}
+          disabled={currentStep === steps.length - 1}
+          className={`px-6 py-3 rounded-lg font-semibold transition-all ${currentStep === steps.length - 1
+            ? 'bg-surface border border-border text-text-secondary opacity-50 cursor-not-allowed'
+            : 'bg-accent text-background hover:bg-accent-dark shadow-lg shadow-accent/20'
+            }`}
+        >
+          Next →
         </button>
       </div>
     </div>

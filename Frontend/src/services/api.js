@@ -22,11 +22,6 @@ const api = axios.create({
 // VIN Decoder Service (NHTSA API via Backend)
 // ============================================================================
 
-/**
- * Decode VIN to get vehicle information
- * @param {string} vin - Vehicle Identification Number (17 characters)
- * @returns {Promise<Object>} Vehicle details (year, make, model, trim, engine)
- */
 export const decodeVIN = async (vin) => {
   try {
     const response = await api.get(`/vehicles/decode/${vin}`);
@@ -46,12 +41,6 @@ export const decodeVIN = async (vin) => {
 // Labor Time Lookup Service
 // ============================================================================
 
-/**
- * Get labor time for a specific job
- * @param {string} vin - Vehicle VIN
- * @param {string} jobDescription - Job description (e.g., "Brake Pad Replacement")
- * @returns {Promise<Object>} Labor time details
- */
 export const lookupLaborTime = async (vin, jobDescription) => {
   try {
     const response = await api.post('/labor/lookup', {
@@ -74,12 +63,6 @@ export const lookupLaborTime = async (vin, jobDescription) => {
 // Parts Search Service
 // ============================================================================
 
-/**
- * Search for parts based on VIN and job description
- * @param {string} vin - Vehicle VIN
- * @param {string} jobDescription - Job description
- * @returns {Promise<Object>} Array of matching parts
- */
 export const searchParts = async (vin, jobDescription) => {
   try {
     const response = await api.post('/parts/search', {
@@ -102,13 +85,6 @@ export const searchParts = async (vin, jobDescription) => {
 // Estimate Calculation Service
 // ============================================================================
 
-/**
- * Calculate estimate totals in real-time
- * @param {Array} laborItems - Array of labor items {description, hours, rate, total}
- * @param {Array} partsItems - Array of parts items {description, quantity, cost, markup, total}
- * @param {number} taxRate - Tax rate (0.08 = 8%)
- * @returns {Promise<Object>} Calculation breakdown
- */
 export const calculateEstimate = async (laborItems, partsItems, taxRate = 0.08) => {
   try {
     const response = await api.post('/estimates/calculate', {
@@ -145,11 +121,6 @@ export const calculateEstimate = async (laborItems, partsItems, taxRate = 0.08) 
 // Draft Estimate Creation Service
 // ============================================================================
 
-/**
- * Create a draft estimate
- * @param {Object} estimateData - Complete estimate data
- * @returns {Promise<Object>} Created estimate with ID and public token
- */
 export const createDraftEstimate = async (estimateData) => {
   try {
     const response = await api.post('/estimates/draft', {
@@ -201,11 +172,6 @@ export const createDraftEstimate = async (estimateData) => {
 // Get Estimates List
 // ============================================================================
 
-/**
- * Get list of estimates with optional status filter
- * @param {string} status - Optional status filter (draft, sent, approved, declined)
- * @returns {Promise<Object>} Array of estimates
- */
 export const getEstimates = async (status = null) => {
   try {
     const params = status ? { status_filter: status } : {};
@@ -226,12 +192,6 @@ export const getEstimates = async (status = null) => {
 // Send Estimate to Customer
 // ============================================================================
 
-/**
- * Send estimate to customer (updates status and sets expiration)
- * @param {number} estimateId - Estimate ID
- * @param {number} daysValid - Days until expiration (default 7)
- * @returns {Promise<Object>} Updated estimate
- */
 export const sendEstimate = async (estimateId, daysValid = 7) => {
   try {
     const response = await api.post(`/estimates/${estimateId}/send`, null, {
@@ -253,28 +213,10 @@ export const sendEstimate = async (estimateId, daysValid = 7) => {
 // 🚀 AUTO-GENERATE ESTIMATE (One-Click Magic!)
 // ============================================================================
 
-/**
- * Auto-generate complete estimate from intake information
- * This is the MAIN function that orchestrates the entire workflow:
- * 1. VIN Decode
- * 2. Labor Lookup
- * 3. Parts Search
- * 4. Vendor Compare
- * 5. Calculate Totals
- * 
- * @param {Object} intakeData - Intake information
- * @param {string} intakeData.vin - Vehicle VIN
- * @param {string} intakeData.serviceRequest - Service request description
- * @param {string} intakeData.customerName - Customer name
- * @param {string} intakeData.customerEmail - Customer email
- * @param {string} intakeData.customerPhone - Customer phone
- * @param {number} intakeData.odometer - Odometer reading
- * @param {number} intakeData.laborRate - Shop labor rate
- * @returns {Promise<Object>} Complete estimate with all steps
- */
 export const autoGenerateEstimate = async (intakeData) => {
   try {
-    const response = await api.post('/auto/generate', {
+    // UPDATED URL to match new backend prefix
+    const response = await api.post('/auto-generate/generate', {
       vin: intakeData.vin,
       serviceRequest: intakeData.serviceRequest,
       customerName: intakeData.customerName,
@@ -282,6 +224,7 @@ export const autoGenerateEstimate = async (intakeData) => {
       customerPhone: intakeData.customerPhone,
       odometer: intakeData.odometer ? parseInt(intakeData.odometer) : null,
       laborRate: intakeData.laborRate ? String(intakeData.laborRate) : "150",
+      vendorWeights: intakeData.vendorWeights || null
     });
     return {
       success: true,
@@ -291,6 +234,80 @@ export const autoGenerateEstimate = async (intakeData) => {
     return {
       success: false,
       error: error.response?.data?.detail || 'Failed to auto-generate estimate',
+    };
+  }
+};
+
+// ============================================================================
+// Tekmetric Integration
+// ============================================================================
+
+export const pushToTekmetric = async (estimateData) => {
+  try {
+    const response = await api.post('/tekmetric/push', estimateData);
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || 'Failed to push to Tekmetric',
+    };
+  }
+};
+
+// ============================================================================
+// Customer Approval Portal
+// ============================================================================
+
+export const generateApprovalLink = async (estimateId, estimateData) => {
+  try {
+    const response = await api.post('/approval/generate-link', {
+      estimate_id: estimateId,
+      estimate_data: estimateData
+    });
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || 'Failed to generate approval link',
+    };
+  }
+};
+
+export const processApprovalAction = async (token, action, notes = '') => {
+  try {
+    const response = await api.post(`/approval/action/${token}`, {
+      action,
+      notes
+    });
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || 'Failed to process approval action',
+    };
+  }
+};
+
+export const getApprovalStats = async () => {
+  try {
+    const response = await api.get('/approval/stats');
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || 'Failed to fetch approval stats',
     };
   }
 };
