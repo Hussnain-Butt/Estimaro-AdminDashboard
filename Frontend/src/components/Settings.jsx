@@ -13,6 +13,17 @@ const SettingsPage = () => {
   const [emailTemplate, setEmailTemplate] = useState('Dear {{customer}}, your estimate is ready...')
   const [smsTemplate, setSmsTemplate] = useState('Hi {{customer}}, view your estimate: {{link}}')
 
+  // Integration States
+  const [tekmetricApiKey, setTekmetricApiKey] = useState('')
+  const [tekmetricShopId, setTekmetricShopId] = useState('')
+  const [alldataCredentials, setAlldataCredentials] = useState('')
+  const [partsLinkToken, setPartsLinkToken] = useState('')
+
+  // Twilio States
+  const [twilioSid, setTwilioSid] = useState('')
+  const [twilioToken, setTwilioToken] = useState('')
+  const [twilioPhone, setTwilioPhone] = useState('')
+
   const addAdvisor = () => {
     if (newAdvisor.trim() !== '' && !advisors.includes(newAdvisor.trim())) {
       setAdvisors([...advisors, newAdvisor.trim()])
@@ -22,6 +33,23 @@ const SettingsPage = () => {
 
   const removeAdvisor = (name) => {
     setAdvisors(advisors.filter((advisor) => advisor !== name))
+  }
+
+  const handleSave = () => {
+    const settingsData = {
+      shop: { laborRate, partsMarkup, tax },
+      scoring: { brandWeight, priceWeight, distanceWeight },
+      integrations: {
+        tekmetric: { apiKey: tekmetricApiKey, shopId: tekmetricShopId },
+        alldata: { credentials: alldataCredentials },
+        partslink: { token: partsLinkToken },
+        twilio: { sid: twilioSid, token: twilioToken, phone: twilioPhone }
+      },
+      templates: { email: emailTemplate, sms: smsTemplate },
+      advisors
+    }
+    console.log('Saving Settings:', settingsData)
+    alert('Settings Saved! (Check console for data)')
   }
 
   const Section = ({ title, children }) => (
@@ -91,7 +119,10 @@ const SettingsPage = () => {
             </div>
           </div>
           <div className="flex justify-end mt-4">
-            <button className="bg-gradient-to-br from-[#34d399] to-[#10b981] text-gray-900 font-bold py-3 px-6 rounded-lg shadow-lg hover:from-[#10b981] hover:to-[#34d399] transition-all transform hover:scale-105">
+            <button
+              onClick={handleSave}
+              className="bg-gradient-to-br from-[#34d399] to-[#10b981] text-gray-900 font-bold py-3 px-6 rounded-lg shadow-lg hover:from-[#10b981] hover:to-[#34d399] transition-all transform hover:scale-105"
+            >
               Save
             </button>
           </div>
@@ -137,37 +168,97 @@ const SettingsPage = () => {
         </Section>
 
         {/* Integrations */}
-        <Section title="Integrations">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-400 mb-1">
-                Tekmetric API Key
-              </label>
-              <input
-                type="password"
-                defaultValue="••••••••"
-                className="w-full bg-[#30363d] text-white rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-              />
+        <Section title="API Integrations">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Tekmetric */}
+            <div className="bg-[#0d1117] p-4 rounded-lg border border-gray-700">
+              <h3 className="font-semibold text-blue-400 mb-3">Tekmetric</h3>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">API Key</label>
+                  <input
+                    type="password"
+                    value={tekmetricApiKey}
+                    onChange={(e) => setTekmetricApiKey(e.target.value)}
+                    placeholder="Enter API Key"
+                    className="w-full bg-[#30363d] text-white rounded p-2 focus:ring-1 focus:ring-blue-500 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">Shop ID</label>
+                  <input
+                    type="text"
+                    value={tekmetricShopId}
+                    onChange={(e) => setTekmetricShopId(e.target.value)}
+                    placeholder="Enter Shop ID"
+                    className="w-full bg-[#30363d] text-white rounded p-2 focus:ring-1 focus:ring-blue-500 text-sm"
+                  />
+                </div>
+              </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-400 mb-1">
-                ALLDATA Credentials
-              </label>
-              <input
-                type="text"
-                placeholder="user,pass"
-                className="w-full bg-[#30363d] text-white rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-              />
+
+            {/* Other APIs */}
+            <div className="bg-[#0d1117] p-4 rounded-lg border border-gray-700">
+              <h3 className="font-semibold text-green-400 mb-3">External Services</h3>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">ALLDATA Credentials</label>
+                  <input
+                    type="text"
+                    value={alldataCredentials}
+                    onChange={(e) => setAlldataCredentials(e.target.value)}
+                    placeholder="user,pass"
+                    className="w-full bg-[#30363d] text-white rounded p-2 focus:ring-1 focus:ring-blue-500 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">PartsLink24 Token</label>
+                  <input
+                    type="password"
+                    value={partsLinkToken}
+                    onChange={(e) => setPartsLinkToken(e.target.value)}
+                    placeholder="Enter Token"
+                    className="w-full bg-[#30363d] text-white rounded p-2 focus:ring-1 focus:ring-blue-500 text-sm"
+                  />
+                </div>
+              </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-400 mb-1">
-                PartsLink24 Token
-              </label>
-              <input
-                type="password"
-                defaultValue="••••••••"
-                className="w-full bg-[#30363d] text-white rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-              />
+
+            {/* Twilio */}
+            <div className="bg-[#0d1117] p-4 rounded-lg border border-gray-700 md:col-span-2">
+              <h3 className="font-semibold text-red-400 mb-3">Twilio (SMS/Notifications)</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">Account SID</label>
+                  <input
+                    type="text"
+                    value={twilioSid}
+                    onChange={(e) => setTwilioSid(e.target.value)}
+                    placeholder="AC..."
+                    className="w-full bg-[#30363d] text-white rounded p-2 focus:ring-1 focus:ring-blue-500 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">Auth Token</label>
+                  <input
+                    type="password"
+                    value={twilioToken}
+                    onChange={(e) => setTwilioToken(e.target.value)}
+                    placeholder="Enter Token"
+                    className="w-full bg-[#30363d] text-white rounded p-2 focus:ring-1 focus:ring-blue-500 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">Phone Number</label>
+                  <input
+                    type="text"
+                    value={twilioPhone}
+                    onChange={(e) => setTwilioPhone(e.target.value)}
+                    placeholder="+1234567890"
+                    className="w-full bg-[#30363d] text-white rounded p-2 focus:ring-1 focus:ring-blue-500 text-sm"
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </Section>
@@ -208,7 +299,7 @@ const SettingsPage = () => {
         </Section>
 
         {/* Notifications */}
-        <Section title="Notifications">
+        <Section title="Notification Templates">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <label className="block text-sm font-medium text-gray-400 mb-1 flex items-center">

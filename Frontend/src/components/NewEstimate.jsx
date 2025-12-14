@@ -270,7 +270,7 @@ const PreviewStep = ({ data, calculatedTotals, onPushToTekmetric, onSendApproval
   )
 }
 
-const ActionsStep = ({ data, calculatedTotals, onDownloadPDF, onSaveDraft }) => {
+const ActionsStep = ({ data, calculatedTotals, onDownloadPDF, onSaveDraft, onPushToTekmetric, isPushing }) => {
   const hasData = data.laborItems.length > 0 || data.partsItems.length > 0
   const isReady = hasData
 
@@ -305,6 +305,24 @@ const ActionsStep = ({ data, calculatedTotals, onDownloadPDF, onSaveDraft }) => 
             {/* Action Buttons */}
             <div className="flex flex-col sm:flex-row gap-4 w-full justify-center">
               {/* AUTO-SAVE ENABLED: Manual Save button removed */}
+
+              <button
+                onClick={onPushToTekmetric}
+                disabled={isPushing}
+                className="bg-gradient-to-r from-primary to-primary-dark hover:from-primary-dark hover:to-primary text-white font-bold py-4 px-8 rounded-lg transition-all duration-300 flex items-center gap-3 shadow-lg shadow-primary/30 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isPushing ? (
+                  <>
+                    <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
+                    Pushing...
+                  </>
+                ) : (
+                  <>
+                    <ArrowDownTrayIcon className="h-6 w-6 rotate-180" />
+                    Push to Tekmetric
+                  </>
+                )}
+              </button>
 
               <button
                 onClick={onDownloadPDF}
@@ -761,6 +779,8 @@ const NewEstimate = () => {
           calculatedTotals={calculatedTotals}
           onDownloadPDF={handleDownloadPDF}
           onSaveDraft={() => handleSaveDraft(false)}
+          onPushToTekmetric={handlePushToTekmetric}
+          isPushing={isPushing}
         />
       default:
         return <IntakeStep data={formData} updateData={updateData} />
