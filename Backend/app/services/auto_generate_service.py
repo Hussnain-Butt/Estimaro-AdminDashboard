@@ -15,7 +15,7 @@ This is the "brain" that automates the entire estimation process.
 """
 from typing import Dict, List, Optional
 from decimal import Decimal
-from sqlalchemy.orm import Session
+
 
 from app.services.vin_decoder_service import vin_decoder_service
 from app.services.labor_service import labor_service

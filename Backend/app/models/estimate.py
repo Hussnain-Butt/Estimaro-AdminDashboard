@@ -1,10 +1,20 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Numeric, Text, Enum as SQLEnum
-from sqlalchemy.orm import relationship
+from beanie import Document, Indexed
+from pydantic import Field, BeforeValidator
 from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import List, Optional, Annotated, Any
 import enum
 import uuid
-from app.core.database import Base
+from app.models.estimate_item import EstimateItem
 
+def coerce_float(v: Any) -> float:
+    if v is None:
+        return 0.0
+    try:
+        # Handle Decimal128 and other types by converting to string first
+        return float(str(v))
+    except (ValueError, TypeError):
+        return 0.0
 
 class EstimateStatus(str, enum.Enum):
     """Estimate status enumeration."""
@@ -13,43 +23,44 @@ class EstimateStatus(str, enum.Enum):
     APPROVED = "approved"
     DECLINED = "declined"
 
-
-class Estimate(Base):
+class Estimate(Document):
     """
     Estimate model.
     Represents a service estimate for a vehicle.
     """
-    __tablename__ = "estimates"
+    # References to other documents (stored as strings/ObjectIds)
+    vehicle_id: Optional[str] = None  # PydanticObjectId can be used, keeping simple for now
+    advisor_id: Optional[str] = None
     
-    id = Column(Integer, primary_key=True, index=True)
-    vehicle_id = Column(Integer, ForeignKey("vehicles.id", ondelete="CASCADE"), nullable=False)
-    advisor_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    service_request_text = Column(Text, nullable=True)
-    status = Column(SQLEnum(EstimateStatus), default=EstimateStatus.DRAFT, nullable=False, index=True)
+    service_request_text: Optional[str] = None
+    status: EstimateStatus = EstimateStatus.DRAFT
     
-    # Financial fields (using Numeric for precision)
-    subtotal = Column(Numeric(10, 2), default=0.00, nullable=False)
-    tax = Column(Numeric(10, 2), default=0.00, nullable=False)
-    total = Column(Numeric(10, 2), default=0.00, nullable=False)
+    # Financial fields
+    subtotal: Annotated[float, BeforeValidator(coerce_float)] = 0.0
+    tax: Annotated[float, BeforeValidator(coerce_float)] = 0.0
+    total: Annotated[float, BeforeValidator(coerce_float)] = 0.0
     
     # Customer portal access
-    public_token = Column(String(36), unique=True, index=True, nullable=False, default=lambda: str(uuid.uuid4()))
+    public_token: str = Indexed(unique=True, default_factory=lambda: str(uuid.uuid4()))
     
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    expires_at = Column(DateTime, nullable=True)  # For customer portal link expiration
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    expires_at: Optional[datetime] = None
     
     # External system integration
-    tekmetric_id = Column(String(100), nullable=True, index=True)
+    tekmetric_id: Optional[str] = None
     
-    # Relationships
-    vehicle = relationship("Vehicle", back_populates="estimates")
-    advisor = relationship("User", back_populates="estimates")
-    items = relationship("EstimateItem", back_populates="estimate", cascade="all, delete-orphan")
+    # Embedded Items
+    items: List[EstimateItem] = []
     
-    def __repr__(self):
-        return f"<Estimate(id={self.id}, status='{self.status}', total={self.total})>"
+    # Runtime fields (not stored in DB)
+    vehicle: Optional[Any] = Field(None, exclude=True)
+
+    
+    class Settings:
+        name = "estimates"
+        use_state_management = True
     
     @property
     def is_expired(self):
@@ -61,3 +72,7 @@ class Estimate(Base):
     def set_expiration(self, days: int = 7):
         """Set expiration date from now."""
         self.expires_at = datetime.utcnow() + timedelta(days=days)
+        
+    async def save(self, *args, **kwargs):
+        self.updated_at = datetime.utcnow()
+        await super().save(*args, **kwargs)

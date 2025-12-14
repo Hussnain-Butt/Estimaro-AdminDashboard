@@ -1,0 +1,43 @@
+3 validation errors for Estimate
+subtotal
+  Decimal input should be an integer, float, string or Decimal object [type=decimal_type, input_value=Decimal128('0.00'), input_type=Decimal128]
+    For further information visit https://errors.pydantic.dev/2.10/v/decimal_type
+tax
+  Decimal input should be an integer, float, string or Decimal object [type=decimal_type, input_value=Decimal128('0.00'), input_type=Decimal128]
+    For further information visit https://errors.pydantic.dev/2.10/v/decimal_type
+total
+  Decimal input should be an integer, float, string or Decimal object [type=decimal_type, input_value=Decimal128('12.00'), input_type=Decimal128]
+    For further information visit https://errors.pydantic.dev/2.10/v/decimal_type
+Traceback (most recent call last):
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\api\v1\estimates.py", line 100, in list_estimates
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\services\estimate_service.py", line 128, in get_advisor_estimates
+    estimates = await self.repository.get_by_advisor(advisor_id, status_enum)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\repositories\estimate_repository.py", line 107, in get_by_advisor
+    estimates = await query.sort("-created_at").limit(limit).to_list()
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\beanie\odm\queries\cursor.py", line 85, in to_list
+    parse_obj(projection, i, lazy_parse=self.lazy_parse)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\beanie\odm\utils\parsing.py", line 146, in parse_obj
+    result = parse_model(model, data)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\beanie\odm\utils\pydantic.py", line 37, in parse_model
+    return model_type.model_validate(data)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\pydantic\main.py", line 627, in model_validate
+    return cls.__pydantic_validator__.validate_python(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        obj, strict=strict, from_attributes=from_attributes, context=context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+pydantic_core._pydantic_core.ValidationError: 3 validation errors for Estimate
+subtotal
+  Decimal input should be an integer, float, string or Decimal object [type=decimal_type, input_value=Decimal128('0.00'), input_type=Decimal128]
+    For further information visit https://errors.pydantic.dev/2.10/v/decimal_type
+tax
+  Decimal input should be an integer, float, string or Decimal object [type=decimal_type, input_value=Decimal128('0.00'), input_type=Decimal128]
+    For further information visit https://errors.pydantic.dev/2.10/v/decimal_type
+total
+  Decimal input should be an integer, float, string or Decimal object [type=decimal_type, input_value=Decimal128('12.00'), input_type=Decimal128]
+    For further information visit https://errors.pydantic.dev/2.10/v/decimal_type

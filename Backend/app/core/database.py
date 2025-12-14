@@ -1,36 +1,45 @@
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from motor.motor_asyncio import AsyncIOMotorClient
+from beanie import init_beanie
 from app.core.config import settings
 
-# Create SQLAlchemy engine
-engine = create_engine(
-    settings.DATABASE_URL,
-    pool_pre_ping=True,  # Verify connections before using
-    pool_size=10,  # Number of connections to maintain
-    max_overflow=20,  # Max additional connections when pool is full
-    echo=settings.DEBUG,  # Log SQL queries in debug mode
-)
+# Placeholder for models list (will be populated in main.py)
+# from app.models.estimate import Estimate
+# from app.models.customer import Customer
+# from app.models.vehicle import Vehicle
+# from app.models.user import User
 
-# Create SessionLocal class for database sessions
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
-)
+async def init_db():
+    """
+    Initialize MongoDB connection and Beanie ODM.
+    """
+    client = AsyncIOMotorClient(settings.DATABASE_URL)
+    
+    # Selecting the database name from the URL or default
+    db_name = client.get_default_database().name
+    if not db_name or db_name == 'test':
+         db_name = "estimaro_db"
 
-# Base class for all database models
-Base = declarative_base()
+    # Import models
+    from app.models.estimate import Estimate
+    from app.models.customer import Customer
+    from app.models.vehicle import Vehicle
+    from app.models.user import User
 
+    # Initialize Beanie
+    await init_beanie(
+        database=client[db_name],
+        document_models=[
+            User,
+            Customer,
+            Vehicle,
+            Estimate
+        ]
+    )
 
-# Dependency for FastAPI routes
+# Simplified dependency for backward compatibility during migration
+# In purely async Beanie, we don't strictly need a session dependency like SQLAlchemy
+# but we might need to mock it or remove it from routes.
 def get_db():
-    """
-    Database session dependency.
-    Usage: db: Session = Depends(get_db)
-    """
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    """Deprecated: No-op for MongoDB migration"""
+    yield None
+

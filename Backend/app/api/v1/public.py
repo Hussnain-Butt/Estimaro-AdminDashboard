@@ -4,10 +4,8 @@ Public API Routes (No Authentication Required)
 These endpoints are accessible via public tokens for customer portal access.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
-from app.core.database import get_db
 from app.schemas.estimate import EstimateResponseSchema
 from app.services.estimate_service import get_estimate_service
 
@@ -27,18 +25,15 @@ class CustomerResponseSchema(BaseModel):
     description="Customer portal endpoint to view estimate details using public token from SMS link."
 )
 async def get_estimate_by_token(
-    token: str,
-    db: Session = Depends(get_db)
+    token: str
 ):
     """
     Get estimate by public token (customer portal).
     
     **No authentication required** - token is the security mechanism.
-    
-    **Returns:** Estimate details if token is valid and not expired.
     """
-    service = get_estimate_service(db)
-    estimate = service.get_estimate_by_token(token)
+    service = get_estimate_service()
+    estimate = await service.get_estimate_by_token(token)
     
     if not estimate:
         raise HTTPException(
@@ -56,22 +51,17 @@ async def get_estimate_by_token(
 )
 async def respond_to_estimate(
     token: str,
-    response: CustomerResponseSchema,
-    db: Session = Depends(get_db)
+    response: CustomerResponseSchema
 ):
     """
     Customer responds to estimate (approve/decline).
     
-    **No authentication required** - token is the security mechanism.
-    
     **Actions:**
     - approve: Updates status to 'approved'
     - decline: Updates status to 'declined'
-    
-    **Future:** Trigger notification to advisor
     """
-    service = get_estimate_service(db)
-    estimate = service.get_estimate_by_token(token)
+    service = get_estimate_service()
+    estimate = await service.get_estimate_by_token(token)
     
     if not estimate:
         raise HTTPException(
@@ -87,12 +77,14 @@ async def respond_to_estimate(
         )
     
     # Update status based on action
-    from app.repositories.estimate_repository import EstimateRepository
     from app.models.estimate import EstimateStatus
+    from app.repositories.estimate_repository import EstimateRepository
     
-    repository = EstimateRepository(db)
+    repository = EstimateRepository()
     new_status = EstimateStatus.APPROVED if response.action == "approve" else EstimateStatus.DECLINED
-    updated_estimate = repository.update_status(estimate.estimateId, new_status)
+    
+    # Use estimateId from the retrieved estimate
+    await repository.update_status(estimate.estimateId, new_status)
     
     # TODO: Send notification to advisor
     # notification_service.notify_advisor(estimate.advisorId, response)
@@ -101,3 +93,4 @@ async def respond_to_estimate(
         "message": f"Estimate {response.action}d successfully",
         "status": new_status.value
     }
+

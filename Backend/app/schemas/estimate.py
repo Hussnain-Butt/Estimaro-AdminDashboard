@@ -10,13 +10,13 @@ from decimal import Decimal
 
 class VehicleInfoSchema(BaseModel):
     """Vehicle information schema matching frontend formData.vehicleInfo"""
-    vin: str = Field(..., min_length=17, max_length=17, description="Vehicle Identification Number")
-    year: Optional[int] = Field(None, ge=1900, le=2100, description="Vehicle year")
-    make: Optional[str] = Field(None, max_length=100, description="Vehicle make")
-    model: Optional[str] = Field(None, max_length=100, description="Vehicle model")
-    trim: Optional[str] = Field(None, max_length=100, description="Vehicle trim")
-    engine: Optional[str] = Field(None, max_length=100, description="Engine type")
-    mileage: Optional[int] = Field(None, ge=0, description="Current mileage")
+    vin: str = Field(..., description="Vehicle Identification Number")
+    year: Optional[int] = Field(None, description="Vehicle year")
+    make: Optional[str] = Field(None, description="Vehicle make")
+    model: Optional[str] = Field(None, description="Vehicle model")
+    trim: Optional[str] = Field(None, description="Vehicle trim")
+    engine: Optional[str] = Field(None, description="Engine type")
+    mileage: Optional[int] = Field(None, description="Current mileage")
 
     class Config:
         json_schema_extra = {
@@ -38,10 +38,10 @@ class VehicleInfoSchema(BaseModel):
 
 class CustomerInfoSchema(BaseModel):
     """Customer information schema matching frontend formData.customerInfo"""
-    firstName: str = Field(..., min_length=1, max_length=100, description="Customer first name")
-    lastName: str = Field(..., min_length=1, max_length=100, description="Customer last name")
-    email: Optional[EmailStr] = Field(None, description="Customer email address")
-    phone: str = Field(..., min_length=10, max_length=20, description="Customer phone number")
+    firstName: str = Field(..., description="Customer first name")
+    lastName: str = Field(..., description="Customer last name")
+    email: Optional[str] = Field(None, description="Customer email address")
+    phone: str = Field(..., description="Customer phone number")
 
     class Config:
         json_schema_extra = {
@@ -62,52 +62,22 @@ class LaborItemSchema(BaseModel):
     """Labor item schema matching frontend formData.laborItems[]"""
     id: Optional[str] = Field(None, description="Temporary frontend ID")
     description: str = Field(..., min_length=1, max_length=500, description="Labor description")
-    hours: Decimal = Field(..., ge=0, description="Labor hours")
-    rate: Decimal = Field(..., ge=0, description="Hourly rate")
-    total: Decimal = Field(..., ge=0, description="Total labor cost (hours * rate)")
+    hours: float = Field(..., ge=0, description="Labor hours")
+    rate: float = Field(..., ge=0, description="Hourly rate")
+    total: float = Field(..., ge=0, description="Total labor cost (hours * rate)")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "id": "labor-1",
-                "description": "Brake Pad Replacement",
-                "hours": "1.5",
-                "rate": "120.00",
-                "total": "180.00"
-            }
-        }
-
-
-# ============================================================================
-# Part Item Schemas (matching frontend PartItem)
-# ============================================================================
-
+# ... (PartItemSchema)
 class PartItemSchema(BaseModel):
     """Part item schema matching frontend formData.partsItems[]"""
     id: Optional[str] = Field(None, description="Temporary frontend ID")
     description: str = Field(..., min_length=1, max_length=500, description="Part description")
     partNumber: Optional[str] = Field(None, max_length=100, description="Part number")
-    quantity: Decimal = Field(..., ge=0, description="Quantity")
-    cost: Decimal = Field(..., ge=0, description="Unit cost")
-    markup: Decimal = Field(default=Decimal("0"), ge=0, le=100, description="Markup percentage")
-    total: Decimal = Field(..., ge=0, description="Total part cost")
+    quantity: float = Field(..., ge=0, description="Quantity")
+    cost: float = Field(..., ge=0, description="Unit cost")
+    markup: float = Field(default=0.0, ge=0, le=100, description="Markup percentage")
+    total: float = Field(..., ge=0, description="Total part cost")
     vendor: Optional[str] = Field(None, max_length=100, description="Vendor name")
     reason_badge: Optional[str] = Field(None, description="Reason for auto-added item")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "id": "part-1",
-                "description": "Brake Pad Set - Front",
-                "partNumber": "BRK-12345",
-                "quantity": "1",
-                "cost": "85.00",
-                "markup": "30",
-                "total": "110.50",
-                "vendor": "Worldpac"
-            }
-        }
-
 
 # ============================================================================
 # Estimate Request Schemas
@@ -144,19 +114,19 @@ class EstimateCreateSchema(BaseModel):
                 "laborItems": [
                     {
                         "description": "Brake Pad Replacement",
-                        "hours": "1.5",
-                        "rate": "120.00",
-                        "total": "180.00"
+                        "hours": 1.5,
+                        "rate": 120.00,
+                        "total": 180.00
                     }
                 ],
                 "partsItems": [
                     {
                         "description": "Brake Pad Set - Front",
                         "partNumber": "BRK-12345",
-                        "quantity": "1",
-                        "cost": "85.00",
-                        "markup": "30",
-                        "total": "110.50"
+                        "quantity": 1.0,
+                        "cost": 85.00,
+                        "markup": 30.0,
+                        "total": 110.50
                     }
                 ]
             }
@@ -170,7 +140,7 @@ class CalculationRequestSchema(BaseModel):
     """
     laborItems: List[LaborItemSchema] = Field(default_factory=list)
     partsItems: List[PartItemSchema] = Field(default_factory=list)
-    taxRate: Optional[Decimal] = Field(None, ge=0, le=1, description="Tax rate (0.08 = 8%)")
+    taxRate: Optional[float] = Field(None, ge=0, le=1, description="Tax rate (0.08 = 8%)")
 
 
 # ============================================================================
@@ -181,26 +151,27 @@ class CleaningKitSchema(BaseModel):
     """Cleaning kit information (replaces shop fees)"""
     name: str = Field(..., description="Cleaning kit name")
     includes: Optional[List[str]] = Field(None, description="Items included in kit")
-    price: Decimal = Field(..., description="Cleaning kit price")
+    price: float = Field(..., description="Cleaning kit price")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "name": "Brake Service Cleaning Kit",
                 "includes": ["Brake cleaner", "Caliper grease", "Disposable gloves"],
-                "price": "15.00"
+                "price": 15.00
             }
         }
 
 
+# ... (CalculationBreakdownSchema)
 class CalculationBreakdownSchema(BaseModel):
     """Breakdown of calculation results"""
-    laborTotal: Decimal = Field(..., description="Total labor cost")
-    partsTotal: Decimal = Field(..., description="Total parts cost")
-    subtotal: Decimal = Field(..., description="Subtotal before tax")
-    taxAmount: Decimal = Field(..., description="Tax amount")
+    laborTotal: float = Field(..., description="Total labor cost")
+    partsTotal: float = Field(..., description="Total parts cost")
+    subtotal: float = Field(..., description="Subtotal before tax")
+    taxAmount: float = Field(..., description="Tax amount")
     cleaningKit: Optional[CleaningKitSchema] = Field(None, description="Service cleaning kit (replaces shop fees)")
-    total: Decimal = Field(..., description="Grand total")
+    total: float = Field(..., description="Grand total")
 
     class Config:
         json_schema_extra = {
@@ -217,7 +188,7 @@ class CalculationBreakdownSchema(BaseModel):
 class CalculationResponseSchema(BaseModel):
     """Response schema for calculation endpoint"""
     breakdown: CalculationBreakdownSchema
-    taxRate: Decimal = Field(..., description="Tax rate used")
+    taxRate: float = Field(..., description="Tax rate used")
 
     class Config:
         json_schema_extra = {
@@ -236,7 +207,7 @@ class CalculationResponseSchema(BaseModel):
 
 class EstimateResponseSchema(BaseModel):
     """Response schema for estimate creation/retrieval"""
-    estimateId: int = Field(..., description="Estimate ID")
+    estimateId: str = Field(..., description="Estimate ID")
     status: str = Field(..., description="Estimate status")
     publicToken: str = Field(..., description="Public token for customer portal")
     vehicleInfo: VehicleInfoSchema

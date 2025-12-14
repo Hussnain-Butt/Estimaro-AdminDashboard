@@ -9,7 +9,6 @@ This is the main service layer that API routes will use.
 """
 from typing import Optional, List
 from decimal import Decimal
-from sqlalchemy.orm import Session
 
 from app.schemas.estimate import (
     EstimateCreateSchema,
@@ -29,17 +28,14 @@ from app.models.estimate_item import ItemType
 
 
 class EstimateService:
-    """Service for estimate business logic"""
+    """Service for estimate business logic (Async)"""
     
-    def __init__(self, db: Session):
+    def __init__(self):
         """
-        Initialize service with database session.
-        
-        Args:
-            db: SQLAlchemy database session
+        Initialize service.
+        No database session required for Beanie.
         """
-        self.db = db
-        self.repository = EstimateRepository(db)
+        self.repository = EstimateRepository()
     
     def calculate_estimate(
         self,
@@ -47,15 +43,7 @@ class EstimateService:
     ) -> CalculationResponseSchema:
         """
         Calculate estimate totals in real-time (no database save).
-        
-        This is used for the frontend real-time calculation as user
-        adds/modifies labor and parts items.
-        
-        Args:
-            request: Calculation request with labor/parts items
-            
-        Returns:
-            Calculation response with breakdown
+        This method remains synchronous as it does no I/O.
         """
         # Use provided tax rate or default
         tax_rate = request.taxRate or Decimal(str(calculation_service.tax_rate))
@@ -72,26 +60,13 @@ class EstimateService:
             taxRate=tax_rate
         )
     
-    def create_draft_estimate(
+    async def create_draft_estimate(
         self,
         estimate_data: EstimateCreateSchema,
-        advisor_id: int
+        advisor_id: str
     ) -> EstimateResponseSchema:
         """
         Create a draft estimate and save to database.
-        
-        This method:
-        1. Recalculates item totals to ensure consistency
-        2. Calculates estimate breakdown
-        3. Creates estimate in database
-        4. Returns formatted response
-        
-        Args:
-            estimate_data: Estimate creation data
-            advisor_id: ID of the advisor creating the estimate
-            
-        Returns:
-            Created estimate response
         """
         # Recalculate item totals for consistency
         recalculated = calculation_service.recalculate_item_totals(
@@ -110,7 +85,7 @@ class EstimateService:
         )
         
         # Create estimate in database
-        estimate = self.repository.create_estimate(
+        estimate = await self.repository.create_estimate(
             estimate_data=estimate_data,
             advisor_id=advisor_id,
             breakdown={
@@ -123,33 +98,17 @@ class EstimateService:
         # Convert to response schema
         return self._estimate_to_response(estimate)
     
-    def get_estimate(self, estimate_id: int) -> Optional[EstimateResponseSchema]:
-        """
-        Get estimate by ID.
-        
-        Args:
-            estimate_id: Estimate ID
-            
-        Returns:
-            Estimate response or None
-        """
-        estimate = self.repository.get_by_id(estimate_id)
+    async def get_estimate(self, estimate_id: str) -> Optional[EstimateResponseSchema]:
+        """Get estimate by ID."""
+        estimate = await self.repository.get_by_id(estimate_id)
         if not estimate:
             return None
         
         return self._estimate_to_response(estimate)
     
-    def get_estimate_by_token(self, public_token: str) -> Optional[EstimateResponseSchema]:
-        """
-        Get estimate by public token (for customer portal).
-        
-        Args:
-            public_token: Public UUID token
-            
-        Returns:
-            Estimate response or None
-        """
-        estimate = self.repository.get_by_token(public_token)
+    async def get_estimate_by_token(self, public_token: str) -> Optional[EstimateResponseSchema]:
+        """Get estimate by public token."""
+        estimate = await self.repository.get_by_token(public_token)
         if not estimate:
             return None
         
@@ -159,44 +118,26 @@ class EstimateService:
         
         return self._estimate_to_response(estimate)
     
-    def get_advisor_estimates(
+    async def get_advisor_estimates(
         self,
-        advisor_id: int,
+        advisor_id: str,
         status: Optional[str] = None
     ) -> List[EstimateResponseSchema]:
-        """
-        Get all estimates for an advisor.
-        
-        Args:
-            advisor_id: Advisor ID
-            status: Optional status filter
-            
-        Returns:
-            List of estimate responses
-        """
+        """Get all estimates for an advisor."""
         status_enum = EstimateStatus(status) if status else None
-        estimates = self.repository.get_by_advisor(advisor_id, status_enum)
+        estimates = await self.repository.get_by_advisor(advisor_id, status_enum)
         
         return [self._estimate_to_response(est) for est in estimates]
     
-    def send_estimate(self, estimate_id: int, days_valid: int = 7) -> Optional[EstimateResponseSchema]:
-        """
-        Send estimate to customer (update status and set expiration).
-        
-        Args:
-            estimate_id: Estimate ID
-            days_valid: Days until expiration
-            
-        Returns:
-            Updated estimate or None
-        """
+    async def send_estimate(self, estimate_id: str, days_valid: int = 7) -> Optional[EstimateResponseSchema]:
+        """Send estimate to customer."""
         # Update status to 'sent'
-        estimate = self.repository.update_status(estimate_id, EstimateStatus.SENT)
+        estimate = await self.repository.update_status(estimate_id, EstimateStatus.SENT)
         if not estimate:
             return None
         
         # Set expiration
-        estimate = self.repository.set_expiration(estimate_id, days_valid)
+        estimate = await self.repository.set_expiration(estimate_id, days_valid)
         
         return self._estimate_to_response(estimate)
     
@@ -215,54 +156,86 @@ class EstimateService:
                 labor_items.append(LaborItemSchema(
                     id=str(item.id),
                     description=item.description,
-                    hours=item.labor_hours,
-                    rate=item.unit_price,
-                    total=item.total
+                    hours=float(item.labor_hours or 0),
+                    rate=float(item.unit_price or 0),
+                    total=float(item.total or 0)
                 ))
             elif item.is_part:
                 parts_items.append(PartItemSchema(
                     id=str(item.id),
                     description=item.description,
                     partNumber=item.part_number,
-                    quantity=item.quantity,
-                    cost=item.unit_price,
-                    markup=item.markup_percentage or Decimal("0"),
-                    total=item.total,
+                    quantity=float(item.quantity or 0),
+                    cost=float(item.unit_price or 0),
+                    markup=float(item.markup_percentage or 0),
+                    total=float(item.total or 0),
                     vendor=item.vendor_name
                 ))
         
         # Build breakdown
+        labor_total_val = sum(item.total for item in labor_items)
+        parts_total_val = sum(item.total for item in parts_items)
+        
         breakdown = CalculationBreakdownSchema(
-            laborTotal=sum(item.total for item in labor_items) if labor_items else Decimal("0"),
-            partsTotal=sum(item.total for item in parts_items) if parts_items else Decimal("0"),
-            subtotal=estimate.subtotal,
-            taxAmount=estimate.tax,
-            total=estimate.total
+            laborTotal=float(labor_total_val),
+            partsTotal=float(parts_total_val),
+            subtotal=float(estimate.subtotal or 0),
+            taxAmount=float(estimate.tax or 0),
+            total=float(estimate.total or 0)
         )
         
-        # Build vehicle info
-        vehicle = estimate.vehicle
-        vehicle_info = VehicleInfoSchema(
-            vin=vehicle.vin,
-            year=vehicle.year,
-            make=vehicle.make,
-            model=vehicle.model,
-            trim=vehicle.trim,
-            engine=vehicle.engine,
-            mileage=vehicle.mileage
-        )
+        # Build vehicle info & Customer info
+        # Using getattr to access forcefully attached relationships
+        # This bypasses Pydantic model dictionary lookups which might miss the extra fields
+        vehicle_info = None
+        customer_info = None
         
-        # Build customer info
-        customer = vehicle.customer
-        customer_info = CustomerInfoSchema(
-            firstName=customer.first_name,
-            lastName=customer.last_name,
-            email=customer.email,
-            phone=customer.phone
-        )
+        vehicle = getattr(estimate, 'vehicle', None)
+        
+        if vehicle:
+            vehicle_info = VehicleInfoSchema(
+                vin=vehicle.vin or "UNKNOWN",
+                year=vehicle.year,
+                make=vehicle.make,
+                model=vehicle.model,
+                trim=vehicle.trim,
+                engine=vehicle.engine,
+                mileage=vehicle.mileage
+            )
+            
+            # Access customer from the vehicle object
+            customer = getattr(vehicle, 'customer', None)
+            
+            if customer:
+                customer_info = CustomerInfoSchema(
+                    firstName=customer.first_name or "Unknown",
+                    lastName=customer.last_name or "",
+                    email=customer.email,
+                    phone=customer.phone or ""
+                )
+        
+        # Fallbacks if objects are missing
+        if not vehicle_info:
+            vehicle_info = VehicleInfoSchema(
+                vin="UNKNOWN",
+                year=None,
+                make="Unknown",
+                model="Vehicle", 
+                trim=None,
+                engine=None,
+                mileage=None
+            )
+            
+        if not customer_info:
+            customer_info = CustomerInfoSchema(
+                firstName="Unknown",
+                lastName="Customer",
+                email=None,
+                phone="000-000-0000"
+            )
         
         return EstimateResponseSchema(
-            estimateId=estimate.id,
+            estimateId=str(estimate.id),
             status=estimate.status.value,
             publicToken=estimate.public_token,
             vehicleInfo=vehicle_info,
@@ -277,14 +250,8 @@ class EstimateService:
         )
 
 
-def get_estimate_service(db: Session) -> EstimateService:
+def get_estimate_service() -> EstimateService:
     """
     Factory function to create EstimateService instance.
-    
-    Args:
-        db: Database session
-        
-    Returns:
-        EstimateService instance
     """
-    return EstimateService(db)
+    return EstimateService()

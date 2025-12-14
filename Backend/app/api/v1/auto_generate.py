@@ -5,13 +5,15 @@ Single endpoint that auto-generates complete estimate from intake information.
 Now includes: recall check, warranty check, vendor scoring, part conditions, cleaning kits.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, Dict
 from decimal import Decimal
 
-from app.core.database import get_db
+
 from app.services.auto_generate_service import auto_generate_service
+import traceback
+import os
 
 router = APIRouter()
 
@@ -75,8 +77,7 @@ class AutoGenerateRequest(BaseModel):
     """
 )
 async def auto_generate_estimate(
-    request: AutoGenerateRequest,
-    db: Session = Depends(get_db)
+    request: AutoGenerateRequest
 ):
     """
     Auto-generate complete estimate from intake information.
@@ -122,6 +123,12 @@ async def auto_generate_estimate(
         return result
         
     except Exception as e:
+        # Debug logging
+        with open("error_log.txt", "w") as f:
+            f.write(str(e))
+            f.write("\n")
+            f.write(traceback.format_exc())
+            
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Auto-generation failed: {str(e)}"

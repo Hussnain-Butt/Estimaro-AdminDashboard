@@ -1,306 +1,327 @@
-"""
-Estimate Repository - Data Access Layer
-
-Handles all database operations for estimates, following the Repository Pattern.
-Separates data access logic from business logic.
-"""
-from typing import Optional, List
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import desc
+from typing import Optional, List, Dict
 from decimal import Decimal
 import uuid
+import logging
+from beanie import PydanticObjectId
 
+# Models
 from app.models.estimate import Estimate, EstimateStatus
 from app.models.estimate_item import EstimateItem, ItemType
 from app.models.vehicle import Vehicle
 from app.models.customer import Customer
+
+# Schemas
 from app.schemas.estimate import (
     EstimateCreateSchema,
     LaborItemSchema,
     PartItemSchema
 )
 
+# Logger setup
+logger = logging.getLogger(__name__)
 
 class EstimateRepository:
-    """Repository for estimate database operations"""
+    """
+    Repository for estimate database operations (MongoDB/Beanie).
+    Handles data persistence and relationship management.
+    """
     
-    def __init__(self, db: Session):
-        """
-        Initialize repository with database session.
-        
-        Args:
-            db: SQLAlchemy database session
-        """
-        self.db = db
+    def __init__(self, db=None):
+        pass
     
-    def create_estimate(
+    async def create_estimate(
         self,
         estimate_data: EstimateCreateSchema,
-        advisor_id: int,
-        breakdown: dict
+        advisor_id: str,
+        breakdown: Optional[Dict] = None
     ) -> Estimate:
         """
         Create a new estimate with all related data.
-        
-        This method:
-        1. Creates or retrieves customer
-        2. Creates or retrieves vehicle
-        3. Creates estimate
-        4. Creates estimate items (labor and parts)
-        
-        Args:
-            estimate_data: Estimate creation data
-            advisor_id: ID of the advisor creating the estimate
-            breakdown: Calculation breakdown (subtotal, tax, total)
+        """
+        try:
+            # Step 1: Create or get customer
+            customer = await self._get_or_create_customer(estimate_data.customerInfo)
             
-        Returns:
-            Created estimate with all relationships loaded
-        """
-        # Step 1: Create or get customer
-        customer = self._get_or_create_customer(estimate_data.customerInfo)
-        
-        # Step 2: Create or get vehicle
-        vehicle = self._get_or_create_vehicle(
-            estimate_data.vehicleInfo,
-            customer.id
-        )
-        
-        # Step 3: Create estimate
-        estimate = Estimate(
-            vehicle_id=vehicle.id,
-            advisor_id=advisor_id,
-            service_request_text=estimate_data.serviceRequest,
-            status=EstimateStatus.DRAFT,
-            subtotal=Decimal(str(breakdown['subtotal'])),
-            tax=Decimal(str(breakdown['taxAmount'])),
-            total=Decimal(str(breakdown['total'])),
-            public_token=str(uuid.uuid4())
-        )
-        
-        self.db.add(estimate)
-        self.db.flush()  # Get estimate ID without committing
-        
-        # Step 4: Create estimate items
-        self._create_estimate_items(
-            estimate.id,
-            estimate_data.laborItems,
-            estimate_data.partsItems
-        )
-        
-        self.db.commit()
-        self.db.refresh(estimate)
-        
-        # Load all relationships
-        return self.get_by_id(estimate.id)
-    
-    def get_by_id(self, estimate_id: int) -> Optional[Estimate]:
-        """
-        Get estimate by ID with all relationships loaded.
-        
-        Args:
-            estimate_id: Estimate ID
+            # Step 2: Create or get vehicle
+            vehicle = await self._get_or_create_vehicle(
+                estimate_data.vehicleInfo,
+                str(customer.id)
+            )
             
-        Returns:
-            Estimate with relationships or None
-        """
-        return self.db.query(Estimate).options(
-            joinedload(Estimate.vehicle).joinedload(Vehicle.customer),
-            joinedload(Estimate.advisor),
-            joinedload(Estimate.items)
-        ).filter(Estimate.id == estimate_id).first()
-    
-    def get_by_token(self, public_token: str) -> Optional[Estimate]:
-        """
-        Get estimate by public token (for customer portal).
-        
-        Args:
-            public_token: Public UUID token
+            # Step 3: Create items list
+            items = self._create_estimate_items(
+                estimate_data.laborItems,
+                estimate_data.partsItems
+            )
             
-        Returns:
-            Estimate or None
-        """
-        return self.db.query(Estimate).options(
-            joinedload(Estimate.vehicle).joinedload(Vehicle.customer),
-            joinedload(Estimate.items)
-        ).filter(Estimate.public_token == public_token).first()
+            # Safe breakdown handling
+            if breakdown is None:
+                breakdown = {}
+                calc_subtotal = sum(item.total for item in items)
+                breakdown['subtotal'] = calc_subtotal
+                breakdown['taxAmount'] = 0.0
+                breakdown['total'] = calc_subtotal
+
+            # Step 4: Create estimate
+            estimate = Estimate(
+                vehicle_id=str(vehicle.id),
+                advisor_id=str(advisor_id) if advisor_id else None,
+                service_request_text=estimate_data.serviceRequest,
+                status=EstimateStatus.DRAFT,
+                subtotal=float(breakdown.get('subtotal', 0.0)),
+                tax=float(breakdown.get('taxAmount', 0.0)),
+                total=float(breakdown.get('total', 0.0)),
+                public_token=str(uuid.uuid4()),
+                items=items
+            )
+            
+            await estimate.insert()
+            
+            # FORCE ATTACH objects for return (Bypass Pydantic validation)
+            object.__setattr__(estimate, 'vehicle', vehicle)
+            object.__setattr__(vehicle, 'customer', customer)
+            
+            return estimate
+
+        except Exception as e:
+            logger.error(f"Failed to create estimate: {str(e)}")
+            raise e
     
-    def get_by_advisor(
+    async def get_by_id(self, estimate_id: str) -> Optional[Estimate]:
+        """Get estimate by ID with relationships."""
+        try:
+            if not PydanticObjectId.is_valid(estimate_id):
+                return None
+            estimate = await Estimate.get(PydanticObjectId(estimate_id))
+        except Exception as e:
+            logger.error(f"Error fetching estimate by ID {estimate_id}: {e}")
+            return None
+            
+        if not estimate:
+            return None
+            
+        await self._populate_relations(estimate)
+        return estimate
+    
+    async def get_by_token(self, public_token: str) -> Optional[Estimate]:
+        """Get estimate by public token."""
+        try:
+            estimate = await Estimate.find_one(Estimate.public_token == public_token)
+            if not estimate:
+                return None
+                
+            await self._populate_relations(estimate)
+            return estimate
+        except Exception:
+            return None
+    
+    async def get_by_advisor(
         self,
-        advisor_id: int,
+        advisor_id: str,
         status: Optional[EstimateStatus] = None,
         limit: int = 50
     ) -> List[Estimate]:
-        """
-        Get estimates by advisor with optional status filter.
-        
-        Args:
-            advisor_id: Advisor ID
-            status: Optional status filter
-            limit: Maximum number of results
+        """Get estimates by advisor."""
+        try:
+            if advisor_id == "system":
+                 query = Estimate.find_all()
+            else:
+                 query = Estimate.find(Estimate.advisor_id == str(advisor_id))
             
-        Returns:
-            List of estimates
-        """
-        query = self.db.query(Estimate).options(
-            joinedload(Estimate.vehicle).joinedload(Vehicle.customer),
-            joinedload(Estimate.items)
-        ).filter(Estimate.advisor_id == advisor_id)
-        
-        if status:
-            query = query.filter(Estimate.status == status)
-        
-        return query.order_by(desc(Estimate.created_at)).limit(limit).all()
+            if status:
+                query = query.find(Estimate.status == status)
+                
+            estimates = await query.sort("-created_at").limit(limit).to_list()
+            
+            # Populate relations for each estimate
+            for est in estimates:
+                await self._populate_relations(est)
+                
+            return estimates
+        except Exception as e:
+            logger.error(f"Error getting estimates for advisor {advisor_id}: {e}")
+            return []
     
-    def update_status(
+    async def update_status(
         self,
-        estimate_id: int,
+        estimate_id: str,
         status: EstimateStatus
     ) -> Optional[Estimate]:
-        """
-        Update estimate status.
-        
-        Args:
-            estimate_id: Estimate ID
-            status: New status
-            
-        Returns:
-            Updated estimate or None
-        """
-        estimate = self.get_by_id(estimate_id)
+        """Update estimate status."""
+        estimate = await self.get_by_id(estimate_id)
         if not estimate:
             return None
         
         estimate.status = status
-        self.db.commit()
-        self.db.refresh(estimate)
-        
+        await estimate.save()
         return estimate
     
-    def set_expiration(
+    async def set_expiration(
         self,
-        estimate_id: int,
+        estimate_id: str,
         days: int = 7
     ) -> Optional[Estimate]:
-        """
-        Set estimate expiration date.
-        
-        Args:
-            estimate_id: Estimate ID
-            days: Days until expiration
-            
-        Returns:
-            Updated estimate or None
-        """
-        estimate = self.get_by_id(estimate_id)
+        """Set estimate expiration date."""
+        estimate = await self.get_by_id(estimate_id)
         if not estimate:
             return None
         
         estimate.set_expiration(days)
-        self.db.commit()
-        self.db.refresh(estimate)
-        
+        await estimate.save()
         return estimate
+        
+    async def _populate_relations(self, estimate: Estimate):
+        """
+        Manually fetch and attach vehicle and customer.
+        Uses object.__setattr__ to bypass Pydantic model restrictions.
+        """
+        if not estimate.vehicle_id:
+            return
+
+        try:
+            vehicle = None
+            
+            # 1. Fetch Vehicle (Try ObjectId first, then string)
+            if PydanticObjectId.is_valid(estimate.vehicle_id):
+                vehicle = await Vehicle.get(PydanticObjectId(estimate.vehicle_id))
+            
+            if not vehicle:
+                # Fallback: Try string lookup
+                vehicle = await Vehicle.get(estimate.vehicle_id)
+                
+            if vehicle:
+                # FORCE ATTACH vehicle to estimate
+                object.__setattr__(estimate, 'vehicle', vehicle)
+                
+                # 2. Fetch Customer if Vehicle exists
+                if vehicle.customer_id:
+                    customer = None
+                    cust_id = vehicle.customer_id
+                    
+                    # Try converting to PydanticObjectId
+                    if PydanticObjectId.is_valid(cust_id):
+                        customer = await Customer.get(PydanticObjectId(cust_id))
+                    
+                    # Fallback: String lookup
+                    if not customer:
+                        customer = await Customer.get(cust_id)
+                        
+                    if customer:
+                        # FORCE ATTACH customer to vehicle (Critical Fix)
+                        object.__setattr__(vehicle, 'customer', customer)
+                        print(f"DEBUG: Linked Customer {customer.first_name} to Vehicle {vehicle.vin}")
+                    else:
+                        print(f"DEBUG: Customer ID {cust_id} found in vehicle but Customer not found in DB.")
+                else:
+                    print(f"DEBUG: Vehicle {vehicle.id} has NO customer_id linked.")
+            else:
+                print(f"DEBUG: Vehicle ID {estimate.vehicle_id} not found.")
+
+        except Exception as e:
+            # Ensure we don't crash, just log and continue
+            print(f"DEBUG: Exception in _populate_relations: {e}")
+            pass
     
-    # ========================================================================
-    # Private Helper Methods
-    # ========================================================================
-    
-    def _get_or_create_customer(self, customer_info) -> Customer:
+    async def _get_or_create_customer(self, customer_info) -> Customer:
         """Get existing customer or create new one."""
-        # Try to find by email or phone
         customer = None
         
-        if customer_info.email:
-            customer = self.db.query(Customer).filter(
-                Customer.email == customer_info.email
-            ).first()
+        # Normalize inputs
+        email = customer_info.email.strip().lower() if customer_info.email else None
+        phone = customer_info.phone.strip() if customer_info.phone else None
+        first_name = customer_info.firstName.strip() if customer_info.firstName else "Unknown"
+        last_name = customer_info.lastName.strip() if customer_info.lastName else ""
         
-        if not customer and customer_info.phone:
-            customer = self.db.query(Customer).filter(
-                Customer.phone == customer_info.phone
-            ).first()
+        # Try finding by Email
+        if email:
+            customer = await Customer.find_one(Customer.email == email)
         
+        # Try finding by Phone
+        if not customer and phone:
+            customer = await Customer.find_one(Customer.phone == phone)
+        
+        # Create if not found
         if not customer:
             customer = Customer(
-                first_name=customer_info.firstName,
-                last_name=customer_info.lastName,
-                email=customer_info.email,
-                phone=customer_info.phone
+                first_name=first_name,
+                last_name=last_name,
+                email=email,
+                phone=phone
             )
-            self.db.add(customer)
-            self.db.flush()
+            await customer.insert()
+        else:
+            # Update info if valid names provided and previous were placeholders
+            if customer.first_name == "Unknown" and first_name != "Unknown":
+                customer.first_name = first_name
+                customer.last_name = last_name
+                await customer.save()
         
         return customer
     
-    def _get_or_create_vehicle(self, vehicle_info, customer_id: int) -> Vehicle:
+    async def _get_or_create_vehicle(self, vehicle_info, customer_id: str) -> Vehicle:
         """Get existing vehicle or create new one."""
-        # Try to find by VIN
-        vehicle = self.db.query(Vehicle).filter(
-            Vehicle.vin == vehicle_info.vin
-        ).first()
+        search_vin = vehicle_info.vin.strip().upper() if vehicle_info.vin else None
+        
+        if not search_vin:
+            search_vin = f"TEMP-{uuid.uuid4().hex[:8].upper()}"
+        
+        vehicle = await Vehicle.find_one(Vehicle.vin == search_vin)
         
         if not vehicle:
             vehicle = Vehicle(
-                customer_id=customer_id,
-                vin=vehicle_info.vin,
-                year=vehicle_info.year,
-                make=vehicle_info.make,
-                model=vehicle_info.model,
+                customer_id=str(customer_id), # Ensure it's a string
+                vin=search_vin,
+                year=vehicle_info.year or 0,
+                make=vehicle_info.make or "Unknown",
+                model=vehicle_info.model or "Unknown",
                 trim=vehicle_info.trim,
                 engine=vehicle_info.engine,
-                mileage=vehicle_info.mileage
+                mileage=vehicle_info.mileage or 0
             )
-            self.db.add(vehicle)
-            self.db.flush()
+            await vehicle.insert()
         else:
-            # Update vehicle info if changed
-            vehicle.customer_id = customer_id
-            if vehicle_info.year:
-                vehicle.year = vehicle_info.year
-            if vehicle_info.make:
-                vehicle.make = vehicle_info.make
-            if vehicle_info.model:
-                vehicle.model = vehicle_info.model
-            if vehicle_info.trim:
-                vehicle.trim = vehicle_info.trim
-            if vehicle_info.engine:
-                vehicle.engine = vehicle_info.engine
-            if vehicle_info.mileage:
-                vehicle.mileage = vehicle_info.mileage
+            # Update customer association (Crucial)
+            vehicle.customer_id = str(customer_id)
+            
+            # Update details
+            if vehicle_info.year: vehicle.year = vehicle_info.year
+            if vehicle_info.make: vehicle.make = vehicle_info.make
+            if vehicle_info.model: vehicle.model = vehicle_info.model
+            if vehicle_info.trim: vehicle.trim = vehicle_info.trim
+            if vehicle_info.engine: vehicle.engine = vehicle_info.engine
+            if vehicle_info.mileage: vehicle.mileage = vehicle_info.mileage
+            await vehicle.save()
         
         return vehicle
     
     def _create_estimate_items(
         self,
-        estimate_id: int,
         labor_items: List[LaborItemSchema],
         parts_items: List[PartItemSchema]
-    ):
-        """Create estimate items (labor and parts)."""
-        # Create labor items
-        for labor in labor_items:
-            item = EstimateItem(
-                estimate_id=estimate_id,
-                item_type=ItemType.LABOR,
-                description=labor.description,
-                quantity=Decimal("1"),  # Labor is always quantity 1
-                unit_price=Decimal(str(labor.rate)),
-                labor_hours=Decimal(str(labor.hours)),
-                total=Decimal(str(labor.total))
-            )
-            self.db.add(item)
+    ) -> List[EstimateItem]:
+        """Create estimate items list."""
+        items = []
         
-        # Create parts items
+        for labor in labor_items:
+            items.append(EstimateItem(
+                item_type=ItemType.LABOR.value,
+                description=labor.description or "Labor",
+                quantity=1.0,
+                unit_price=float(labor.rate or 0),
+                labor_hours=float(labor.hours or 0),
+                total=float(labor.total or 0)
+            ))
+        
         for part in parts_items:
-            item = EstimateItem(
-                estimate_id=estimate_id,
-                item_type=ItemType.PART,
-                description=part.description,
-                quantity=Decimal(str(part.quantity)),
-                unit_price=Decimal(str(part.cost)),
-                markup_percentage=Decimal(str(part.markup)),
-                total=Decimal(str(part.total)),
+            items.append(EstimateItem(
+                item_type=ItemType.PART.value,
+                description=part.description or "Part",
+                quantity=float(part.quantity or 1),
+                unit_price=float(part.cost or 0),
+                markup_percentage=float(part.markup or 0),
+                total=float(part.total or 0),
                 vendor_name=part.vendor,
                 part_number=part.partNumber
-            )
-            self.db.add(item)
+            ))
+            
+        return items

@@ -1,36 +1,31 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
-from sqlalchemy.orm import relationship
+from beanie import Document, Indexed
+from pydantic import Field
 from datetime import datetime
-from app.core.database import Base
+from typing import Optional
 
-
-class Vehicle(Base):
+class Vehicle(Document):
     """
     Vehicle model.
     Represents customer vehicles that require service estimates.
     """
-    __tablename__ = "vehicles"
+    vin: str = Indexed(unique=True)
+    customer_id: Optional[str] = None  # Reference to Customer Document ID
     
-    id = Column(Integer, primary_key=True, index=True)
-    customer_id = Column(Integer, ForeignKey("customers.id", ondelete="CASCADE"), nullable=False)
-    vin = Column(String(17), unique=True, index=True, nullable=False)
-    year = Column(Integer, nullable=True)
-    make = Column(String(100), nullable=True)
-    model = Column(String(100), nullable=True)
-    trim = Column(String(100), nullable=True)
-    engine = Column(String(100), nullable=True)
-    mileage = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    year: Optional[int] = None
+    make: Optional[str] = None
+    model: Optional[str] = None
+    trim: Optional[str] = None
+    engine: Optional[str] = None
+    mileage: Optional[int] = None
     
-    # Relationships
-    customer = relationship("Customer", back_populates="vehicles")
-    estimates = relationship("Estimate", back_populates="vehicle", cascade="all, delete-orphan")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
     
-    def __repr__(self):
-        return f"<Vehicle(id={self.id}, vin='{self.vin}', {self.year} {self.make} {self.model})>"
+    class Settings:
+        name = "vehicles"
     
     @property
     def display_name(self):
         """Return formatted vehicle name."""
         parts = [str(self.year) if self.year else None, self.make, self.model, self.trim]
         return " ".join(filter(None, parts))
+

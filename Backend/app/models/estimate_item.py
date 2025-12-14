@@ -1,52 +1,50 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Numeric, Enum as SQLEnum
-from sqlalchemy.orm import relationship
+from pydantic import BaseModel, Field, BeforeValidator
+from decimal import Decimal
+from typing import Optional, Annotated, Any
 import enum
-from app.core.database import Base
+import uuid
 
+def coerce_float(v: Any) -> float:
+    if v is None:
+        return 0.0
+    try:
+        # Handle Decimal128 and other types by converting to string first
+        return float(str(v))
+    except (ValueError, TypeError):
+        return 0.0
 
 class ItemType(str, enum.Enum):
     """Estimate item type enumeration."""
     LABOR = "labor"
     PART = "part"
 
-
-class EstimateItem(Base):
+class EstimateItem(BaseModel):
     """
     Estimate Item model.
-    Represents individual labor or part items in an estimate.
+    Embedded in Estimate document.
     """
-    __tablename__ = "estimate_items"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    estimate_id = Column(Integer, ForeignKey("estimates.id", ondelete="CASCADE"), nullable=False, index=True)
-    item_type = Column(SQLEnum(ItemType), nullable=False)
-    description = Column(String(500), nullable=False)
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    item_type: str = "part" # Fallback to string to avoid Enum validation errors
+    description: str = "Unknown Item"
     
     # Common fields
-    quantity = Column(Numeric(10, 2), default=1.00, nullable=False)
-    unit_price = Column(Numeric(10, 2), nullable=False)
-    markup_percentage = Column(Numeric(5, 2), default=0.00, nullable=True)  # For parts
-    total = Column(Numeric(10, 2), nullable=False)
+    quantity: Annotated[float, BeforeValidator(coerce_float)] = 1.0
+    unit_price: Annotated[float, BeforeValidator(coerce_float)] = 0.0
+    markup_percentage: Optional[Annotated[float, BeforeValidator(coerce_float)]] = 0.0
+    total: Annotated[float, BeforeValidator(coerce_float)] = 0.0
     
     # Part-specific fields
-    vendor_name = Column(String(100), nullable=True)
-    part_number = Column(String(100), nullable=True)
+    vendor_name: Optional[str] = None
+    part_number: Optional[str] = None
     
     # Labor-specific fields
-    labor_hours = Column(Numeric(5, 2), nullable=True)
-    
-    # Relationships
-    estimate = relationship("Estimate", back_populates="items")
-    
-    def __repr__(self):
-        return f"<EstimateItem(id={self.id}, type='{self.item_type}', description='{self.description[:30]}...', total={self.total})>"
+    labor_hours: Optional[Annotated[float, BeforeValidator(coerce_float)]] = None
     
     @property
     def is_labor(self):
-        """Check if item is labor type."""
-        return self.item_type == ItemType.LABOR
+        return self.item_type == "labor"
     
     @property
     def is_part(self):
-        """Check if item is part type."""
-        return self.item_type == ItemType.PART
+        return self.item_type == "part"
+

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { gsap } from 'gsap'
 import { ExclamationCircleIcon, TrashIcon, PlusIcon, SparklesIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline'
-import { autoGenerateEstimate, pushToTekmetric, generateApprovalLink } from '../services/api'
+import { autoGenerateEstimate, pushToTekmetric, generateApprovalLink, createDraftEstimate } from '../services/api'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import VendorCompareStep from './estimate-steps/VendorCompareStep'
@@ -270,7 +270,7 @@ const PreviewStep = ({ data, calculatedTotals, onPushToTekmetric, onSendApproval
   )
 }
 
-const ActionsStep = ({ data, calculatedTotals, onDownloadPDF }) => {
+const ActionsStep = ({ data, calculatedTotals, onDownloadPDF, onSaveDraft }) => {
   const hasData = data.laborItems.length > 0 || data.partsItems.length > 0
   const isReady = hasData
 
@@ -302,14 +302,18 @@ const ActionsStep = ({ data, calculatedTotals, onDownloadPDF }) => {
             <h3 className="text-xl font-bold text-success mb-2">Estimate Ready!</h3>
             <p className="text-text-secondary mb-6">Auto-generated estimate is complete and ready to send.</p>
 
-            {/* PDF Download Button */}
-            <button
-              onClick={onDownloadPDF}
-              className="bg-gradient-to-r from-accent to-accent-dark hover:from-accent-dark hover:to-accent text-background font-bold py-4 px-8 rounded-lg transition-all duration-300 flex items-center gap-3 shadow-lg shadow-accent/30 transform hover:scale-105"
-            >
-              <ArrowDownTrayIcon className="h-6 w-6" />
-              Download PDF Estimate
-            </button>
+            {/* Action Buttons */}
+            <div className="flex flex-col sm:flex-row gap-4 w-full justify-center">
+              {/* AUTO-SAVE ENABLED: Manual Save button removed */}
+
+              <button
+                onClick={onDownloadPDF}
+                className="bg-gradient-to-r from-accent to-accent-dark hover:from-accent-dark hover:to-accent text-background font-bold py-4 px-8 rounded-lg transition-all duration-300 flex items-center gap-3 shadow-lg shadow-accent/30 transform hover:scale-105"
+              >
+                <ArrowDownTrayIcon className="h-6 w-6" />
+                Download PDF Estimate
+              </button>
+            </div>
           </div>
 
           {/* Estimate Summary */}
@@ -412,9 +416,15 @@ const NewEstimate = () => {
       const responseData = result.data
       const estimateData = responseData.estimate_data
 
-      // Update form data
-      setFormData(prev => ({
-        ...prev,
+      // Create merged data object for immediate saving
+      const mergedData = {
+        vin: formData.vin,
+        serviceRequest: formData.serviceRequest,
+        customerName: formData.customerName,
+        customerEmail: formData.customerEmail,
+        customerPhone: formData.customerPhone,
+        odometer: formData.odometer,
+        // Use response data for vehicle info
         vehicleInfo: estimateData.vehicleInfo,
         laborItems: estimateData.laborItems.map((item, idx) => ({
           id: idx + 1,
@@ -435,6 +445,14 @@ const NewEstimate = () => {
           vendor: item.vendor,
           reasonBadge: item.reason_badge // Map reason badge
         }))
+      }
+
+      // Update form data state
+      setFormData(prev => ({
+        ...prev,
+        vehicleInfo: mergedData.vehicleInfo,
+        laborItems: mergedData.laborItems,
+        partsItems: mergedData.partsItems
       }))
 
       // Update totals with cleaning kit
@@ -465,12 +483,51 @@ const NewEstimate = () => {
       }
 
       autoProgressSteps()
+
+      // AUTO-SAVE: Save to database immediately using mergedData
+      await handleSaveDraft(true, mergedData)
     } else {
       alert(`Error: ${result.error}`)
     }
 
     setIsGenerating(false)
-    setIsGenerating(false)
+  }
+
+  // Helper to prepare payload
+  const prepareEstimatePayload = (dataToUse = formData) => {
+    return {
+      vin: dataToUse.vin,
+      vehicleYear: dataToUse.vehicleInfo?.year,
+      vehicleMake: dataToUse.vehicleInfo?.make,
+      vehicleModel: dataToUse.vehicleInfo?.model,
+      vehicleTrim: dataToUse.vehicleInfo?.trim,
+      vehicleEngine: dataToUse.vehicleInfo?.engine,
+      odometer: dataToUse.odometer,
+      customerFirstName: dataToUse.customerName.split(' ')[0],
+      customerLastName: dataToUse.customerName.split(' ').slice(1).join(' ') || '',
+      customerEmail: dataToUse.customerEmail,
+      customerPhone: dataToUse.customerPhone,
+      serviceRequest: dataToUse.serviceRequest,
+      laborItems: dataToUse.laborItems,
+      partsItems: dataToUse.partsItems
+    }
+  }
+
+  // Save as Draft Handler
+  const handleSaveDraft = async (silent = false, overrideData = null) => {
+    if (!silent) setIsPushing(true) // Reuse pushing state or add new one
+
+    const payload = prepareEstimatePayload(overrideData || formData)
+    const result = await createDraftEstimate(payload)
+
+    if (result.success) {
+      if (!silent) alert(`Estimate Saved! ID: ${result.data.estimateId}`)
+      return result.data
+    } else {
+      if (!silent) alert(`Failed to save draft: ${result.error}`)
+      return null
+    }
+    if (!silent) setIsPushing(false)
   }
 
   // Push to Tekmetric
@@ -500,7 +557,18 @@ const NewEstimate = () => {
   // Send Approval Link
   const handleSendApproval = async () => {
     setIsSending(true)
-    const result = await generateApprovalLink("EST-TEMP-ID", {
+
+    // 1. Save draft first to get ID
+    const savedEstimate = await handleSaveDraft(true) // Silent save
+
+    if (!savedEstimate) {
+      alert("Could not save estimate to database. Cannot generate link.")
+      setIsSending(false)
+      return
+    }
+
+    // 2. Generate link with real ID
+    const result = await generateApprovalLink(savedEstimate.estimateId, {
       customer: {
         name: formData.customerName,
         phone: formData.customerPhone,
@@ -688,7 +756,12 @@ const NewEstimate = () => {
           isSending={isSending}
         />
       case 5:
-        return <ActionsStep data={formData} calculatedTotals={calculatedTotals} onDownloadPDF={handleDownloadPDF} />
+        return <ActionsStep
+          data={formData}
+          calculatedTotals={calculatedTotals}
+          onDownloadPDF={handleDownloadPDF}
+          onSaveDraft={() => handleSaveDraft(false)}
+        />
       default:
         return <IntakeStep data={formData} updateData={updateData} />
     }

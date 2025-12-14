@@ -1,0 +1,268 @@
+Traceback (most recent call last):
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\errors.py", line 162, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\cors.py", line 91, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\cors.py", line 146, in simple_response
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\exceptions.py", line 79, in __call__
+    raise exc
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\exceptions.py", line 68, in __call__
+    await self.app(scope, receive, sender)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\middleware\asyncexitstack.py", line 20, in __call__
+    raise e
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\middleware\asyncexitstack.py", line 17, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 718, in __call__
+    await route.handle(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 66, in app
+    response = await func(request)
+               ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 274, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        dependant=dependant, values=values, is_coroutine=is_coroutine
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 191, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\api\v1\estimates.py", line 99, in list_estimates
+    return await service.get_advisor_estimates("system", status_filter)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\services\estimate_service.py", line 128, in get_advisor_estimates
+    estimates = await self.repository.get_by_advisor(advisor_id, status_enum)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\repositories\estimate_repository.py", line 107, in get_by_advisor
+    estimates = await query.sort("-created_at").limit(limit).to_list()
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\beanie\odm\queries\cursor.py", line 85, in to_list
+    parse_obj(projection, i, lazy_parse=self.lazy_parse)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\beanie\odm\utils\parsing.py", line 146, in parse_obj
+    result = parse_model(model, data)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\beanie\odm\utils\pydantic.py", line 37, in parse_model
+    return model_type.model_validate(data)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\pydantic\main.py", line 627, in model_validate
+    return cls.__pydantic_validator__.validate_python(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        obj, strict=strict, from_attributes=from_attributes, context=context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+pydantic_core._pydantic_core.ValidationError: 3 validation errors for Estimate
+subtotal
+  Input should be a valid number [type=float_type, input_value=Decimal128('0.00'), input_type=Decimal128]
+    For further information visit https://errors.pydantic.dev/2.10/v/float_type
+tax
+  Input should be a valid number [type=float_type, input_value=Decimal128('0.00'), input_type=Decimal128]
+    For further information visit https://errors.pydantic.dev/2.10/v/float_type
+total
+  Input should be a valid number [type=float_type, input_value=Decimal128('12.00'), input_type=Decimal128]
+    For further information visit https://errors.pydantic.dev/2.10/v/float_type
+
+--- Error at http://localhost:8000/api/v1/estimates/draft ---
+Traceback (most recent call last):
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\errors.py", line 162, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\cors.py", line 91, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\cors.py", line 146, in simple_response
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\exceptions.py", line 79, in __call__
+    raise exc
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\exceptions.py", line 68, in __call__
+    await self.app(scope, receive, sender)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\middleware\asyncexitstack.py", line 20, in __call__
+    raise e
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\middleware\asyncexitstack.py", line 17, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 718, in __call__
+    await route.handle(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 66, in app
+    response = await func(request)
+               ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 274, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        dependant=dependant, values=values, is_coroutine=is_coroutine
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 191, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\api\v1\estimates.py", line 58, in create_draft_estimate
+    return await service.create_draft_estimate(estimate_data, "system")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\services\estimate_service.py", line 88, in create_draft_estimate
+    estimate = await self.repository.create_estimate(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\repositories\estimate_repository.py", line 72, in create_estimate
+    estimate.vehicle = vehicle
+    ^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\pydantic\main.py", line 926, in __setattr__
+    raise ValueError(f'"{self.__class__.__name__}" object has no field "{name}"')
+ValueError: "Estimate" object has no field "vehicle"
+
+--- Error at http://localhost:8000/api/v1/estimates/draft ---
+Traceback (most recent call last):
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\errors.py", line 162, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\cors.py", line 91, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\cors.py", line 146, in simple_response
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\exceptions.py", line 79, in __call__
+    raise exc
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\exceptions.py", line 68, in __call__
+    await self.app(scope, receive, sender)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\middleware\asyncexitstack.py", line 20, in __call__
+    raise e
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\middleware\asyncexitstack.py", line 17, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 718, in __call__
+    await route.handle(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 66, in app
+    response = await func(request)
+               ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 274, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        dependant=dependant, values=values, is_coroutine=is_coroutine
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 191, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\api\v1\estimates.py", line 58, in create_draft_estimate
+    return await service.create_draft_estimate(estimate_data, "system")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\services\estimate_service.py", line 88, in create_draft_estimate
+    estimate = await self.repository.create_estimate(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\repositories\estimate_repository.py", line 90, in create_estimate
+    raise e
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\repositories\estimate_repository.py", line 84, in create_estimate
+    estimate.vehicle = vehicle
+    ^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\pydantic\main.py", line 926, in __setattr__
+    raise ValueError(f'"{self.__class__.__name__}" object has no field "{name}"')
+ValueError: "Estimate" object has no field "vehicle"
+
+--- Error at http://localhost:8000/api/v1/estimates/draft ---
+Traceback (most recent call last):
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\errors.py", line 162, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\cors.py", line 91, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\cors.py", line 146, in simple_response
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\exceptions.py", line 79, in __call__
+    raise exc
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\exceptions.py", line 68, in __call__
+    await self.app(scope, receive, sender)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\middleware\asyncexitstack.py", line 20, in __call__
+    raise e
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\middleware\asyncexitstack.py", line 17, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 718, in __call__
+    await route.handle(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 66, in app
+    response = await func(request)
+               ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 274, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        dependant=dependant, values=values, is_coroutine=is_coroutine
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 191, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\api\v1\estimates.py", line 58, in create_draft_estimate
+    return await service.create_draft_estimate(estimate_data, "system")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\services\estimate_service.py", line 88, in create_draft_estimate
+    estimate = await self.repository.create_estimate(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\repositories\estimate_repository.py", line 90, in create_estimate
+    raise e
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\repositories\estimate_repository.py", line 84, in create_estimate
+    estimate.vehicle = vehicle
+    ^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\pydantic\main.py", line 926, in __setattr__
+    raise ValueError(f'"{self.__class__.__name__}" object has no field "{name}"')
+ValueError: "Estimate" object has no field "vehicle"
+
+--- Error at http://localhost:8000/api/v1/estimates/draft ---
+Traceback (most recent call last):
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\errors.py", line 162, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\cors.py", line 91, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\cors.py", line 146, in simple_response
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\exceptions.py", line 79, in __call__
+    raise exc
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\exceptions.py", line 68, in __call__
+    await self.app(scope, receive, sender)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\middleware\asyncexitstack.py", line 20, in __call__
+    raise e
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\middleware\asyncexitstack.py", line 17, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 718, in __call__
+    await route.handle(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 66, in app
+    response = await func(request)
+               ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 274, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        dependant=dependant, values=values, is_coroutine=is_coroutine
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 191, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\api\v1\estimates.py", line 58, in create_draft_estimate
+    return await service.create_draft_estimate(estimate_data, "system")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\services\estimate_service.py", line 88, in create_draft_estimate
+    estimate = await self.repository.create_estimate(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\repositories\estimate_repository.py", line 85, in create_estimate
+    raise e
+  File "C:\Users\DELL\Downloads\Estimaro-AdminDashboard\Backend\app\repositories\estimate_repository.py", line 79, in create_estimate
+    estimate.vehicle.customer = customer
+    ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Roaming\Python\Python313\site-packages\pydantic\main.py", line 926, in __setattr__
+    raise ValueError(f'"{self.__class__.__name__}" object has no field "{name}"')
+ValueError: "Vehicle" object has no field "customer"
