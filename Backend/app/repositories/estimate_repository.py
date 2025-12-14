@@ -40,9 +40,17 @@ class EstimateRepository:
         """
         try:
             # Step 1: Create or get customer
+            # Ensure customerInfo exists before processing
+            if not estimate_data.customerInfo:
+                raise ValueError("Customer information is required to create an estimate.")
+                
             customer = await self._get_or_create_customer(estimate_data.customerInfo)
             
             # Step 2: Create or get vehicle
+            # Ensure vehicleInfo exists before processing
+            if not estimate_data.vehicleInfo:
+                 raise ValueError("Vehicle information is required to create an estimate.")
+
             vehicle = await self._get_or_create_vehicle(
                 estimate_data.vehicleInfo,
                 str(customer.id)
@@ -78,6 +86,7 @@ class EstimateRepository:
             await estimate.insert()
             
             # FORCE ATTACH objects for return (Bypass Pydantic validation)
+            # This allows the API to return full objects without extra DB queries
             object.__setattr__(estimate, 'vehicle', vehicle)
             object.__setattr__(vehicle, 'customer', customer)
             
@@ -209,30 +218,30 @@ class EstimateRepository:
                     if customer:
                         # FORCE ATTACH customer to vehicle (Critical Fix)
                         object.__setattr__(vehicle, 'customer', customer)
-                        print(f"DEBUG: Linked Customer {customer.first_name} to Vehicle {vehicle.vin}")
                     else:
-                        print(f"DEBUG: Customer ID {cust_id} found in vehicle but Customer not found in DB.")
+                        logger.debug(f"Customer ID {cust_id} found in vehicle but Customer not found in DB.")
                 else:
-                    print(f"DEBUG: Vehicle {vehicle.id} has NO customer_id linked.")
+                    logger.debug(f"Vehicle {vehicle.id} has NO customer_id linked.")
             else:
-                print(f"DEBUG: Vehicle ID {estimate.vehicle_id} not found.")
+                logger.debug(f"Vehicle ID {estimate.vehicle_id} not found.")
 
         except Exception as e:
             # Ensure we don't crash, just log and continue
-            print(f"DEBUG: Exception in _populate_relations: {e}")
+            logger.error(f"Exception in _populate_relations: {e}")
             pass
     
     async def _get_or_create_customer(self, customer_info) -> Customer:
         """Get existing customer or create new one."""
         customer = None
         
-        # Normalize inputs
-        email = customer_info.email.strip().lower() if customer_info.email else None
-        phone = customer_info.phone.strip() if customer_info.phone else None
-        first_name = customer_info.firstName.strip() if customer_info.firstName else "Unknown"
-        last_name = customer_info.lastName.strip() if customer_info.lastName else ""
+        # Normalize inputs with safety checks
+        email = customer_info.email.strip().lower() if getattr(customer_info, 'email', None) else None
+        phone = customer_info.phone.strip() if getattr(customer_info, 'phone', None) else None
+        first_name = customer_info.firstName.strip() if getattr(customer_info, 'firstName', None) else "Unknown"
+        last_name = customer_info.lastName.strip() if getattr(customer_info, 'lastName', None) else ""
         
         # Try finding by Email
+        # NOTE: This line fails with AttributeError if Database Connection is not active
         if email:
             customer = await Customer.find_one(Customer.email == email)
         
@@ -265,6 +274,7 @@ class EstimateRepository:
         if not search_vin:
             search_vin = f"TEMP-{uuid.uuid4().hex[:8].upper()}"
         
+        # NOTE: Beanie query syntax depends on active DB connection
         vehicle = await Vehicle.find_one(Vehicle.vin == search_vin)
         
         if not vehicle:
