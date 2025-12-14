@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { gsap } from 'gsap'
 import { ExclamationCircleIcon, TrashIcon, PlusIcon, SparklesIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline'
-import { autoGenerateEstimate, pushToTekmetric, generateApprovalLink, createDraftEstimate } from '../services/api'
+import { autoGenerateEstimate, pushToTekmetric, generateApprovalLink, createDraftEstimate, updateEstimate } from '../services/api'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import VendorCompareStep from './estimate-steps/VendorCompareStep'
@@ -382,6 +382,7 @@ const NewEstimate = () => {
   const contentRef = useRef(null)
 
   const [formData, setFormData] = useState({
+    estimateId: null,
     vin: '',
     serviceRequest: '',
     customerName: '',
@@ -531,21 +532,36 @@ const NewEstimate = () => {
     }
   }
 
-  // Save as Draft Handler
+  // Save as Draft (or Update) Handler
   const handleSaveDraft = async (silent = false, overrideData = null) => {
-    if (!silent) setIsPushing(true) // Reuse pushing state or add new one
+    if (!silent) setIsPushing(true)
 
     const payload = prepareEstimatePayload(overrideData || formData)
-    const result = await createDraftEstimate(payload)
+
+    let result
+    if (formData.estimateId) {
+      // UPDATE existing estimate
+      result = await updateEstimate(formData.estimateId, payload)
+    } else {
+      // CREATE new estimate
+      result = await createDraftEstimate(payload)
+    }
 
     if (result.success) {
-      if (!silent) alert(`Estimate Saved! ID: ${result.data.estimateId}`)
+      // Store the ID so subsequent saves are updates
+      const newId = result.data.estimateId
+      if (!formData.estimateId) {
+        setFormData(prev => ({ ...prev, estimateId: newId }))
+      }
+
+      if (!silent) alert(`Estimate Saved! ID: ${newId}`)
+      if (!silent) setIsPushing(false)
       return result.data
     } else {
       if (!silent) alert(`Failed to save draft: ${result.error}`)
+      if (!silent) setIsPushing(false)
       return null
     }
-    if (!silent) setIsPushing(false)
   }
 
   // Push to Tekmetric

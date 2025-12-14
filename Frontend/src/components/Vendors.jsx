@@ -89,11 +89,11 @@ const VendorsPage = () => {
             </div>
           </div>
 
-          {/* Avg. Delivery Distance Card */}
+          {/* Avg. Delivery Time Card */}
           <div className="bg-[#1a202c] rounded-2xl p-6 shadow-xl flex flex-col justify-between">
-            <h3 className="text-lg font-semibold text-gray-400 mb-4">Avg. Delivery Distance</h3>
+            <h3 className="text-lg font-semibold text-gray-400 mb-4">Avg. Delivery Time</h3>
             <div className="flex-grow flex items-center justify-center">
-              <span className="text-5xl font-bold text-white">27.2 km</span>
+              <span className="text-5xl font-bold text-white">45 mins</span>
             </div>
           </div>
 
@@ -108,7 +108,10 @@ const VendorsPage = () => {
 
         {/* Preferences Section */}
         <div className="bg-[#1a202c] rounded-2xl p-6 shadow-xl">
-          <h2 className="text-2xl font-bold mb-6 text-gray-200">Preferences</h2>
+          <div className="mb-6">
+            <h2 className="text-2xl font-bold text-gray-200">Auto-Sourcing Preferences</h2>
+            <p className="text-sm text-gray-400 mt-1">Configure which vendors to prioritize for the Auto-Generate Estimate system.</p>
+          </div>
           <div className="flex flex-col md:flex-row items-end gap-4">
             <div className="flex-1 w-full">
               <label

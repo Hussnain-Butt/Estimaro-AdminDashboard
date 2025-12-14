@@ -51,6 +51,11 @@ const Header = () => {
     }
   }, [isProfileOpen])
 
+  const handleSignOut = () => {
+    localStorage.removeItem('estimaro_auth')
+    window.location.reload()
+  }
+
   return (
     <header ref={headerRef} className="bg-surface sticky top-0 z-20 w-full opacity-0">
       <div className="flex items-center justify-between p-4 border-b border-border">
@@ -81,9 +86,7 @@ const Header = () => {
 
           <button className="relative text-text-secondary hover:text-text-primary transition-colors">
             <BellIcon className="h-6 w-6" />
-            <span className="absolute -top-1 -right-1 bg-danger text-white text-[10px] rounded-full h-4 w-4 flex items-center justify-center">
-              2
-            </span>
+
           </button>
 
           <div className="relative" ref={profileDropdownRef}>
@@ -99,9 +102,8 @@ const Header = () => {
                 <p className="text-xs text-text-secondary">Advisor</p>
               </div>
               <ChevronDownIcon
-                className={`h-5 w-5 text-text-secondary hidden md:block transition-transform duration-300 ${
-                  isProfileOpen ? 'rotate-180' : ''
-                }`}
+                className={`h-5 w-5 text-text-secondary hidden md:block transition-transform duration-300 ${isProfileOpen ? 'rotate-180' : ''
+                  }`}
               />
             </button>
 
@@ -111,7 +113,10 @@ const Header = () => {
                   <p className="font-bold text-text-primary">Sergio</p>
                   <p className="text-sm text-text-secondary">Advisor</p>
                 </div>
-                <button className="w-full flex items-center px-4 py-2 text-left text-text-secondary hover:bg-primary-light hover:text-text-primary transition-colors">
+                <button
+                  onClick={handleSignOut}
+                  className="w-full flex items-center px-4 py-2 text-left text-text-secondary hover:bg-primary-light hover:text-text-primary transition-colors"
+                >
                   <ArrowRightOnRectangleIcon className="h-5 w-5 mr-3" />
                   Sign Out
                 </button>

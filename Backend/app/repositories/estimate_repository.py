@@ -178,6 +178,62 @@ class EstimateRepository:
         estimate.set_expiration(days)
         await estimate.save()
         return estimate
+
+    async def update_estimate(
+        self,
+        estimate_id: str,
+        estimate_data: EstimateCreateSchema,
+        breakdown: Optional[Dict] = None
+    ) -> Optional[Estimate]:
+        """Update an existing estimate."""
+        try:
+            estimate = await self.get_by_id(estimate_id)
+            if not estimate:
+                return None
+            
+            # Update core fields if changed
+            if estimate_data.serviceRequest:
+                estimate.service_request_text = estimate_data.serviceRequest
+                
+            # Update Customer & Vehicle if provided
+            if estimate_data.customerInfo:
+                customer = await self._get_or_create_customer(estimate_data.customerInfo)
+                
+            if estimate_data.vehicleInfo:
+                 # Note: passing customer.id directly might be risky if customer wasn't updated/fetched
+                 # But we can assume customer exists from above step or existing vehicle linkage
+                 # For safety, let's trust the logic flow or fetch current vehicle's customer
+                 current_cust_id = customer.id if estimate_data.customerInfo else estimate.vehicle.customer_id
+                 
+                 vehicle = await self._get_or_create_vehicle(
+                    estimate_data.vehicleInfo,
+                    str(current_cust_id)
+                )
+                 estimate.vehicle_id = str(vehicle.id)
+
+            # Update Items
+            items = self._create_estimate_items(
+                estimate_data.laborItems,
+                estimate_data.partsItems
+            )
+            estimate.items = items
+            
+            # Update Totals
+            if breakdown:
+                estimate.subtotal = float(breakdown.get('subtotal', 0.0))
+                estimate.tax = float(breakdown.get('taxAmount', 0.0))
+                estimate.total = float(breakdown.get('total', 0.0))
+            
+            await estimate.save()
+            
+            # Force re-populate relations
+            await self._populate_relations(estimate)
+            
+            return estimate
+
+        except Exception as e:
+            logger.error(f"Failed to update estimate {estimate_id}: {str(e)}")
+            raise e
         
     async def _populate_relations(self, estimate: Estimate):
         """

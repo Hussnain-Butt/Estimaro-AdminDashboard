@@ -1,37 +1,29 @@
 import React, { useState, useEffect } from 'react'
-
-const customersData = [
-  {
-    id: 1,
-    name: 'John Carter',
-    phone: '(415) 555-2121',
-    email: 'john@example.com',
-    vehicles: ['BMW 328i'],
-    estimates: 3,
-    lastVisit: '8/30/2025',
-  },
-  {
-    id: 2,
-    name: 'Emily Wong',
-    phone: '(510) 555-8822',
-    email: 'emily@example.com',
-    vehicles: ['Audi A4', 'VW GTI'],
-    estimates: 5,
-    lastVisit: '7/28/2025',
-  },
-  {
-    id: 3,
-    name: 'Carlos Ruiz',
-    phone: '(925) 555-7711',
-    email: 'carlos@example.com',
-    vehicles: ['Porsche 911'],
-    estimates: 1,
-    lastVisit: '9/8/2025',
-  },
-]
+import axios from 'axios'
 
 const CustomersPage = () => {
-  const [selectedCustomer, setSelectedCustomer] = useState(customersData[0])
+  const [customers, setCustomers] = useState([])
+  const [selectedCustomer, setSelectedCustomer] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    const fetchCustomers = async () => {
+      try {
+        const response = await axios.get('http://localhost:8000/api/v1/customers/')
+        setCustomers(response.data)
+        if (response.data.length > 0) {
+          setSelectedCustomer(response.data[0])
+        }
+      } catch (err) {
+        console.error("Error fetching customers:", err)
+        setError("Failed to load customers.")
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchCustomers()
+  }, [])
 
   // Icons from Lucide React as inline SVGs
   const LucidePhone = ({ className }) => (
@@ -163,58 +155,68 @@ const CustomersPage = () => {
         {/* Customers Table Section */}
         <div className="flex-1 bg-[#1a202c] rounded-2xl p-6 shadow-xl overflow-hidden flex flex-col">
           <h2 className="text-2xl font-bold mb-6 text-gray-200">Customers</h2>
-          <div className="flex-1 overflow-auto rounded-lg">
-            <table className="w-full text-left text-sm whitespace-nowrap table-auto">
-              <thead className="sticky top-0 bg-[#1a202c] text-gray-400 uppercase tracking-wider">
-                <tr>
-                  <th scope="col" className="px-6 py-3 font-semibold">
-                    Name
-                  </th>
-                  <th scope="col" className="px-6 py-3 font-semibold hidden lg:table-cell">
-                    Phone
-                  </th>
-                  <th scope="col" className="px-6 py-3 font-semibold hidden md:table-cell">
-                    Email
-                  </th>
-                  <th scope="col" className="px-6 py-3 font-semibold hidden sm:table-cell">
-                    Vehicles
-                  </th>
-                  <th scope="col" className="px-6 py-3 font-semibold">
-                    Estimates
-                  </th>
-                  <th scope="col" className="px-6 py-3 font-semibold hidden md:table-cell">
-                    Last Visit
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-700">
-                {customersData.map((customer) => (
-                  <tr
-                    key={customer.id}
-                    className={`cursor-pointer transition-all duration-200 hover:bg-[#2a4376] ${
-                      selectedCustomer.id === customer.id ? 'bg-[#2a4376]' : 'bg-transparent'
-                    }`}
-                    onClick={() => setSelectedCustomer(customer)}
-                  >
-                    <td className="px-6 py-4 font-medium text-white">{customer.name}</td>
-                    <td className="px-6 py-4 text-gray-300 hidden lg:table-cell">
-                      {customer.phone}
-                    </td>
-                    <td className="px-6 py-4 text-gray-300 hidden md:table-cell">
-                      {customer.email}
-                    </td>
-                    <td className="px-6 py-4 text-gray-300 hidden sm:table-cell">
-                      {customer.vehicles.join(', ')}
-                    </td>
-                    <td className="px-6 py-4 text-gray-300">{customer.estimates}</td>
-                    <td className="px-6 py-4 text-gray-300 hidden md:table-cell">
-                      {customer.lastVisit}
-                    </td>
+          
+          {loading ? (
+             <div className="text-gray-400 text-center mt-10">Loading customers...</div>
+          ) : error ? (
+             <div className="text-red-400 text-center mt-10">{error}</div>
+          ) : (
+            <div className="flex-1 overflow-auto rounded-lg">
+              <table className="w-full text-left text-sm whitespace-nowrap table-auto">
+                <thead className="sticky top-0 bg-[#1a202c] text-gray-400 uppercase tracking-wider">
+                  <tr>
+                    <th scope="col" className="px-6 py-3 font-semibold">
+                      Name
+                    </th>
+                    <th scope="col" className="px-6 py-3 font-semibold hidden lg:table-cell">
+                      Phone
+                    </th>
+                    <th scope="col" className="px-6 py-3 font-semibold hidden md:table-cell">
+                      Email
+                    </th>
+                    <th scope="col" className="px-6 py-3 font-semibold hidden sm:table-cell">
+                      Vehicles
+                    </th>
+                    <th scope="col" className="px-6 py-3 font-semibold">
+                      Estimates
+                    </th>
+                    <th scope="col" className="px-6 py-3 font-semibold hidden md:table-cell">
+                      Last Visit
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-gray-700">
+                  {customers.map((customer) => (
+                    <tr
+                      key={customer._id}
+                      className={`cursor-pointer transition-all duration-200 hover:bg-[#2a4376] ${
+                        selectedCustomer?._id === customer._id ? 'bg-[#2a4376]' : 'bg-transparent'
+                      }`}
+                      onClick={() => setSelectedCustomer(customer)}
+                    >
+                      <td className="px-6 py-4 font-medium text-white">{customer.first_name} {customer.last_name}</td>
+                      <td className="px-6 py-4 text-gray-300 hidden lg:table-cell">
+                        {customer.phone}
+                      </td>
+                      <td className="px-6 py-4 text-gray-300 hidden md:table-cell">
+                        {customer.email || "-"}
+                      </td>
+                      <td className="px-6 py-4 text-gray-300 hidden sm:table-cell">
+                        -
+                      </td>
+                      <td className="px-6 py-4 text-gray-300">-</td>
+                      <td className="px-6 py-4 text-gray-300 hidden md:table-cell">
+                        -
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {customers.length === 0 && (
+                  <div className="text-gray-400 text-center mt-10">No customers found.</div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Details Section */}
@@ -223,10 +225,13 @@ const CustomersPage = () => {
           <div className="flex-1 space-y-4">
             {selectedCustomer && (
               <>
+                 <div className="mb-6">
+                    <h3 className="text-xl font-bold text-white">{selectedCustomer.first_name} {selectedCustomer.last_name}</h3>
+                 </div>
                 <DetailItem
                   icon={<LucideMail className="w-5 h-5 text-gray-400" />}
                   label="Email"
-                  value={selectedCustomer.email}
+                  value={selectedCustomer.email || "-"}
                 />
                 <DetailItem
                   icon={<LucidePhone className="w-5 h-5 text-gray-400" />}
@@ -236,21 +241,21 @@ const CustomersPage = () => {
                 <DetailItem
                   icon={<LucideCar className="w-5 h-5 text-gray-400" />}
                   label="Vehicles"
-                  value={selectedCustomer.vehicles.join(', ')}
+                  value="-"
                 />
                 <DetailItem
                   icon={<LucideFileText className="w-5 h-5 text-gray-400" />}
                   label="Estimates"
-                  value={selectedCustomer.estimates}
+                  value="-"
                 />
                 <DetailItem
                   icon={<LucideCalendar className="w-5 h-5 text-gray-400" />}
                   label="Last Visit"
-                  value={selectedCustomer.lastVisit}
+                  value="-"
                 />
               </>
             )}
-            {!selectedCustomer && (
+            {!selectedCustomer && !loading && (
               <div className="text-center text-gray-400 mt-10">
                 Select a customer to see details.
               </div>

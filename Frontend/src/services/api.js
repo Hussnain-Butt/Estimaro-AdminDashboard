@@ -312,4 +312,51 @@ export const getApprovalStats = async () => {
   }
 };
 
+export const updateEstimate = async (estimateId, estimateData) => {
+  try {
+    const response = await api.put(`/estimates/${estimateId}`, {
+      vehicleInfo: {
+        vin: estimateData.vin,
+        year: estimateData.vehicleYear,
+        make: estimateData.vehicleMake,
+        model: estimateData.vehicleModel,
+        trim: estimateData.vehicleTrim,
+        engine: estimateData.vehicleEngine,
+        mileage: estimateData.odometer ? parseInt(estimateData.odometer) : null,
+      },
+      customerInfo: {
+        firstName: estimateData.customerFirstName || estimateData.customer?.split(' ')[0] || '',
+        lastName: estimateData.customerLastName || estimateData.customer?.split(' ').slice(1).join(' ') || '',
+        email: estimateData.customerEmail || null,
+        phone: estimateData.customerPhone || '',
+      },
+      serviceRequest: estimateData.serviceRequest || '',
+      laborItems: estimateData.laborItems.map(item => ({
+        description: item.title || item.description,
+        hours: String(item.hours),
+        rate: String(item.rate || 150),
+        total: String((item.hours * (item.rate || 150)).toFixed(2)),
+      })),
+      partsItems: estimateData.partsItems.map(item => ({
+        description: item.name || item.description,
+        partNumber: item.number || item.partNumber || '',
+        quantity: String(item.quantity || 1),
+        cost: String(item.price || item.cost || 0),
+        markup: String(item.markup || 0),
+        total: String(item.price || item.cost || 0),
+        vendor: item.source || item.vendor || '',
+      })),
+    });
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || 'Failed to update estimate',
+    };
+  }
+};
+
 export default api;

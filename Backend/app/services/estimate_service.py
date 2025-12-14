@@ -97,6 +97,45 @@ class EstimateService:
         
         # Convert to response schema
         return self._estimate_to_response(estimate)
+
+    async def update_draft_estimate(
+        self,
+        estimate_id: str,
+        estimate_data: EstimateCreateSchema
+    ) -> Optional[EstimateResponseSchema]:
+        """
+        Update an existing draft estimate.
+        """
+        # Recalculate item totals
+        recalculated = calculation_service.recalculate_item_totals(
+            labor_items=estimate_data.laborItems,
+            parts_items=estimate_data.partsItems
+        )
+        
+        estimate_data.laborItems = recalculated['laborItems']
+        estimate_data.partsItems = recalculated['partsItems']
+        
+        # Calculate breakdown
+        breakdown = calculation_service.calculate_estimate(
+            labor_items=estimate_data.laborItems,
+            parts_items=estimate_data.partsItems
+        )
+        
+        # Update in DB
+        estimate = await self.repository.update_estimate(
+            estimate_id=estimate_id,
+            estimate_data=estimate_data,
+            breakdown={
+                'subtotal': breakdown.subtotal,
+                'taxAmount': breakdown.taxAmount,
+                'total': breakdown.total
+            }
+        )
+        
+        if not estimate:
+            return None
+            
+        return self._estimate_to_response(estimate)
     
     async def get_estimate(self, estimate_id: str) -> Optional[EstimateResponseSchema]:
         """Get estimate by ID."""

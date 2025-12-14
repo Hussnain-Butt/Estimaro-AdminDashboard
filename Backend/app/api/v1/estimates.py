@@ -58,6 +58,31 @@ async def create_draft_estimate(
     return await service.create_draft_estimate(estimate_data, "system")
 
 
+@router.put(
+    "/{estimate_id}",
+    response_model=EstimateResponseSchema,
+    summary="Update draft estimate",
+    description="Update an existing draft estimate with new data."
+)
+async def update_draft_estimate(
+    estimate_id: str,
+    estimate_data: EstimateCreateSchema
+):
+    """
+    Update a draft estimate.
+    """
+    service = get_estimate_service()
+    estimate = await service.update_draft_estimate(estimate_id, estimate_data)
+    
+    if not estimate:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Estimate with ID {estimate_id} not found"
+        )
+        
+    return estimate
+
+
 @router.get(
     "/{estimate_id}",
     response_model=EstimateResponseSchema,
