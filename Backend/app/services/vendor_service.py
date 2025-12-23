@@ -214,24 +214,27 @@ class VendorService:
 
     async def _fetch_vendor_offers(self, part_numbers: List[str]) -> List[VendorOffer]:
         """Fetch offers from all configured vendor adapters"""
-        from app.adapters.worldpac_scraper_adapter import WorldpacScraperAdapter
-        from app.adapters.ssf_scraper_adapter import SSFScraperAdapter
         from app.core.config import settings
 
         adapters = []
-        # Add adapters based on config. For now, we add them if config says 'scraper' or 'real'
-        # Or simpler: Just add them. The adapters check credentials internally.
-        if settings.VENDOR_WORLDPAC_ADAPTER_TYPE in ["scraper", "real"]:
-            adapters.append(WorldpacScraperAdapter())
-        if settings.VENDOR_SSF_ADAPTER_TYPE in ["scraper", "real"]:
-             adapters.append(SSFScraperAdapter())
         
-        # If no real adapters enabled, or fallbacks needed?
-        # If list empty, maybe default to mock? 
+        # Check for remote adapter type first
+        if settings.VENDOR_WORLDPAC_ADAPTER_TYPE == "remote" or settings.VENDOR_SSF_ADAPTER_TYPE == "remote":
+            from app.adapters.remote_adapters import RemoteVendorAdapter
+            adapters.append(RemoteVendorAdapter())
+        else:
+            # Use local scrapers
+            if settings.VENDOR_WORLDPAC_ADAPTER_TYPE in ["scraper", "real"]:
+                from app.adapters.worldpac_scraper_adapter import WorldpacScraperAdapter
+                adapters.append(WorldpacScraperAdapter())
+            if settings.VENDOR_SSF_ADAPTER_TYPE in ["scraper", "real"]:
+                from app.adapters.ssf_scraper_adapter import SSFScraperAdapter
+                adapters.append(SSFScraperAdapter())
+        
+        # If no adapters configured, use remote as fallback for production
         if not adapters:
-            # Fallback for now if config isn't set
-            adapters.append(WorldpacScraperAdapter()) 
-            adapters.append(SSFScraperAdapter())
+            from app.adapters.remote_adapters import RemoteVendorAdapter
+            adapters.append(RemoteVendorAdapter())
 
         all_offers = []
         for adapter in adapters:

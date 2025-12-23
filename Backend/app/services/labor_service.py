@@ -2,12 +2,11 @@
 Labor Service - Factory Pattern
 
 Service that selects the appropriate labor adapter based on configuration.
-Allows easy switching between mock and real (ALLDATA) implementations.
+Allows easy switching between mock, scraper, and remote implementations.
 """
 from app.adapters.labor_adapter_interface import LaborAdapterInterface
 from app.adapters.labor_mock_adapter import LaborMockAdapter
 from app.core.config import settings
-from app.adapters.alldata_scraper_adapter import AlldataScraperAdapter
 
 
 def get_labor_adapter() -> LaborAdapterInterface:
@@ -22,11 +21,15 @@ def get_labor_adapter() -> LaborAdapterInterface:
     if adapter_type == "mock":
         return LaborMockAdapter()
     elif adapter_type == "scraper" or adapter_type == "alldata":
-        # Using scraper for 'alldata' type as well for now
+        from app.adapters.alldata_scraper_adapter import AlldataScraperAdapter
         return AlldataScraperAdapter()
+    elif adapter_type == "remote":
+        from app.adapters.remote_adapters import RemoteLaborAdapter
+        return RemoteLaborAdapter()
     else:
         raise ValueError(f"Unknown labor adapter type: {adapter_type}")
 
 
 # Singleton instance
 labor_service = get_labor_adapter()
+

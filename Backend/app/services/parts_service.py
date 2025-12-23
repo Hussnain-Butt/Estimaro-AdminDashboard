@@ -2,12 +2,11 @@
 Parts Service - Factory Pattern
 
 Service that selects the appropriate parts adapter based on configuration.
-Allows easy switching between mock and real (PartsLink24) implementations.
+Allows easy switching between mock, scraper, and remote implementations.
 """
 from app.adapters.parts_adapter_interface import PartsAdapterInterface
 from app.adapters.parts_mock_adapter import PartsMockAdapter
 from app.core.config import settings
-from app.adapters.partslink_scraper_adapter import PartsLinkScraperAdapter
 
 
 def get_parts_adapter() -> PartsAdapterInterface:
@@ -22,15 +21,15 @@ def get_parts_adapter() -> PartsAdapterInterface:
     if adapter_type == "mock":
         return PartsMockAdapter()
     elif adapter_type == "scraper" or adapter_type == "partslink":
-        # Returns the PartsLink Scraper for OEM Mapping
+        from app.adapters.partslink_scraper_adapter import PartsLinkScraperAdapter
         return PartsLinkScraperAdapter()
-        # TODO: Implement PartsLink24 adapter when API keys are available
-        # from app.adapters.parts_partslink_adapter import PartsPartsLinkAdapter
-        # return PartsPartsLinkAdapter()
-        raise NotImplementedError("PartsLink24 adapter not yet implemented")
+    elif adapter_type == "remote":
+        from app.adapters.remote_adapters import RemotePartsAdapter
+        return RemotePartsAdapter()
     else:
         raise ValueError(f"Unknown parts adapter type: {adapter_type}")
 
 
 # Singleton instance
 parts_service = get_parts_adapter()
+
