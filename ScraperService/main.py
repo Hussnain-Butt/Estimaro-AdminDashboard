@@ -319,34 +319,50 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
             return {"success": False, "error": "Not logged into ALLDATA. Please login in Chrome first."}
         
         # Step 2: Navigate to REPAIR section if on home
+        repair_clicked = False
         if "/home" in current_url or current_url.endswith("alldata.com/"):
-            logger.info("ALLDATA: On home page, clicking REPAIR...")
+            logger.info("ALLDATA: On home page, waiting for REPAIR button...")
+            await asyncio.sleep(2)  # Wait for page to fully load
+            
             try:
                 # Try multiple selectors for REPAIR button - REAL SELECTORS
                 repair_selectors = [
                     ".alldata-icon-appIcon-repair",  # REAL selector from DevTools
                     "div.alldata-icon-appIcon-repair",
                     "[icon-title='ALLDATA Repair']",
-                    "div[ng-click*='selectProduct']",
-                    "a[href*='repair']",
-                    "text=REPAIR"
+                    "div[ng-click*='selectProduct']"
                 ]
+                
                 for sel in repair_selectors:
                     try:
+                        logger.info(f"ALLDATA: Trying selector: {sel}")
                         el = await page.query_selector(sel)
                         if el:
-                            await el.click()
-                            await asyncio.sleep(2)
-                            logger.info(f"ALLDATA: Clicked REPAIR using {sel}")
-                            break
-                    except:
+                            # Check if element is visible
+                            is_visible = await el.is_visible()
+                            logger.info(f"ALLDATA: Found element with {sel}, visible={is_visible}")
+                            if is_visible:
+                                await el.click()
+                                await asyncio.sleep(3)
+                                repair_clicked = True
+                                logger.info(f"ALLDATA: ✅ Clicked REPAIR using {sel}")
+                                break
+                        else:
+                            logger.info(f"ALLDATA: Selector {sel} - no element found")
+                    except Exception as e:
+                        logger.warning(f"ALLDATA: Selector {sel} failed: {e}")
                         continue
+                        
+                if not repair_clicked:
+                    logger.warning("ALLDATA: REPAIR click failed, navigating directly to repair page")
+                    
             except Exception as e:
                 logger.warning(f"ALLDATA: Could not click REPAIR: {e}")
         
-        # Step 3: Navigate to Select Vehicle page
+        # Step 3: Navigate to Select Vehicle page (if REPAIR click failed or already there)
         current_url = page.url.lower()
         if "select-vehicle" not in current_url and "repair" not in current_url:
+            logger.info("ALLDATA: Navigating directly to select-vehicle page...")
             await page.goto("https://my.alldata.com/migrate/repair/#/select-vehicle", wait_until="domcontentloaded")
             await asyncio.sleep(2)
         
@@ -531,9 +547,14 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
             await asyncio.sleep(2)
             current_url = page.url.lower()
         
-        is_logged_in = "partslink" in current_url and not any(x in current_url for x in ["/login", "/signin", "/auth"])
-        if any(x in current_url for x in ["/user/", "/brandmenu", "/p5.do", "/catalog", "/pl24-app"]):
-            is_logged_in = True
+        # Login detection - login.do means NOT logged in!
+        is_logged_in = False
+        if "partslink" in current_url:
+            if "login.do" in current_url or "/login" in current_url:
+                is_logged_in = False
+                logger.warning("PARTSLINK: On login page - NOT logged in!")
+            elif any(x in current_url for x in ["/brandmenu", "/p5.do", "/catalog", "/pl24-app"]):
+                is_logged_in = True
         
         logger.info(f"PARTSLINK URL: {current_url}, Logged in: {is_logged_in}")
         
