@@ -159,20 +159,23 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
     
     try:
         # If this is an existing ALLDATA tab, we're already on the site
-        # If new page, navigate to ALLDATA
-        if "alldata" not in page.url.lower():
+        current_url = page.url.lower()
+        
+        # If new page (not on alldata), navigate there
+        if "alldata" not in current_url:
             await page.goto("https://my.alldata.com", wait_until="domcontentloaded")
             await asyncio.sleep(2)
+            current_url = page.url.lower()
         
-        # Check if logged in
-        is_logged_in = False
-        for selector in ["#vin-search", ".dashboard", "[data-testid='search']"]:
-            try:
-                if await page.is_visible(selector):
-                    is_logged_in = True
-                    break
-            except:
-                continue
+        # URL-based login check: if we're on alldata but NOT on login page, we're logged in
+        # Login pages typically have /login, /signin, /auth in URL
+        is_logged_in = "alldata" in current_url and not any(x in current_url for x in ["/login", "/signin", "/auth", "authn"])
+        
+        # Also check if URL indicates we're in the app (migrate, home, dashboard)
+        if any(x in current_url for x in ["/migrate", "/home", "/dashboard", "#/"]):
+            is_logged_in = True
+        
+        logger.info(f"ALLDATA URL: {current_url}, Logged in: {is_logged_in}")
         
         if not is_logged_in:
             if should_close:
@@ -238,20 +241,23 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
     browser, page, should_close = await get_existing_page_for_site("partslink")
     
     try:
-        # If this is an existing PartsLink tab, we're already on the site
-        if "partslink" not in page.url.lower():
+        # Get current URL
+        current_url = page.url.lower()
+        
+        # If not on partslink, navigate there
+        if "partslink" not in current_url:
             await page.goto("https://www.partslink24.com/partslink24/p5.do", wait_until="domcontentloaded")
             await asyncio.sleep(2)
+            current_url = page.url.lower()
         
-        # Check login
-        is_logged_in = False
-        for selector in ["#vin_input", ".main_menu"]:
-            try:
-                if await page.is_visible(selector):
-                    is_logged_in = True
-                    break
-            except:
-                continue
+        # URL-based login check: if on partslink and in user area, we're logged in
+        is_logged_in = "partslink" in current_url and not any(x in current_url for x in ["/login", "/signin", "/auth"])
+        
+        # Check for logged-in indicators in URL
+        if any(x in current_url for x in ["/user/", "/brandmenu", "/p5.do", "/catalog"]):
+            is_logged_in = True
+        
+        logger.info(f"PARTSLINK URL: {current_url}, Logged in: {is_logged_in}")
         
         if not is_logged_in:
             if should_close:
@@ -326,19 +332,23 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
     prices = []
     
     try:
-        # Use SSF if tab exists
-        if "ssf" not in page.url.lower():
+        # Get current URL
+        current_url = page.url.lower()
+        
+        # If not on SSF, navigate there
+        if "ssf" not in current_url:
             await page.goto("https://shop.ssfautoparts.com", wait_until="domcontentloaded")
             await asyncio.sleep(2)
+            current_url = page.url.lower()
         
-        is_logged_in = False
-        for selector in [".dashboard", "#part-search", ".user-menu"]:
-            try:
-                if await page.is_visible(selector):
-                    is_logged_in = True
-                    break
-            except:
-                continue
+        # URL-based login check: if on SSF and not on login page, we're logged in
+        is_logged_in = "ssf" in current_url and not any(x in current_url for x in ["/login", "/signin", "/auth"])
+        
+        # Check for logged-in indicators in URL (catalog, account, etc.)
+        if any(x in current_url for x in ["/catalog", "/account", "/cart", "/checkout"]):
+            is_logged_in = True
+        
+        logger.info(f"SSF URL: {current_url}, Logged in: {is_logged_in}")
         
         if is_logged_in:
             for part_num in part_numbers:
