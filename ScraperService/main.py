@@ -413,19 +413,28 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
         if not parts_labor_clicked:
             logger.warning("ALLDATA: Could not click Parts and Labor directly")
         
-        # Step 6: Search for job description
+        # Step 6: Search for job description (ONLY if we're on Parts and Labor page)
+        # IMPORTANT: Do NOT use selectors that match VIN search box!
         logger.info(f"ALLDATA: Searching for job: {job_description}")
         job_search_selectors = [
             "input[placeholder*='Search Parts']",
-            "input[placeholder*='Search']",
+            "input[placeholder*='Search Labor']",
             "#laborSearch",
-            ".search-input"
+            ".search-input",
+            ".parts-search"
+            # NOTE: Do NOT add "input[placeholder*='Search']" - it matches VIN field!
         ]
         
         job_searched = False
         for sel in job_search_selectors:
             try:
                 if await page.is_visible(sel):
+                    # Make sure this is NOT the VIN field
+                    el = await page.query_selector(sel)
+                    if el:
+                        el_id = await el.get_attribute("id")
+                        if el_id == "ymmeSearchBox":
+                            continue  # Skip VIN field!
                     await page.fill(sel, job_description)
                     await page.keyboard.press("Enter")
                     job_searched = True
