@@ -185,16 +185,28 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
                 "error": "Not logged into ALLDATA. Please login in Chrome first."
             }
         
-        # VIN Search
-        vin_selectors = ["#vin-search", "input[name='vin']", "#vin-input"]
+        # Navigate to Select Vehicle page if not already there
+        if "select-vehicle" not in current_url:
+            await page.goto("https://my.alldata.com/migrate/repair/#/select-vehicle", wait_until="domcontentloaded")
+            await asyncio.sleep(2)
+        
+        # VIN Search - Real selector from ALLDATA
+        vin_selectors = ["#ymmeSearchBox", "input[placeholder*='VIN']", "input[placeholder*='Search']"]
+        vin_entered = False
         for sel in vin_selectors:
             try:
                 if await page.is_visible(sel):
                     await page.fill(sel, vin)
                     await page.keyboard.press("Enter")
+                    vin_entered = True
+                    logger.info(f"ALLDATA: Entered VIN using selector {sel}")
                     break
-            except:
+            except Exception as e:
+                logger.warning(f"ALLDATA selector {sel} failed: {e}")
                 continue
+        
+        if not vin_entered:
+            logger.warning("ALLDATA: Could not find VIN input field")
         
         await asyncio.sleep(3)
         
@@ -267,13 +279,37 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
                 "error": "Not logged into PartsLink24. Please login in Chrome first."
             }
         
-        # VIN Search
-        try:
-            await page.fill("#vin_input", vin)
-            await page.click("#vin_search_btn")
-            await asyncio.sleep(3)
-        except:
-            pass
+        # VIN Search - Real selectors from PartsLink24
+        vin_selectors = [
+            "input[placeholder='Search VIN']",
+            "input[placeholder*='VIN']",
+            "input[name='text']"
+        ]
+        vin_entered = False
+        for sel in vin_selectors:
+            try:
+                if await page.is_visible(sel):
+                    await page.fill(sel, vin)
+                    logger.info(f"PARTSLINK: Entered VIN using selector {sel}")
+                    vin_entered = True
+                    break
+            except Exception as e:
+                logger.warning(f"PARTSLINK selector {sel} failed: {e}")
+                continue
+        
+        # Click GO/Search button
+        if vin_entered:
+            try:
+                # Try multiple button selectors
+                button_selectors = [".search-btn", "div.search-btn", "button[type='submit']"]
+                for btn_sel in button_selectors:
+                    if await page.is_visible(btn_sel):
+                        await page.click(btn_sel)
+                        logger.info(f"PARTSLINK: Clicked search using {btn_sel}")
+                        break
+                await asyncio.sleep(3)
+            except Exception as e:
+                logger.warning(f"PARTSLINK: Search button click failed: {e}")
         
         # Try to get part numbers
         parts = []
@@ -353,15 +389,32 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
         if is_logged_in:
             for part_num in part_numbers:
                 try:
-                    # Search for part
-                    search_sel = "#part-search-input, #search, input[name='search']"
-                    await page.fill(search_sel, part_num)
-                    await page.keyboard.press("Enter")
-                    await asyncio.sleep(2)
+                    # Search for part - Real selectors from SSF
+                    search_selectors = [
+                        "input.expressSearchInput",
+                        "input[name='pCtrl.partNumForm']",
+                        "input.form-control.expressSearchInput",
+                        "input[placeholder*='Part']"
+                    ]
+                    
+                    part_entered = False
+                    for sel in search_selectors:
+                        try:
+                            if await page.is_visible(sel):
+                                await page.fill(sel, part_num)
+                                logger.info(f"SSF: Entered part number using selector {sel}")
+                                part_entered = True
+                                break
+                        except:
+                            continue
+                    
+                    if part_entered:
+                        await page.keyboard.press("Enter")
+                        await asyncio.sleep(2)
                     
                     # Try to get price
                     price = 99.99  # Default
-                    for price_sel in [".price", ".product-price", ".item-price"]:
+                    for price_sel in [".price", ".product-price", ".item-price", "span.price"]:
                         try:
                             if await page.is_visible(price_sel):
                                 text = await page.inner_text(price_sel)
@@ -374,12 +427,12 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
                             continue
                     
                     prices.append({
-                        "vendor": "Worldpac",
+                        "vendor": "SSF",
                         "part_number": part_num,
                         "brand": "Aftermarket",
                         "price": price,
                         "stock_status": "Check Stock",
-                        "warehouse": "Worldpac"
+                        "warehouse": "SSF"
                     })
                 except:
                     continue
