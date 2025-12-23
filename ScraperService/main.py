@@ -114,16 +114,35 @@ class PricingResponse(BaseModel):
 # =============================================================================
 # SCRAPING FUNCTIONS
 # =============================================================================
-async def get_cdp_page():
-    """Connect to Chrome via CDP"""
+async def get_existing_page_for_site(target_url_contains: str):
+    """
+    Find an existing page/tab where the target site is already open and logged in.
+    This uses the same session cookies as the manually logged-in tabs.
+    """
     from playwright.async_api import async_playwright
     
     try:
         p = await async_playwright().start()
         browser = await p.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
         context = browser.contexts[0]
-        page = await context.new_page()
-        return browser, page
+        
+        # Get all open pages/tabs
+        pages = context.pages
+        logger.info(f"Found {len(pages)} open tabs in Chrome")
+        
+        # Find a page that contains our target URL
+        for page in pages:
+            current_url = page.url
+            logger.info(f"Tab URL: {current_url}")
+            if target_url_contains.lower() in current_url.lower():
+                logger.info(f"Found matching tab for {target_url_contains}")
+                return browser, page, False  # False = don't close this page
+        
+        # If no existing tab found, create new page (will inherit cookies from context)
+        logger.info(f"No existing tab for {target_url_contains}, creating new page with existing cookies")
+        new_page = await context.new_page()
+        return browser, new_page, True  # True = close this page when done
+        
     except Exception as e:
         logger.error(f"CDP connection failed: {e}")
         raise HTTPException(
@@ -133,15 +152,17 @@ async def get_cdp_page():
 
 
 async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
-    """Scrape labor time from ALLDATA"""
+    """Scrape labor time from ALLDATA using existing logged-in tab"""
     logger.info(f"ALLDATA: Scraping labor for VIN={vin}, Job={job_description}")
     
-    browser, page = await get_cdp_page()
+    browser, page, should_close = await get_existing_page_for_site("alldata")
     
     try:
-        # Navigate to ALLDATA
-        await page.goto("https://my.alldata.com", wait_until="domcontentloaded")
-        await asyncio.sleep(2)
+        # If this is an existing ALLDATA tab, we're already on the site
+        # If new page, navigate to ALLDATA
+        if "alldata" not in page.url.lower():
+            await page.goto("https://my.alldata.com", wait_until="domcontentloaded")
+            await asyncio.sleep(2)
         
         # Check if logged in
         is_logged_in = False
@@ -154,7 +175,8 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
                 continue
         
         if not is_logged_in:
-            await page.close()
+            if should_close:
+                await page.close()
             return {
                 "success": False,
                 "error": "Not logged into ALLDATA. Please login in Chrome first."
@@ -190,7 +212,8 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
             except:
                 continue
         
-        await page.close()
+        if should_close:
+            await page.close()
         
         return {
             "success": True,
@@ -200,22 +223,25 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
         
     except Exception as e:
         logger.error(f"ALLDATA scrape error: {e}")
-        try:
-            await page.close()
-        except:
-            pass
+        if should_close:
+            try:
+                await page.close()
+            except:
+                pass
         return {"success": False, "error": str(e)}
 
 
 async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
-    """Scrape OEM parts from PartsLink24"""
+    """Scrape OEM parts from PartsLink24 using existing logged-in tab"""
     logger.info(f"PARTSLINK: Scraping parts for VIN={vin}, Job={job_description}")
     
-    browser, page = await get_cdp_page()
+    browser, page, should_close = await get_existing_page_for_site("partslink")
     
     try:
-        await page.goto("https://www.partslink24.com/partslink24/p5.do", wait_until="domcontentloaded")
-        await asyncio.sleep(2)
+        # If this is an existing PartsLink tab, we're already on the site
+        if "partslink" not in page.url.lower():
+            await page.goto("https://www.partslink24.com/partslink24/p5.do", wait_until="domcontentloaded")
+            await asyncio.sleep(2)
         
         # Check login
         is_logged_in = False
@@ -228,7 +254,8 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
                 continue
         
         if not is_logged_in:
-            await page.close()
+            if should_close:
+                await page.close()
             return {
                 "success": False,
                 "error": "Not logged into PartsLink24. Please login in Chrome first."
@@ -272,7 +299,8 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
                 "is_oem": True
             })
         
-        await page.close()
+        if should_close:
+            await page.close()
         
         return {
             "success": True,
@@ -282,24 +310,26 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         
     except Exception as e:
         logger.error(f"PARTSLINK scrape error: {e}")
-        try:
-            await page.close()
-        except:
-            pass
+        if should_close:
+            try:
+                await page.close()
+            except:
+                pass
         return {"success": False, "error": str(e)}
 
 
 async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
-    """Scrape pricing from Worldpac/SSF"""
+    """Scrape pricing from SSF using existing logged-in tab"""
     logger.info(f"PRICING: Scraping prices for {part_numbers}")
     
-    browser, page = await get_cdp_page()
+    browser, page, should_close = await get_existing_page_for_site("ssf")
     prices = []
     
     try:
-        # Try Worldpac first
-        await page.goto("https://speeddial.worldpac.com", wait_until="domcontentloaded")
-        await asyncio.sleep(2)
+        # Use SSF if tab exists
+        if "ssf" not in page.url.lower():
+            await page.goto("https://shop.ssfautoparts.com", wait_until="domcontentloaded")
+            await asyncio.sleep(2)
         
         is_logged_in = False
         for selector in [".dashboard", "#part-search", ".user-menu"]:
@@ -344,7 +374,8 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
                 except:
                     continue
         
-        await page.close()
+        if should_close:
+            await page.close()
         
         # If no prices found, return fallback
         if not prices:
@@ -366,10 +397,11 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
         
     except Exception as e:
         logger.error(f"PRICING scrape error: {e}")
-        try:
-            await page.close()
-        except:
-            pass
+        if should_close:
+            try:
+                await page.close()
+            except:
+                pass
         return {"success": False, "error": str(e)}
 
 
