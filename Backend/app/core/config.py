@@ -22,9 +22,13 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
     
     # External API Adapters
-    LABOR_ADAPTER_TYPE: Literal["mock", "alldata", "scraper"] = "mock"
-    PARTS_ADAPTER_TYPE: Literal["mock", "partslink", "scraper"] = "mock"
-    VENDOR_WORLDPAC_ADAPTER_TYPE: Literal["mock", "real", "scraper"] = "mock"
+    # Options: mock, scraper, remote
+    # - mock: Use fake data (development)
+    # - scraper: Local Chrome CDP scraping (same server)
+    # - remote: Call Scraper Microservice (different server)
+    LABOR_ADAPTER_TYPE: Literal["mock", "alldata", "scraper", "remote"] = "mock"
+    PARTS_ADAPTER_TYPE: Literal["mock", "partslink", "scraper", "remote"] = "mock"
+    VENDOR_WORLDPAC_ADAPTER_TYPE: Literal["mock", "real", "scraper", "remote"] = "mock"
     
     # Vendor Credentials
     WORLDPAC_USERNAME: str = ""
@@ -40,7 +44,7 @@ class Settings(BaseSettings):
     PARTSLINK24_USERNAME: str = ""
     PARTSLINK24_PASSWORD: str = ""
 
-    VENDOR_SSF_ADAPTER_TYPE: Literal["mock", "real", "scraper"] = "mock"
+    VENDOR_SSF_ADAPTER_TYPE: Literal["mock", "real", "scraper", "remote"] = "mock"
     TEKMETRIC_ADAPTER_TYPE: Literal["mock", "real"] = "mock"
     
     # Twilio (SMS Notifications)
@@ -58,6 +62,10 @@ class Settings(BaseSettings):
     
     # Tax Rate
     DEFAULT_TAX_RATE: float = 0.08
+    
+    # Scraper Microservice (Remote scraping via Windows RDP)
+    SCRAPER_SERVICE_URL: str = "http://localhost:5000"
+    SCRAPER_API_KEY: str = "estimaro_scraper_secret_2024"
     
     class Config:
         env_file = ".env"
