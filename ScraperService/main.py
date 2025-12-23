@@ -210,22 +210,67 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
         
         await asyncio.sleep(3)
         
-        # Try to find labor time (simplified - actual site structure varies)
-        labor_hours = 1.5  # Default estimate
+        # After VIN search, need to navigate to Parts and Labor section
+        # Check if we're on the vehicle info page and click Parts and Labor
+        try:
+            parts_labor_link = await page.query_selector("text=Parts and Labor")
+            if parts_labor_link:
+                await parts_labor_link.click()
+                await asyncio.sleep(2)
+                logger.info("ALLDATA: Clicked on Parts and Labor")
+        except:
+            logger.warning("ALLDATA: Could not find Parts and Labor link")
         
-        # Attempt to scrape actual value
-        labor_selectors = [".labor-time", ".time-value", "[data-labor]"]
+        # Try to find labor time from ALLDATA
+        # Real selectors from ALLDATA Parts and Labor page
+        import re
+        labor_hours = 0.0
+        
+        # ALLDATA uses input[role="spinbutton"] for labor hours
+        labor_selectors = [
+            "input[role='spinbutton']",
+            "div.labor-column-quantity input",
+            "input.p-inputnumber",
+            ".labor-column-quantity span",
+            "td.hours-column"
+        ]
+        
+        found_labor_hours = []
         for sel in labor_selectors:
             try:
-                if await page.is_visible(sel):
-                    text = await page.inner_text(sel)
-                    import re
-                    match = re.search(r'(\d+\.?\d*)', text)
-                    if match:
-                        labor_hours = float(match.group(1))
-                        break
+                elements = await page.query_selector_all(sel)
+                for el in elements[:5]:
+                    # Try to get value attribute first (for inputs)
+                    try:
+                        val = await el.get_attribute("value")
+                        if val:
+                            match = re.search(r'(\d+\.?\d*)', val)
+                            if match:
+                                hours = float(match.group(1))
+                                if hours > 0 and hours < 100:  # Reasonable range
+                                    found_labor_hours.append(hours)
+                                    logger.info(f"ALLDATA: Found labor hours: {hours}")
+                    except:
+                        # Try inner text
+                        text = await el.inner_text()
+                        match = re.search(r'(\d+\.?\d*)', text)
+                        if match:
+                            hours = float(match.group(1))
+                            if hours > 0 and hours < 100:
+                                found_labor_hours.append(hours)
+                                logger.info(f"ALLDATA: Found labor hours: {hours}")
+                if found_labor_hours:
+                    break
             except:
                 continue
+        
+        # Use the first/primary labor hour found
+        if found_labor_hours:
+            labor_hours = found_labor_hours[0]
+            logger.info(f"ALLDATA: Using labor hours: {labor_hours}")
+        else:
+            labor_hours = 1.5  # Default fallback
+            logger.warning("ALLDATA: No labor hours found, using default 1.5")
         
         if should_close:
             await page.close()
@@ -410,31 +455,58 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
                     
                     if part_entered:
                         await page.keyboard.press("Enter")
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(3)  # Wait for results
                     
-                    # Try to get price
-                    price = 99.99  # Default
-                    for price_sel in [".price", ".product-price", ".item-price", "span.price"]:
+                    # Try to get prices from SSF results table
+                    # SSF shows multiple vendors/brands in a table format
+                    import re
+                    
+                    # Get all price cells - SSF uses span.ng-binding for prices
+                    # Located in .personal-price-wrap or pricing-wrap
+                    price_selectors = [
+                        ".personal-price-wrap span.ng-binding",
+                        "span.ng-binding",
+                        "input[id^='yourPrice']",
+                        "td span",
+                        ".pricing-wrap span"
+                    ]
+                    
+                    found_prices = []
+                    for price_sel in price_selectors:
                         try:
-                            if await page.is_visible(price_sel):
-                                text = await page.inner_text(price_sel)
-                                import re
-                                match = re.search(r'[\d,]+\.?\d*', text.replace(',', ''))
+                            elements = await page.query_selector_all(price_sel)
+                            for el in elements[:5]:  # Max 5 results
+                                text = await el.inner_text()
+                                # Look for dollar amounts
+                                match = re.search(r'\$?([\d,]+\.?\d*)', text.replace(',', ''))
                                 if match:
-                                    price = float(match.group())
-                                    break
+                                    price_val = float(match.group(1))
+                                    if price_val > 0 and price_val < 10000:  # Reasonable price range
+                                        found_prices.append(price_val)
+                                        logger.info(f"SSF: Found price ${price_val}")
+                            if found_prices:
+                                break
                         except:
                             continue
+                    
+                    # Use lowest price found, or default
+                    if found_prices:
+                        price = min(found_prices)  # Best price
+                        logger.info(f"SSF: Best price for {part_num}: ${price}")
+                    else:
+                        price = 0.0  # No price found
+                        logger.warning(f"SSF: No price found for {part_num}")
                     
                     prices.append({
                         "vendor": "SSF",
                         "part_number": part_num,
                         "brand": "Aftermarket",
                         "price": price,
-                        "stock_status": "Check Stock",
-                        "warehouse": "SSF"
+                        "stock_status": "In Stock" if price > 0 else "Check Stock",
+                        "warehouse": "SSF Oakland"
                     })
-                except:
+                except Exception as e:
+                    logger.error(f"SSF price extraction error: {e}")
                     continue
         
         if should_close:
