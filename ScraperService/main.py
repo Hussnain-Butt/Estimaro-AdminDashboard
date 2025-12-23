@@ -322,12 +322,14 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
         if "/home" in current_url or current_url.endswith("alldata.com/"):
             logger.info("ALLDATA: On home page, clicking REPAIR...")
             try:
-                # Try multiple selectors for REPAIR button
+                # Try multiple selectors for REPAIR button - REAL SELECTORS
                 repair_selectors = [
+                    ".alldata-icon-appIcon-repair",  # REAL selector from DevTools
+                    "div.alldata-icon-appIcon-repair",
+                    "[icon-title='ALLDATA Repair']",
+                    "div[ng-click*='selectProduct']",
                     "a[href*='repair']",
-                    "text=REPAIR",
-                    ".repair-link",
-                    "div:has-text('REPAIR')"
+                    "text=REPAIR"
                 ]
                 for sel in repair_selectors:
                     try:
