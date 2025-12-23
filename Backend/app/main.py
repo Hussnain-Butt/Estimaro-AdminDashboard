@@ -1,3 +1,12 @@
+# FIX: Set Windows event loop policy FIRST before any other imports
+import sys
+import asyncio
+
+if sys.platform == 'win32':
+    # This must be done BEFORE any other async code runs
+    # ProactorEventLoop is required for Playwright subprocess spawning
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 import logging
 import traceback
 from fastapi import FastAPI, Request

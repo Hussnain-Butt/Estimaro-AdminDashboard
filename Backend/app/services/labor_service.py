@@ -7,6 +7,7 @@ Allows easy switching between mock and real (ALLDATA) implementations.
 from app.adapters.labor_adapter_interface import LaborAdapterInterface
 from app.adapters.labor_mock_adapter import LaborMockAdapter
 from app.core.config import settings
+from app.adapters.alldata_scraper_adapter import AlldataScraperAdapter
 
 
 def get_labor_adapter() -> LaborAdapterInterface:
@@ -20,11 +21,9 @@ def get_labor_adapter() -> LaborAdapterInterface:
     
     if adapter_type == "mock":
         return LaborMockAdapter()
-    elif adapter_type == "alldata":
-        # TODO: Implement ALLDATA adapter when API keys are available
-        # from app.adapters.labor_alldata_adapter import LaborALLDATAAdapter
-        # return LaborALLDATAAdapter()
-        raise NotImplementedError("ALLDATA adapter not yet implemented")
+    elif adapter_type == "scraper" or adapter_type == "alldata":
+        # Using scraper for 'alldata' type as well for now
+        return AlldataScraperAdapter()
     else:
         raise ValueError(f"Unknown labor adapter type: {adapter_type}")
 

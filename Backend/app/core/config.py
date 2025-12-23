@@ -22,10 +22,25 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
     
     # External API Adapters
-    LABOR_ADAPTER_TYPE: Literal["mock", "alldata"] = "mock"
-    PARTS_ADAPTER_TYPE: Literal["mock", "partslink"] = "mock"
-    VENDOR_WORLDPAC_ADAPTER_TYPE: Literal["mock", "real"] = "mock"
-    VENDOR_SSF_ADAPTER_TYPE: Literal["mock", "real"] = "mock"
+    LABOR_ADAPTER_TYPE: Literal["mock", "alldata", "scraper"] = "mock"
+    PARTS_ADAPTER_TYPE: Literal["mock", "partslink", "scraper"] = "mock"
+    VENDOR_WORLDPAC_ADAPTER_TYPE: Literal["mock", "real", "scraper"] = "mock"
+    
+    # Vendor Credentials
+    WORLDPAC_USERNAME: str = ""
+    WORLDPAC_PASSWORD: str = ""
+    
+    SSF_USERNAME: str = ""
+    SSF_PASSWORD: str = ""
+    
+    ALLDATA_USERNAME: str = ""
+    ALLDATA_PASSWORD: str = ""
+    
+    PARTSLINK24_COMPANY_ID: str = ""
+    PARTSLINK24_USERNAME: str = ""
+    PARTSLINK24_PASSWORD: str = ""
+
+    VENDOR_SSF_ADAPTER_TYPE: Literal["mock", "real", "scraper"] = "mock"
     TEKMETRIC_ADAPTER_TYPE: Literal["mock", "real"] = "mock"
     
     # Twilio (SMS Notifications)

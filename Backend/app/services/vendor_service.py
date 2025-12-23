@@ -212,85 +212,47 @@ class VendorService:
         
         return scored_offers
 
-    def create_mock_vendor_offers(
-        self,
-        part_number: str,
-        part_description: str
-    ) -> List[VendorOffer]:
-        """
-        Create mock vendor offers for demonstration.
-        In production, this would call actual vendor APIs.
+    async def _fetch_vendor_offers(self, part_numbers: List[str]) -> List[VendorOffer]:
+        """Fetch offers from all configured vendor adapters"""
+        from app.adapters.worldpac_scraper_adapter import WorldpacScraperAdapter
+        from app.adapters.ssf_scraper_adapter import SSFScraperAdapter
+        from app.core.config import settings
+
+        adapters = []
+        # Add adapters based on config. For now, we add them if config says 'scraper' or 'real'
+        # Or simpler: Just add them. The adapters check credentials internally.
+        if settings.VENDOR_WORLDPAC_ADAPTER_TYPE in ["scraper", "real"]:
+            adapters.append(WorldpacScraperAdapter())
+        if settings.VENDOR_SSF_ADAPTER_TYPE in ["scraper", "real"]:
+             adapters.append(SSFScraperAdapter())
         
-        Args:
-            part_number: OEM part number
-            part_description: Part description
-            
-        Returns:
-            List of mock vendor offers
-        """
-        # Simulated vendor data
-        base_price = Decimal("100.00")
-        
-        offers = [
-            VendorOffer(
-                vendor_id="worldpac_001",
-                vendor_name="Worldpac",
-                brand="Bosch",
-                brand_tier=self.get_brand_tier("Bosch"),
-                part_number=part_number,
-                price=base_price * Decimal("1.15"),
-                stock_status="In Stock",
-                stock_quantity=6,
-                warehouse_location="Oakland, CA",
-                warehouse_distance_miles=12.0,
-                delivery_option="Same Day Pickup",
-                warranty="2 Year"
-            ),
-            VendorOffer(
-                vendor_id="worldpac_002",
-                vendor_name="Worldpac",
-                brand="Brembo",
-                brand_tier=self.get_brand_tier("Brembo"),
-                part_number=part_number,
-                price=base_price * Decimal("1.35"),
-                stock_status="In Stock",
-                stock_quantity=4,
-                warehouse_location="Oakland, CA",
-                warehouse_distance_miles=12.0,
-                delivery_option="Same Day Pickup",
-                warranty="3 Year"
-            ),
-            VendorOffer(
-                vendor_id="ssf_001",
-                vendor_name="SSF",
-                brand="Akebono",
-                brand_tier=self.get_brand_tier("Akebono"),
-                part_number=part_number,
-                price=base_price * Decimal("1.25"),
-                stock_status="Available",
-                stock_quantity=3,
-                warehouse_location="San Francisco, CA",
-                warehouse_distance_miles=25.0,
-                delivery_option="Next Day Delivery",
-                warranty="Lifetime"
-            ),
-            VendorOffer(
-                vendor_id="ssf_002",
-                vendor_name="SSF",
-                brand="ATE",
-                brand_tier=self.get_brand_tier("ATE"),
-                part_number=part_number,
-                price=base_price * Decimal("1.10"),
-                stock_status="Available",
-                stock_quantity=8,
-                warehouse_location="San Jose, CA",
-                warehouse_distance_miles=35.0,
-                delivery_option="Next Day Delivery",
-                warranty="1 Year"
-            ),
-        ]
-        
-        return offers
+        # If no real adapters enabled, or fallbacks needed?
+        # If list empty, maybe default to mock? 
+        if not adapters:
+            # Fallback for now if config isn't set
+            adapters.append(WorldpacScraperAdapter()) 
+            adapters.append(SSFScraperAdapter())
+
+        all_offers = []
+        for adapter in adapters:
+            results = await adapter.get_prices(part_numbers)
+            for res in results:
+                # Map VendorPriceResult to VendorOffer
+                all_offers.append(VendorOffer(
+                    vendor_id=res.vendor_id,
+                    vendor_name=res.vendor_name,
+                    brand=res.brand,
+                    brand_tier=self.get_brand_tier(res.brand),
+                    part_number=res.part_number,
+                    price=res.price,
+                    stock_status=res.stock_status,
+                    stock_quantity=res.stock_quantity,
+                    warehouse_location=res.warehouse_location,
+                    warehouse_distance_miles=res.warehouse_distance_miles,
+                    delivery_option=res.delivery_option,
+                    warranty=res.warranty
+                ))
+        return all_offers
 
     async def compare_vendors(
         self,
@@ -299,22 +261,18 @@ class VendorService:
         weights: VendorWeights = None
     ) -> Dict:
         """
-        Compare vendors for multiple parts.
-        
-        This is the main method called by auto_generate_service.
-        
-        Args:
-            part_numbers: List of OEM part numbers to search
-            part_descriptions: Optional descriptions for each part
-            weights: Shop-configured scoring weights
-            
-        Returns:
-            Comparison results with scored and ranked offers per part
+        Compare vendors for multiple parts using SCRAPERS.
         """
         if part_descriptions is None:
             part_descriptions = ["" for _ in part_numbers]
         
         weights = weights or VendorWeights()
+        
+        # Fetch ALL offers for ALL parts in parallel (conceptually)
+        # The adapters handle batching or we call per part?
+        # My adapters implemented get_prices(List[str]), so we can pass all at once.
+        
+        all_fetched_offers = await self._fetch_vendor_offers(part_numbers)
         
         results = {
             "success": True,
@@ -327,9 +285,10 @@ class VendorService:
         }
         
         for part_num, part_desc in zip(part_numbers, part_descriptions):
-            # In production: Call actual vendor APIs here
-            # For now: Use mock data
-            offers = self.create_mock_vendor_offers(part_num, part_desc)
+            # Filter offers for this part
+            offers = [o for o in all_fetched_offers if o.part_number == part_num]
+            
+            # Score and rank
             scored_offers = self.score_and_rank_offers(offers, weights)
             
             part_result = {
@@ -358,41 +317,35 @@ class VendorService:
                     }
                     for so in scored_offers
                 ],
-                "primary": next(
-                    (so for so in scored_offers if so.selection == "Primary"),
-                    None
-                ),
-                "backup": next(
-                    (so for so in scored_offers if so.selection == "Backup"),
-                    None
-                )
+                "primary": None,
+                "backup": None
             }
             
-            # Convert primary/backup to serializable format
-            if part_result["primary"]:
-                so = part_result["primary"]
+            # Set primary/backup fields
+            primary = next((so for so in scored_offers if so.selection == "Primary"), None)
+            backup = next((so for so in scored_offers if so.selection == "Backup"), None)
+            
+            if primary:
                 part_result["primary"] = {
-                    "vendor": so.offer.vendor_name,
-                    "brand": so.offer.brand,
-                    "price": str(so.offer.price),
-                    "score": so.composite_score
+                    "vendor": primary.offer.vendor_name,
+                    "brand": primary.offer.brand,
+                    "price": str(primary.offer.price),
+                    "score": primary.composite_score
                 }
-            if part_result["backup"]:
-                so = part_result["backup"]
+            if backup:
                 part_result["backup"] = {
-                    "vendor": so.offer.vendor_name,
-                    "brand": so.offer.brand,
-                    "price": str(so.offer.price),
-                    "score": so.composite_score
+                    "vendor": backup.offer.vendor_name,
+                    "brand": backup.offer.brand,
+                    "price": str(backup.offer.price),
+                    "score": backup.composite_score
                 }
             
             results["parts"].append(part_result)
         
-        # Summary
         results["summary"] = {
             "total_parts": len(part_numbers),
             "vendors_queried": ["Worldpac", "SSF"],
-            "note": "Using mock data - connect real vendor APIs for production"
+            "note": "Live Scraper Data"
         }
         
         return results
