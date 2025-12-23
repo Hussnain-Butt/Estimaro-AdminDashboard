@@ -268,18 +268,25 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
         if found_labor_hours:
             labor_hours = found_labor_hours[0]
             logger.info(f"ALLDATA: Using labor hours: {labor_hours}")
+            
+            if should_close:
+                await page.close()
+            
+            return {
+                "success": True,
+                "labor_hours": labor_hours,
+                "source": "alldata-live"
+            }
         else:
-            labor_hours = 1.5  # Default fallback
-            logger.warning("ALLDATA: No labor hours found, using default 1.5")
-        
-        if should_close:
-            await page.close()
-        
-        return {
-            "success": True,
-            "labor_hours": labor_hours,
-            "source": "alldata-scraped"
-        }
+            # NO FALLBACK - Return error
+            logger.error("ALLDATA: No labor hours found - returning error")
+            if should_close:
+                await page.close()
+            
+            return {
+                "success": False,
+                "error": "Could not extract labor hours from ALLDATA. Please search manually."
+            }
         
     except Exception as e:
         logger.error(f"ALLDATA scrape error: {e}")
@@ -356,7 +363,7 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
             except Exception as e:
                 logger.warning(f"PARTSLINK: Search button click failed: {e}")
         
-        # Try to get part numbers
+        # Try to get part numbers - NO FALLBACK
         parts = []
         oem_selectors = [".oem-number", ".part-number", ".article-number"]
         
@@ -377,23 +384,24 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
             except:
                 continue
         
-        # Fallback if no parts found
-        if not parts:
-            parts.append({
-                "part_number": f"OEM-{vin[-6:]}",
-                "description": f"{job_description} - Lookup Required",
-                "manufacturer": "OEM",
-                "is_oem": True
-            })
-        
         if should_close:
             await page.close()
         
-        return {
-            "success": True,
-            "parts": parts,
-            "source": "partslink-scraped"
-        }
+        # NO FALLBACK - Return error if no parts found
+        if parts:
+            return {
+                "success": True,
+                "parts": parts,
+                "source": "partslink-live"
+            }
+        else:
+            logger.error("PARTSLINK: No parts found - returning error")
+            return {
+                "success": False,
+                "parts": [],
+                "error": "Could not find OEM parts from PartsLink24. Please search manually.",
+                "source": "partslink-error"
+            }
         
     except Exception as e:
         logger.error(f"PARTSLINK scrape error: {e}")
@@ -512,23 +520,21 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
         if should_close:
             await page.close()
         
-        # If no prices found, return fallback
-        if not prices:
-            for part_num in part_numbers:
-                prices.append({
-                    "vendor": "Manual Check Required",
-                    "part_number": part_num,
-                    "brand": "Unknown",
-                    "price": 0.0,
-                    "stock_status": "Check Vendor Site",
-                    "warehouse": "N/A"
-                })
-        
-        return {
-            "success": True,
-            "prices": prices,
-            "source": "vendor-scraped"
-        }
+        # NO FALLBACK - Return error if no real prices found
+        if prices and any(p["price"] > 0 for p in prices):
+            return {
+                "success": True,
+                "prices": prices,
+                "source": "ssf-live"
+            }
+        else:
+            logger.error("SSF: No prices found - returning error")
+            return {
+                "success": False,
+                "prices": [],
+                "error": "Could not find prices from SSF. Please search manually.",
+                "source": "ssf-error"
+            }
         
     except Exception as e:
         logger.error(f"PRICING scrape error: {e}")
