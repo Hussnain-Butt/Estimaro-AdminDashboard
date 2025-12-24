@@ -565,7 +565,7 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
             if "login.do" in current_url or "/login" in current_url:
                 is_logged_in = False
                 logger.warning("PARTSLINK: On login page - NOT logged in!")
-            elif any(x in current_url for x in ["/brandmenu", "/p5.do", "/catalog", "/pl24-app"]):
+            elif any(x in current_url for x in ["/brandmenu", "/p5.do", "/catalog", "/pl24-app", "startup.do"]):
                 is_logged_in = True
         
         logger.info(f"PARTSLINK URL: {current_url}, Logged in: {is_logged_in}")
