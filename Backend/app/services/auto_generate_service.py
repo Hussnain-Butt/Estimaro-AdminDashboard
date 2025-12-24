@@ -289,6 +289,22 @@ class AutoGenerateService:
                     "success": vendor_result.get("success", True),
                     "data": vendor_result
                 }
+                
+                # UPDATE parts_items with vendor prices
+                # This ensures Parts tab shows actual prices, not $0.0
+                vendor_parts = vendor_result.get("parts", [])
+                for vendor_part in vendor_parts:
+                    part_num = vendor_part.get("partNumber", "")
+                    recommended = vendor_part.get("recommended", {})
+                    vendor_price = Decimal(str(recommended.get("price", "0") or "0"))
+                    vendor_name = recommended.get("vendor", "Unknown")
+                    
+                    # Find and update matching part in parts_items
+                    for item in parts_items:
+                        if item.partNumber == part_num and item.cost == Decimal("0"):
+                            item.cost = vendor_price
+                            item.total = vendor_price * (Decimal("1") + item.markup / Decimal("100"))
+                            item.vendor = vendor_name
             else:
                 result["steps"]["vendor_compare"] = {
                     "success": True,
