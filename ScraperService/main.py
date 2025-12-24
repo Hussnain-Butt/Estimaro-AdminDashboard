@@ -658,49 +658,73 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         # Step 6: Click on a main group or search for parts
         logger.info(f"PARTSLINK: Looking for parts related to: {job_description}")
         
+        # Wait for page to fully load
+        await asyncio.sleep(2)
+        
         # Try to click on relevant main group based on job description
+        # DOM structure: div[data-test-id="row"] contains span elements with text
         # For Air Conditioner, relevant groups are: Radiator (17), Engine (11), etc.
         main_group_selectors = [
-            "text=Radiator",  # 17 - Radiator (cooling/AC related)
-            "text=Engine",   # 11 - Engine
-            "text=Parts Repair Service",  # 04
-            "text=Engine electrical system",  # 12
-            f"text={job_description}",  # Try exact match
+            "span:has-text('Radiator')",  # 17 - Radiator (cooling/AC related) - exact span
+            "span:has-text('Engine') >> nth=0",   # 11 - Engine (first match)
+            "div[data-test-id='row']:has-text('Radiator')",  # Row containing Radiator
+            "text=Radiator",  # Simple text match
+            "[class*='_value_'] >> text=Radiator",  # Value class from DevTools
         ]
         
         main_group_clicked = False
         for sel in main_group_selectors:
             try:
+                # Wait for element to appear
+                try:
+                    await page.wait_for_selector(sel, timeout=3000)
+                except:
+                    continue
+                    
                 el = await page.query_selector(sel)
-                if el and await el.is_visible():
-                    await el.click()
-                    await asyncio.sleep(3)
-                    logger.info(f"PARTSLINK: Clicked main group using {sel}")
-                    main_group_clicked = True
-                    break
-            except:
+                if el:
+                    is_visible = await el.is_visible()
+                    logger.info(f"PARTSLINK: Main group '{sel}' found, visible={is_visible}")
+                    if is_visible:
+                        await el.click()
+                        await asyncio.sleep(3)
+                        logger.info(f"PARTSLINK: Clicked main group using {sel}")
+                        main_group_clicked = True
+                        break
+            except Exception as e:
+                logger.debug(f"PARTSLINK: Main group selector '{sel}' error: {e}")
                 continue
         
+        if not main_group_clicked:
+            logger.warning("PARTSLINK: Could not click any main group")
+        
         # Step 7: Use "Search for parts" input - MUST be specific to avoid VIN field!
-        # DO NOT use generic selectors that might match VIN field
+        # Wait for search input to be ready
         search_selectors = [
             "input[placeholder='Search for parts']",  # Exact match - safest
-            "input[placeholder*='Search for parts']",
-            # REMOVED: input.MuiInputBase-input - this matches VIN field first!
+            ":r3:",  # ID from DOM discovery (may need # prefix)
+            "#\\:r3\\:",  # Escaped ID selector
         ]
         
         searched = False
         for sel in search_selectors:
             try:
+                try:
+                    await page.wait_for_selector(sel, timeout=2000)
+                except:
+                    continue
+                    
                 el = await page.query_selector(sel)
                 if el and await el.is_visible():
+                    logger.info(f"PARTSLINK: Search input found with {sel}")
                     await el.fill(job_description)
                     await page.keyboard.press("Enter")
                     logger.info(f"PARTSLINK: Searched using {sel}")
                     await asyncio.sleep(3)
                     searched = True
                     break
-            except:
+            except Exception as e:
+                logger.debug(f"PARTSLINK: Search selector '{sel}' error: {e}")
                 continue
         
         if not searched and not main_group_clicked:
