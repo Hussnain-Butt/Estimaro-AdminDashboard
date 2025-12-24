@@ -392,10 +392,11 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
         logger.info("ALLDATA: Looking for Parts and Labor...")
         parts_labor_clicked = False
         parts_labor_selectors = [
-            "text=Parts and Labor",
+            "a.itype-name:has-text('Parts and Labor')",  # Link in description list
+            "text=Parts and Labor >> nth=0",  # First matching text
             "a:has-text('Parts and Labor')",
-            ".parts-labor-link",
-            "[data-testid='parts-labor']"
+            ".description-system a:has-text('Parts')",
+            ".ad-repair-itype-table a:has-text('Parts')"
         ]
         
         for sel in parts_labor_selectors:
@@ -417,12 +418,12 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
         # IMPORTANT: Do NOT use selectors that match VIN search box!
         logger.info(f"ALLDATA: Searching for job: {job_description}")
         job_search_selectors = [
-            "input[placeholder*='Search Parts']",
-            "input[placeholder*='Search Labor']",
-            "#laborSearch",
-            ".search-input",
-            ".parts-search"
-            # NOTE: Do NOT add "input[placeholder*='Search']" - it matches VIN field!
+            "#txtTypeSearch",  # Real selector from DevTools
+            "input[placeholder='Search Parts and Labor']",  # Exact placeholder
+            "input.form-control[type='search']",
+            ".itype-search-input input",
+            "ad-uib-searchbox input"
+            # NOTE: Do NOT add generic "input[placeholder*='Search']" - it matches VIN field!
         ]
         
         job_searched = False
@@ -449,10 +450,11 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
             try:
                 # Try to click on first labor item in list
                 result_selectors = [
+                    "a.itype-name",  # Links in the list
+                    f"a:has-text('{job_description}')",
+                    ".ad-repair-itype-table a",  # Table links
                     f"text={job_description}",
-                    ".labor-item",
-                    "tr:has-text('Labor')",
-                    "a:has-text('Labor')"
+                    "tr.ng-star-inserted a"
                 ]
                 for sel in result_selectors:
                     try:
@@ -473,10 +475,11 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
         found_labor_hours = []
         
         labor_selectors = [
-            "input[role='spinbutton']",
-            "div.labor-column-quantity input",
-            "input.p-inputnumber",
-            ".labor-hours",
+            "div.labor-column-standard",  # Main selector from DevTools - shows STANDARD hours
+            "div.labor-columns div.labor-column-standard",  # More specific
+            ".labor-column-quantity",  # Quantity column
+            "div.labor-column-warranty",  # WARRANTY column has hours too
+            "input[role='spinbutton']",  # Input boxes for hours
             "td.hours",
             "span:has-text('hrs')"
         ]
