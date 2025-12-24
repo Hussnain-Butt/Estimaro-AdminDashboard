@@ -573,9 +573,11 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         if not is_logged_in:
             return {"success": False, "error": "Not logged into PartsLink24. Please login in Chrome first."}
         
-        # Step 2: Navigate to brand menu if not there
-        if "brandmenu" not in current_url and "pl24-app" not in current_url:
-            await page.goto("https://www.partslink24.com/partslink24/user/brandMenu.do", wait_until="domcontentloaded")
+        # Step 2: ALWAYS navigate to startup.do for fresh VIN search
+        # This fixes issue where tab is already on search results and VIN input is missing
+        if "startup.do" not in current_url:
+            logger.info("PARTSLINK: Navigating to startup.do for fresh search...")
+            await page.goto("https://www.partslink24.com/partslink24/startup.do", wait_until="domcontentloaded")
             await asyncio.sleep(2)
         
         # Step 3: Enter VIN and search
