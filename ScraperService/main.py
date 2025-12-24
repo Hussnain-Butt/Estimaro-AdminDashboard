@@ -652,21 +652,21 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         logger.info(f"PARTSLINK: Looking for parts related to: {job_description}")
         
         # Try to click on relevant main group based on job description
-        search_terms = job_description.lower().split()
+        # For Air Conditioner, relevant groups are: Radiator (17), Engine (11), etc.
         main_group_selectors = [
-            f"text={job_description}",  # Exact match first
-            "tr:has-text('Engine')",  # Common groups
-            "tr:has-text('Parts Repair')",
-            "td:has-text('electrical')",
-            "td:has-text('Radiator')",  # For A/C related
-            "td:has-text('Engine')",
+            "text=Radiator",  # 17 - Radiator (cooling/AC related)
+            "text=Engine",   # 11 - Engine
+            "text=Parts Repair Service",  # 04
+            "text=Engine electrical system",  # 12
+            f"text={job_description}",  # Try exact match
         ]
         
         main_group_clicked = False
         for sel in main_group_selectors:
             try:
-                if await page.is_visible(sel):
-                    await page.click(sel)
+                el = await page.query_selector(sel)
+                if el and await el.is_visible():
+                    await el.click()
                     await asyncio.sleep(3)
                     logger.info(f"PARTSLINK: Clicked main group using {sel}")
                     main_group_clicked = True
@@ -698,42 +698,58 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         if not searched and not main_group_clicked:
             logger.warning("PARTSLINK: Could not search or click main group")
         
-        # Step 7: Extract part numbers from page
+        # Step 8: Extract part numbers from page
+        # Part numbers are in format XX_XXXX (e.g., 17_0525, 17_0464)
         logger.info("PARTSLINK: Extracting part numbers...")
         parts = []
         
-        part_selectors = [
-            "td:nth-child(1)",  # First column in table (often has part codes)
-            "td.description",  # Description column
-            ".part-number",
-            ".oem-number",
-            ".article-number",
-            "td.fg",  # FG column from screenshot
-            "[data-part-number]",
-            "span:has-text('_')",  # Part nums often have underscores like 04_0047
-        ]
+        # First try to find all text on page matching part number pattern
+        try:
+            page_content = await page.content()
+            # Pattern: 2 digits, underscore, 4 digits (e.g., 17_0525)
+            part_pattern = r'\b(\d{2}_\d{4})\b'
+            found_parts = re.findall(part_pattern, page_content)
+            unique_parts = list(set(found_parts))[:10]  # Limit to 10 unique parts
+            
+            for part_num in unique_parts:
+                parts.append({
+                    "part_number": part_num,
+                    "description": f"{job_description} - OEM",
+                    "manufacturer": "BMW OEM",  # Since it's PartsLink for BMW
+                    "is_oem": True
+                })
+                logger.info(f"PARTSLINK: Found part: {part_num}")
+        except Exception as e:
+            logger.warning(f"PARTSLINK: Regex extraction failed: {e}")
         
-        for sel in part_selectors:
-            try:
-                elements = await page.query_selector_all(sel)
-                for el in elements[:10]:
-                    text = await el.inner_text()
-                    text = text.strip()
-                    if text and len(text) > 3:
-                        # Clean up part number
-                        part_num = re.sub(r'[^\w\d-]', '', text)
-                        if part_num:
-                            parts.append({
-                                "part_number": part_num,
-                                "description": f"{job_description} - OEM",
-                                "manufacturer": "OEM",
-                                "is_oem": True
-                            })
-                            logger.info(f"PARTSLINK: Found part: {part_num}")
-                if parts:
-                    break
-            except:
-                continue
+        # If regex didn't find parts, try DOM selectors
+        if not parts:
+            part_selectors = [
+                "td:has-text('_')",  # Cells with underscore (part numbers)
+                "span:has-text('_')",
+                ".description",
+            ]
+            
+            for sel in part_selectors:
+                try:
+                    elements = await page.query_selector_all(sel)
+                    for el in elements[:15]:
+                        text = await el.inner_text()
+                        # Find part numbers in text
+                        matches = re.findall(r'\b(\d{2}_\d{4})\b', text)
+                        for part_num in matches:
+                            if part_num not in [p["part_number"] for p in parts]:
+                                parts.append({
+                                    "part_number": part_num,
+                                    "description": f"{job_description} - OEM",
+                                    "manufacturer": "BMW OEM",
+                                    "is_oem": True
+                                })
+                                logger.info(f"PARTSLINK: Found part via DOM: {part_num}")
+                    if parts:
+                        break
+                except:
+                    continue
         
         # Return result
         if parts:
