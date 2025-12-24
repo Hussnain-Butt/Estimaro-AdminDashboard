@@ -13,6 +13,7 @@ import Reports from './components/Reports'
 import Settings from './components/Settings'
 import CustomerApproval from './components/CustomerApproval'
 import Login from './components/Login'
+import { ToastProvider } from './components/ui/Toast'
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(localStorage.getItem('estimaro_auth') === 'true')
@@ -25,46 +26,48 @@ function App() {
   // Optional: Listen for storage events or simple effect if needed, but direct state setting is enough.
 
   return (
-    <Router>
-      <Routes>
-        {/* Public Route - Login */}
-        <Route
-          path="/login"
-          element={!isAuthenticated ? <Login onLogin={handleLogin} /> : <Navigate to="/" replace />}
-        />
+    <ToastProvider>
+      <Router>
+        <Routes>
+          {/* Public Route - Login */}
+          <Route
+            path="/login"
+            element={!isAuthenticated ? <Login onLogin={handleLogin} /> : <Navigate to="/" replace />}
+          />
 
-        {/* Public Route - Customer Approval (No Auth Required) */}
-        <Route path="/approve/:token" element={<CustomerApproval />} />
+          {/* Public Route - Customer Approval (No Auth Required) */}
+          <Route path="/approve/:token" element={<CustomerApproval />} />
 
-        {/* Protected Dashboard Routes */}
-        <Route
-          path="*"
-          element={
-            isAuthenticated ? (
-              <div className="flex h-screen bg-background text-text-primary overflow-hidden">
-                <Sidebar />
-                <div className="flex-1 flex flex-col min-w-0">
-                  <Header />
-                  <main className="flex-1 overflow-y-auto p-6">
-                    <Routes>
-                      <Route path="/" element={<Dashboard />} />
-                      <Route path="/new-estimate" element={<NewEstimate />} />
-                      <Route path="/estimates" element={<Estimates />} />
-                      <Route path="/customers" element={<Customers />} />
-                      <Route path="/vendors" element={<Vendors />} />
-                      <Route path="/reports" element={<Reports />} />
-                      <Route path="/settings" element={<Settings />} />
-                    </Routes>
-                  </main>
+          {/* Protected Dashboard Routes */}
+          <Route
+            path="*"
+            element={
+              isAuthenticated ? (
+                <div className="flex h-screen bg-background text-text-primary overflow-hidden">
+                  <Sidebar />
+                  <div className="flex-1 flex flex-col min-w-0">
+                    <Header />
+                    <main className="flex-1 overflow-y-auto p-6">
+                      <Routes>
+                        <Route path="/" element={<Dashboard />} />
+                        <Route path="/new-estimate" element={<NewEstimate />} />
+                        <Route path="/estimates" element={<Estimates />} />
+                        <Route path="/customers" element={<Customers />} />
+                        <Route path="/vendors" element={<Vendors />} />
+                        <Route path="/reports" element={<Reports />} />
+                        <Route path="/settings" element={<Settings />} />
+                      </Routes>
+                    </main>
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          }
-        />
-      </Routes>
-    </Router>
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+        </Routes>
+      </Router>
+    </ToastProvider>
   )
 }
 

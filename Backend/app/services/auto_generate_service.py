@@ -26,6 +26,7 @@ from app.services.warranty_service import warranty_service
 from app.services.vendor_service import vendor_service, VendorWeights
 from app.services.part_condition_service import part_condition_service
 from app.services.addon_service import addon_service
+from app.adapters.remote_adapters import ScraperServiceError
 from app.schemas.estimate import (
     LaborItemSchema,
     PartItemSchema,
@@ -83,6 +84,7 @@ class AutoGenerateService:
             "steps": {},
             "flags": [],
             "errors": [],
+            "critical_errors": [],  # Errors that should stop estimate generation
             "customer": {
                 "name": customer_name,
                 "phone": customer_phone,
@@ -206,6 +208,14 @@ class AutoGenerateService:
                     "error": "No labor time found"
                 }
                 result["errors"].append("Labor lookup returned no results")
+        except ScraperServiceError as e:
+            # Critical scraper error - don't generate dummy estimate
+            result["steps"]["labor_lookup"] = {
+                "success": False,
+                "error": str(e)
+            }
+            result["critical_errors"].append(f"ALLDATA: {e.error}")
+            result["errors"].append(str(e))
         except Exception as e:
             result["steps"]["labor_lookup"] = {
                 "success": False,
@@ -255,6 +265,14 @@ class AutoGenerateService:
                     "data": {"items": []},
                     "warning": "No parts found"
                 }
+        except ScraperServiceError as e:
+            # Critical scraper error - don't generate dummy estimate
+            result["steps"]["parts_search"] = {
+                "success": False,
+                "error": str(e)
+            }
+            result["critical_errors"].append(f"PartsLink24: {e.error}")
+            result["errors"].append(str(e))
         except Exception as e:
             result["steps"]["parts_search"] = {
                 "success": False,
@@ -473,9 +491,12 @@ class AutoGenerateService:
         # Calculate confidence score
         result["confidence_score"] = self._calculate_confidence_score(result)
         
-        # Determine overall success
-        critical_errors = [e for e in result["errors"] if "VIN" in e or "Labor" in e]
-        result["success"] = len(critical_errors) == 0
+        # Determine overall success - if any critical errors, don't generate estimate
+        if result["critical_errors"]:
+            result["success"] = False
+            result["error_message"] = "; ".join(result["critical_errors"])
+        else:
+            result["success"] = True
         
         return result
     

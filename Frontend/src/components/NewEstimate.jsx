@@ -5,6 +5,7 @@ import { autoGenerateEstimate, pushToTekmetric, generateApprovalLink, createDraf
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import VendorCompareStep from './estimate-steps/VendorCompareStep'
+import { useToast } from './ui/Toast'
 
 // ===================================================================================
 //  STEP COMPONENTS
@@ -375,6 +376,7 @@ const ActionsStep = ({ data, calculatedTotals, onDownloadPDF, onSaveDraft, onPus
 const steps = ['Intake', 'Labor', 'Parts', 'Vendor Compare', 'Preview', 'Actions']
 
 const NewEstimate = () => {
+  const toast = useToast()
   const [currentStep, setCurrentStep] = useState(0)
   const [isGenerating, setIsGenerating] = useState(false)
   const [isPushing, setIsPushing] = useState(false)
@@ -415,7 +417,7 @@ const NewEstimate = () => {
     const canGenerate = formData.vin.length === 17 && formData.serviceRequest && formData.customerName && formData.customerPhone
 
     if (!canGenerate) {
-      alert('Please fill all required fields: VIN (17 chars), Service Request, Customer Name, and Phone')
+      toast.error('Please fill all required fields: VIN (17 chars), Service Request, Customer Name, and Phone')
       return
     }
 
@@ -506,7 +508,17 @@ const NewEstimate = () => {
       // AUTO-SAVE: Save to database immediately using mergedData
       await handleSaveDraft(true, mergedData)
     } else {
-      alert(`Error: ${result.error}`)
+      // Check for backend's critical_errors for specific error messages
+      const responseData = result.data
+      if (responseData?.critical_errors?.length > 0) {
+        responseData.critical_errors.forEach(err => {
+          toast.error(err, 'Scraper Error')
+        })
+      } else if (responseData?.error_message) {
+        toast.error(responseData.error_message, 'Generation Failed')
+      } else {
+        toast.error(result.error || 'Failed to auto-generate estimate', 'Error')
+      }
     }
 
     setIsGenerating(false)
