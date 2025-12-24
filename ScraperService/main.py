@@ -658,36 +658,45 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
             "tr:has-text('Engine')",  # Common groups
             "tr:has-text('Parts Repair')",
             "td:has-text('electrical')",
+            "td:has-text('Radiator')",  # For A/C related
+            "td:has-text('Engine')",
         ]
         
+        main_group_clicked = False
         for sel in main_group_selectors:
             try:
                 if await page.is_visible(sel):
                     await page.click(sel)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
                     logger.info(f"PARTSLINK: Clicked main group using {sel}")
+                    main_group_clicked = True
                     break
             except:
                 continue
         
-        # Also try the search input
+        # Step 7: Use "Search for parts" input (MUI input from DOM discovery)
         search_selectors = [
+            "input[placeholder='Search for parts']",  # Exact match from DOM discovery
             "input[placeholder*='Search for parts']",
-            "input[placeholder*='parts']",
-            "input.part-search",
-            "#partSearch"
+            ".MuiInputBase-input[placeholder*='parts']",  # MUI class from discovery
+            "input.MuiInputBase-input",
         ]
         
+        searched = False
         for sel in search_selectors:
             try:
                 if await page.is_visible(sel):
                     await page.fill(sel, job_description)
                     await page.keyboard.press("Enter")
                     logger.info(f"PARTSLINK: Searched using {sel}")
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
+                    searched = True
                     break
             except:
                 continue
+        
+        if not searched and not main_group_clicked:
+            logger.warning("PARTSLINK: Could not search or click main group")
         
         # Step 7: Extract part numbers from page
         logger.info("PARTSLINK: Extracting part numbers...")
