@@ -655,77 +655,93 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         except Exception as e:
             logger.warning(f"PARTSLINK: Catalog button search failed: {e}")
         
-        # Step 6: Click on a main group or search for parts
-        logger.info(f"PARTSLINK: Looking for parts related to: {job_description}")
+        # Step 6: FIRST try to search for parts using job description
+        # This ensures we find parts related to the actual problem (Air Conditioner, not Radiator)
+        logger.info(f"PARTSLINK: Searching for parts related to: {job_description}")
         
         # Wait for page to fully load
         await asyncio.sleep(2)
         
-        # Try to click on relevant main group based on job description
-        # DOM structure: div[data-test-id="row"] contains span elements with text
-        # For Air Conditioner, relevant groups are: Radiator (17), Engine (11), etc.
-        main_group_selectors = [
-            "span:has-text('Radiator')",  # 17 - Radiator (cooling/AC related) - exact span
-            "span:has-text('Engine') >> nth=0",   # 11 - Engine (first match)
-            "div[data-test-id='row']:has-text('Radiator')",  # Row containing Radiator
-            "text=Radiator",  # Simple text match
-            "[class*='_value_'] >> text=Radiator",  # Value class from DevTools
-        ]
-        
-        main_group_clicked = False
-        for sel in main_group_selectors:
-            try:
-                # Wait for element to appear
-                try:
-                    await page.wait_for_selector(sel, timeout=3000)
-                except:
-                    continue
-                    
-                el = await page.query_selector(sel)
-                if el:
-                    is_visible = await el.is_visible()
-                    logger.info(f"PARTSLINK: Main group '{sel}' found, visible={is_visible}")
-                    if is_visible:
-                        await el.click()
-                        await asyncio.sleep(3)
-                        logger.info(f"PARTSLINK: Clicked main group using {sel}")
-                        main_group_clicked = True
-                        break
-            except Exception as e:
-                logger.debug(f"PARTSLINK: Main group selector '{sel}' error: {e}")
-                continue
-        
-        if not main_group_clicked:
-            logger.warning("PARTSLINK: Could not click any main group")
-        
-        # Step 7: Use "Search for parts" input - MUST be specific to avoid VIN field!
-        # Wait for search input to be ready
+        # Step 6a: Use "Search for parts" input with job description
         search_selectors = [
             "input[placeholder='Search for parts']",  # Exact match - safest
-            ":r3:",  # ID from DOM discovery (may need # prefix)
-            "#\\:r3\\:",  # Escaped ID selector
         ]
         
         searched = False
         for sel in search_selectors:
             try:
                 try:
-                    await page.wait_for_selector(sel, timeout=2000)
+                    await page.wait_for_selector(sel, timeout=3000)
                 except:
                     continue
                     
                 el = await page.query_selector(sel)
                 if el and await el.is_visible():
                     logger.info(f"PARTSLINK: Search input found with {sel}")
-                    await el.fill(job_description)
+                    await el.fill(job_description)  # Search for "Air Conditioner"
                     await page.keyboard.press("Enter")
-                    logger.info(f"PARTSLINK: Searched using {sel}")
+                    logger.info(f"PARTSLINK: Searched for '{job_description}' using {sel}")
                     await asyncio.sleep(3)
                     searched = True
                     break
             except Exception as e:
                 logger.debug(f"PARTSLINK: Search selector '{sel}' error: {e}")
                 continue
+        
+        # Step 6b: If search didn't work, try clicking relevant main group
+        # Build dynamic selectors based on job description keywords
+        main_group_clicked = False
+        if not searched:
+            logger.info("PARTSLINK: Search failed, trying main group click...")
+            
+            # Build selectors based on job description keywords
+            job_lower = job_description.lower()
+            main_group_keywords = []
+            
+            # Map job descriptions to relevant main groups
+            if "air" in job_lower or "condition" in job_lower or "ac" in job_lower or "hvac" in job_lower:
+                main_group_keywords = ["Air", "Climate", "Heating", "Ventilation", "64"]
+            elif "engine" in job_lower or "motor" in job_lower:
+                main_group_keywords = ["Engine", "Motor", "11"]
+            elif "brake" in job_lower:
+                main_group_keywords = ["Brake", "34"]
+            elif "oil" in job_lower:
+                main_group_keywords = ["Engine", "Oil", "11"]
+            elif "radiator" in job_lower or "cooling" in job_lower:
+                main_group_keywords = ["Radiator", "Cooling", "17"]
+            else:
+                # Default: try to match job description directly
+                main_group_keywords = [job_description, "Parts Repair"]
+            
+            # Build selectors from keywords
+            main_group_selectors = []
+            for keyword in main_group_keywords:
+                main_group_selectors.append(f"div[data-test-id='row']:has-text('{keyword}')")
+                main_group_selectors.append(f"span:has-text('{keyword}')")
+            
+            for sel in main_group_selectors:
+                try:
+                    try:
+                        await page.wait_for_selector(sel, timeout=2000)
+                    except:
+                        continue
+                        
+                    el = await page.query_selector(sel)
+                    if el:
+                        is_visible = await el.is_visible()
+                        logger.info(f"PARTSLINK: Main group '{sel}' found, visible={is_visible}")
+                        if is_visible:
+                            try:
+                                await el.click()
+                                logger.info(f"PARTSLINK: Clicked main group using {sel}")
+                            except Exception as click_err:
+                                logger.error(f"PARTSLINK: Click FAILED: {click_err}")
+                                continue
+                            await asyncio.sleep(3)
+                            main_group_clicked = True
+                            break
+                except Exception as e:
+                    continue
         
         if not searched and not main_group_clicked:
             logger.warning("PARTSLINK: Could not search or click main group")
