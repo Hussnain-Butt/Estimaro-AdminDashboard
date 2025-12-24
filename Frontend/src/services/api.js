@@ -12,7 +12,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 60000, // Increased timeout for production
+  timeout: 180000, // 3 minutes - scraper operations can take time
   headers: {
     'Content-Type': 'application/json',
   },
