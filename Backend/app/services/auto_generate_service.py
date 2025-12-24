@@ -291,21 +291,37 @@ class AutoGenerateService:
                 }
                 
                 # UPDATE parts_items with vendor prices
-                # This ensures Parts tab shows actual prices, not $0.0
+                # Pydantic models are immutable, so we rebuild the list with new objects
                 vendor_parts = vendor_result.get("parts", [])
+                vendor_price_map = {}
                 for vendor_part in vendor_parts:
-                    part_num = vendor_part.get("part_number", "")  # Correct field name
-                    primary = vendor_part.get("primary", {})  # Primary vendor, not recommended
-                    if primary:
-                        vendor_price = Decimal(str(primary.get("price", "0") or "0"))
-                        vendor_name = primary.get("vendor", "SSF")
-                        
-                        # Find and update matching part in parts_items
-                        for item in parts_items:
-                            if item.partNumber == part_num and item.cost == Decimal("0"):
-                                item.cost = vendor_price
-                                item.total = vendor_price * (Decimal("1") + item.markup / Decimal("100"))
-                                item.vendor = vendor_name
+                    part_num = vendor_part.get("part_number", "")
+                    primary = vendor_part.get("primary", {})
+                    if primary and part_num:
+                        vendor_price_map[part_num] = {
+                            "price": Decimal(str(primary.get("price", "0") or "0")),
+                            "vendor": primary.get("vendor", "SSF")
+                        }
+                
+                # Rebuild parts_items with updated prices
+                updated_parts_items = []
+                for item in parts_items:
+                    if item.partNumber in vendor_price_map and float(item.cost) == 0:
+                        vp = vendor_price_map[item.partNumber]
+                        new_cost = float(vp["price"])
+                        new_total = new_cost * (1 + float(item.markup) / 100)
+                        updated_parts_items.append(PartItemSchema(
+                            description=item.description,
+                            partNumber=item.partNumber,
+                            quantity=item.quantity,
+                            cost=new_cost,
+                            markup=item.markup,
+                            total=new_total,
+                            vendor=vp["vendor"]
+                        ))
+                    else:
+                        updated_parts_items.append(item)
+                parts_items = updated_parts_items
             else:
                 result["steps"]["vendor_compare"] = {
                     "success": True,
