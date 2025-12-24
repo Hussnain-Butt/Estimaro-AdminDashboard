@@ -627,26 +627,33 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         await asyncio.sleep(3)  # Wait for results
         
         # Step 5: If vehicle selection page, click "To the parts catalog"
-        logger.info("PARTSLINK: Checking for vehicle selection page...")
+        logger.info("PARTSLINK: Checking for 'To the parts catalog' button...")
+        catalog_clicked = False
         try:
             catalog_selectors = [
-                "text=To the parts catalog",  # From Screenshot 2
+                "text=To the parts catalog",  # Exact text
                 "button:has-text('parts catalog')",
-                "a:has-text('parts catalog')",
-                ".vehicle-catalog-button",
-                "text=Select this vehicle",
+                "text=To the parts",  # Partial match
+                "div:has-text('To the parts catalog')",
+                "text=Select new vehicle",  # Alternative - go back and try again
             ]
             for sel in catalog_selectors:
                 try:
-                    if await page.is_visible(sel):
-                        await page.click(sel)
-                        await asyncio.sleep(3)
-                        logger.info(f"PARTSLINK: Clicked catalog using {sel}")
-                        break
-                except:
+                    el = await page.query_selector(sel)
+                    if el:
+                        is_visible = await el.is_visible()
+                        logger.info(f"PARTSLINK: Found '{sel}', visible={is_visible}")
+                        if is_visible:
+                            await el.click()
+                            await asyncio.sleep(3)
+                            logger.info(f"PARTSLINK: Clicked catalog using {sel}")
+                            catalog_clicked = True
+                            break
+                except Exception as e:
+                    logger.debug(f"PARTSLINK: Selector {sel} failed: {e}")
                     continue
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"PARTSLINK: Catalog button search failed: {e}")
         
         # Step 6: Click on a main group or search for parts
         logger.info(f"PARTSLINK: Looking for parts related to: {job_description}")
@@ -674,19 +681,20 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
             except:
                 continue
         
-        # Step 7: Use "Search for parts" input (MUI input from DOM discovery)
+        # Step 7: Use "Search for parts" input - MUST be specific to avoid VIN field!
+        # DO NOT use generic selectors that might match VIN field
         search_selectors = [
-            "input[placeholder='Search for parts']",  # Exact match from DOM discovery
+            "input[placeholder='Search for parts']",  # Exact match - safest
             "input[placeholder*='Search for parts']",
-            ".MuiInputBase-input[placeholder*='parts']",  # MUI class from discovery
-            "input.MuiInputBase-input",
+            # REMOVED: input.MuiInputBase-input - this matches VIN field first!
         ]
         
         searched = False
         for sel in search_selectors:
             try:
-                if await page.is_visible(sel):
-                    await page.fill(sel, job_description)
+                el = await page.query_selector(sel)
+                if el and await el.is_visible():
+                    await el.fill(job_description)
                     await page.keyboard.press("Enter")
                     logger.info(f"PARTSLINK: Searched using {sel}")
                     await asyncio.sleep(3)
