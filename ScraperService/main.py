@@ -606,8 +606,9 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         # Step 4: Click search/GO button
         logger.info("PARTSLINK: Clicking search...")
         button_selectors = [
-            ".search-btn",
+            "#tooltip-go",  # Real selector from DevTools
             "div.search-btn",
+            ".search-btn",
             "button[type='submit']",
             "text=GO",
             "button:has-text('Search')"
@@ -625,36 +626,56 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         
         await asyncio.sleep(3)  # Wait for results
         
-        # Step 5: If vehicle selection needed, try to click first option
-        logger.info("PARTSLINK: Checking for vehicle selection...")
+        # Step 5: If vehicle selection page, click "To the parts catalog"
+        logger.info("PARTSLINK: Checking for vehicle selection page...")
         try:
-            # PartsLink sometimes shows model selection
-            model_selectors = [
-                "tr:first-child td a",
-                ".model-row",
-                "a.select-vehicle",
-                "table tr:first-child"
+            catalog_selectors = [
+                "text=To the parts catalog",  # From Screenshot 2
+                "button:has-text('parts catalog')",
+                "a:has-text('parts catalog')",
+                ".vehicle-catalog-button",
+                "text=Select this vehicle",
             ]
-            for sel in model_selectors:
+            for sel in catalog_selectors:
                 try:
-                    el = await page.query_selector(sel)
-                    if el:
-                        await el.click()
-                        await asyncio.sleep(2)
-                        logger.info(f"PARTSLINK: Selected vehicle using {sel}")
+                    if await page.is_visible(sel):
+                        await page.click(sel)
+                        await asyncio.sleep(3)
+                        logger.info(f"PARTSLINK: Clicked catalog using {sel}")
                         break
                 except:
                     continue
         except:
             pass
         
-        # Step 6: Navigate to parts catalog/search
-        logger.info(f"PARTSLINK: Searching for parts related to: {job_description}")
+        # Step 6: Click on a main group or search for parts
+        logger.info(f"PARTSLINK: Looking for parts related to: {job_description}")
+        
+        # Try to click on relevant main group based on job description
+        search_terms = job_description.lower().split()
+        main_group_selectors = [
+            f"text={job_description}",  # Exact match first
+            "tr:has-text('Engine')",  # Common groups
+            "tr:has-text('Parts Repair')",
+            "td:has-text('electrical')",
+        ]
+        
+        for sel in main_group_selectors:
+            try:
+                if await page.is_visible(sel):
+                    await page.click(sel)
+                    await asyncio.sleep(2)
+                    logger.info(f"PARTSLINK: Clicked main group using {sel}")
+                    break
+            except:
+                continue
+        
+        # Also try the search input
         search_selectors = [
-            "input[placeholder*='Search']",
-            "input[placeholder*='Part']",
-            "#partSearch",
-            ".catalog-search"
+            "input[placeholder*='Search for parts']",
+            "input[placeholder*='parts']",
+            "input.part-search",
+            "#partSearch"
         ]
         
         for sel in search_selectors:
@@ -673,12 +694,14 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         parts = []
         
         part_selectors = [
-            ".oem-number",
+            "td:nth-child(1)",  # First column in table (often has part codes)
+            "td.description",  # Description column
             ".part-number",
+            ".oem-number",
             ".article-number",
-            "td.part-num",
-            "span.part-number",
-            "[data-part-number]"
+            "td.fg",  # FG column from screenshot
+            "[data-part-number]",
+            "span:has-text('_')",  # Part nums often have underscores like 04_0047
         ]
         
         for sel in part_selectors:
