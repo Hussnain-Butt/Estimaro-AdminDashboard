@@ -659,64 +659,82 @@ class WorldpacAutomation:
             
             # =========================================
             # STEP 2: Enter VIN in the VIN field at top
-            # Based on screenshot: VIN field is at top, about 380px from left
+            # CORRECTED based on screenshot analysis:
+            # VIN field "VIN - Minimum of 10 Chars" is at approximately:
+            # - 265px from left edge of catalog dialog
+            # - 35px from top of catalog dialog (in first row of inputs)
             # =========================================
-            vin_x = win_left + 380
-            vin_y = win_top + 75  # Near top of dialog
+            vin_x = win_left + 300  # VIN input field center
+            vin_y = win_top + 35    # First row of inputs
             
             logger.info(f"WORLDPAC: Clicking VIN field at ({vin_x}, {vin_y})")
             pyautogui.click(vin_x, vin_y)
-            time.sleep(0.3)
+            time.sleep(0.5)
             
-            # Clear and type VIN
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(0.1)
-            pyautogui.typewrite(vin, interval=0.03)
+            # Triple-click to select all, then type
+            pyautogui.tripleClick(vin_x, vin_y)
+            time.sleep(0.2)
+            
+            # Type VIN character by character
+            pyautogui.typewrite(vin, interval=0.05)
             time.sleep(0.5)
             
             logger.info(f"WORLDPAC: Entered VIN: {vin}")
             
             # =========================================
-            # STEP 3: Click search button next to VIN
-            # The search button (magnifying glass) is right after VIN field
+            # STEP 3: Click VIN search button (magnifying glass)
+            # The search icon is right after VIN field, about 140px to the right
             # =========================================
-            search_btn_x = vin_x + 200  # About 200px to the right of VIN field
+            search_btn_x = vin_x + 140  # Magnifying glass icon
             search_btn_y = vin_y
             
             logger.info(f"WORLDPAC: Clicking VIN search button at ({search_btn_x}, {search_btn_y})")
             pyautogui.click(search_btn_x, search_btn_y)
-            time.sleep(3)  # Wait for vehicle popup
+            time.sleep(4)  # Wait for vehicle popup to appear
             
             # =========================================
             # STEP 4: Handle vehicle selection popup
-            # Click "Ok" button in the popup
+            # The "Refine Vehicle" popup should appear
+            # Need to select a vehicle row and click OK
             # =========================================
             logger.info("WORLDPAC: Looking for vehicle selection popup...")
             
-            # Try to find the "Refine Vehicle" popup
+            # Save screenshot to see current state
+            pyautogui.screenshot().save('worldpac_after_vin_search.png')
+            logger.info("WORLDPAC: Saved screenshot after VIN search")
+            
+            # Try to find the "Refine Vehicle" popup window
+            popup_found = False
             try:
-                refine_window = self.app.window(title_re=".*Refine Vehicle.*")
-                if refine_window.exists():
-                    logger.info("WORLDPAC: Found Refine Vehicle popup")
-                    refine_rect = refine_window.rectangle()
-                    
-                    # Ok button is at bottom center of popup
-                    ok_x = refine_rect.left + refine_rect.width() // 2 - 30
-                    ok_y = refine_rect.bottom - 40
-                    
-                    # First click on the first vehicle row to select it
-                    first_row_x = refine_rect.left + refine_rect.width() // 2
-                    first_row_y = refine_rect.top + 130  # First data row
-                    pyautogui.click(first_row_x, first_row_y)
-                    time.sleep(0.5)
-                    
-                    # Now click Ok
-                    logger.info(f"WORLDPAC: Clicking Ok button at ({ok_x}, {ok_y})")
-                    pyautogui.click(ok_x, ok_y)
-                    time.sleep(2)
+                # Method 1: Look for window with "Refine Vehicle" in title
+                for win in self.app.windows():
+                    title = win.window_text()
+                    if "Refine" in title or "Vehicle" in title:
+                        logger.info(f"WORLDPAC: Found popup: {title}")
+                        popup_rect = win.rectangle()
+                        
+                        # Click on first vehicle row (highlighted row)
+                        # First row is about 130px from top of popup
+                        row_x = popup_rect.left + popup_rect.width() // 2
+                        row_y = popup_rect.top + 130
+                        logger.info(f"WORLDPAC: Clicking vehicle row at ({row_x}, {row_y})")
+                        pyautogui.click(row_x, row_y)
+                        time.sleep(0.5)
+                        
+                        # Click OK button (bottom center-right)
+                        ok_x = popup_rect.left + popup_rect.width() // 2 + 50
+                        ok_y = popup_rect.bottom - 50
+                        logger.info(f"WORLDPAC: Clicking OK at ({ok_x}, {ok_y})")
+                        pyautogui.click(ok_x, ok_y)
+                        time.sleep(2)
+                        popup_found = True
+                        break
             except Exception as e:
-                logger.warning(f"WORLDPAC: Could not find Refine popup: {e}")
-                # Try pressing Enter as alternative
+                logger.warning(f"WORLDPAC: Error finding popup: {e}")
+            
+            # Method 2: If no popup found by pywinauto, try screen-based detection
+            if not popup_found:
+                logger.info("WORLDPAC: Trying Enter key to confirm vehicle")
                 pyautogui.press('enter')
                 time.sleep(2)
             
@@ -727,24 +745,31 @@ class WorldpacAutomation:
             win_left = rect.left
             win_top = rect.top
             
-            # =========================================
-            # STEP 5: Enter job description in search field
-            # Search field is on left side, below Category/Reset
-            # =========================================
-            search_field_x = win_left + 200  # About 200px from left
-            search_field_y = win_top + 230   # Below the Reset button
+            # Save screenshot to verify vehicle was selected
+            pyautogui.screenshot().save('worldpac_after_vehicle_select.png')
+            logger.info("WORLDPAC: Saved screenshot after vehicle selection")
             
-            logger.info(f"WORLDPAC: Clicking search field at ({search_field_x}, {search_field_y})")
+            # =========================================
+            # STEP 5: Enter job description in Category search field
+            # CORRECTED: Based on screenshot, the Category search field is:
+            # - About 165px from left edge
+            # - About 175px from top (below Category/Reset header)
+            # =========================================
+            search_field_x = win_left + 165  # Category search field
+            search_field_y = win_top + 175   # Below Category/Reset header
+            
+            logger.info(f"WORLDPAC: Clicking Category search field at ({search_field_x}, {search_field_y})")
             pyautogui.click(search_field_x, search_field_y)
-            time.sleep(0.3)
+            time.sleep(0.5)
             
-            # Clear and type job description
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(0.1)
+            # Clear field and type job description
+            pyautogui.tripleClick(search_field_x, search_field_y)
+            time.sleep(0.2)
             
-            # Type job description (only alphanumeric)
+            # Type job description (only alphanumeric, keep spaces as underscores or remove)
             job_clean = ''.join(c for c in job_description if c.isalnum() or c == ' ')
-            pyautogui.typewrite(job_clean.replace(' ', ''), interval=0.03)  # No spaces for typewrite
+            # Use pyautogui.write which handles more characters, or typewrite for simple ASCII
+            pyautogui.typewrite(job_clean.replace(' ', ''), interval=0.05)
             time.sleep(0.5)
             
             # Press Enter to search
