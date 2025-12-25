@@ -82,11 +82,13 @@ class WorldpacAutomation:
                 logger.info(f"WORLDPAC: Connected to {self.main_window.window_text()}")
                 self.connected = True
                 
-                # Bring window to front
-                try:
+                # Try to find and focus the Catalog window
+                if self._find_catalog_window():
+                    logger.info("WORLDPAC: Catalog window found and ready")
+                    self.catalog_window.set_focus()
+                else:
+                    logger.info("WORLDPAC: Catalog window not found, using main window")
                     self.main_window.set_focus()
-                except:
-                    pass
                 
                 return True
             else:
@@ -100,16 +102,46 @@ class WorldpacAutomation:
     def _find_catalog_window(self) -> bool:
         """Find the Catalog popup window."""
         try:
-            # Look for catalog window
+            # Method 1: Look in all windows of the app
             windows = self.app.windows()
+            logger.info(f"WORLDPAC: Found {len(windows)} windows in app")
+            
             for win in windows:
-                title = win.window_text()
-                if "Catalog" in title:
-                    self.catalog_window = win
-                    logger.info(f"WORLDPAC: Found catalog window: {title}")
+                try:
+                    title = win.window_text()
+                    logger.info(f"WORLDPAC: Window: '{title}'")
+                    if "Catalog" in title and "speedDIAL" in title:
+                        self.catalog_window = win
+                        logger.info(f"WORLDPAC: Found catalog window: {title}")
+                        return True
+                except:
+                    continue
+            
+            # Method 2: Try to find as child of main window
+            try:
+                dialogs = self.main_window.children(control_type="Window")
+                for d in dialogs:
+                    title = d.window_text()
+                    if "Catalog" in title:
+                        self.catalog_window = d
+                        logger.info(f"WORLDPAC: Found catalog as child: {title}")
+                        return True
+            except:
+                pass
+            
+            # Method 3: Find by title pattern directly
+            try:
+                catalog_win = self.app.window(title_re=".*Catalog.*")
+                if catalog_win.exists():
+                    self.catalog_window = catalog_win
+                    logger.info(f"WORLDPAC: Found catalog by pattern: {catalog_win.window_text()}")
                     return True
+            except:
+                pass
+            
             return False
-        except:
+        except Exception as e:
+            logger.warning(f"WORLDPAC: Error finding catalog window: {e}")
             return False
     
     def open_catalog(self) -> bool:
@@ -280,12 +312,21 @@ class WorldpacAutomation:
                 if not self.connect():
                     return None
             
-            target = self.catalog_window or self.main_window
-            target.set_focus()
-            time.sleep(0.3)
+            # IMPORTANT: Always refresh the catalog window reference
+            self._find_catalog_window()
             
-            # Log all window controls for debugging (first time only)
+            target = self.catalog_window if self.catalog_window else self.main_window
+            
+            try:
+                target.set_focus()
+            except Exception as e:
+                logger.warning(f"WORLDPAC: Could not set focus: {e}")
+            
+            time.sleep(0.5)
+            
+            # Log window info for debugging
             logger.info(f"WORLDPAC: Searching for part {part_number}")
+            logger.info(f"WORLDPAC: Using window: {target.window_text() if target else 'None'}")
             
             # Method 1: Try to find any Edit control and use it
             found_search = False
