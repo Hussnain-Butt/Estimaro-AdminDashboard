@@ -67,10 +67,11 @@ class ScraperClient:
         })
     
     async def get_pricing(self, part_numbers: List[str]) -> dict:
-        """Get pricing from vendors via Scraper Service"""
-        logger.info(f"Calling Scraper Service for pricing: {part_numbers}")
+        """Get pricing from vendors via Scraper Service (multi-vendor comparison)"""
+        logger.info(f"Calling Scraper Service for multi-vendor pricing: {part_numbers}")
         
-        return await self._make_request("/scrape/pricing", {
+        # Use multi-vendor endpoint to search both SSF and Worldpac
+        return await self._make_request("/scrape/multi-vendor", {
             "part_numbers": part_numbers
         })
     
