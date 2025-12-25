@@ -273,30 +273,78 @@ class WorldpacAutomation:
     def search_part_number(self, part_number: str) -> Optional[Dict]:
         """
         Search for a specific part number and extract price.
+        Uses pyautogui for reliable input in speedDIAL.
         """
         try:
+            if not self.connected:
+                if not self.connect():
+                    return None
+            
             target = self.catalog_window or self.main_window
             target.set_focus()
+            time.sleep(0.3)
             
-            # Find search box
-            search_boxes = target.descendants(control_type="Edit")
+            # Log all window controls for debugging (first time only)
+            logger.info(f"WORLDPAC: Searching for part {part_number}")
             
-            for box in search_boxes:
+            # Method 1: Try to find any Edit control and use it
+            found_search = False
+            edit_controls = target.descendants(control_type="Edit")
+            
+            logger.info(f"WORLDPAC: Found {len(edit_controls)} edit controls")
+            
+            for i, edit in enumerate(edit_controls):
                 try:
-                    placeholder = box.window_text() or ""
-                    if "search" in placeholder.lower() or "part" in placeholder.lower():
-                        box.set_focus()
-                        box.type_keys("^a")
-                        box.type_keys(part_number, with_spaces=True)
-                        box.type_keys("{ENTER}")
-                        logger.info(f"WORLDPAC: Searching for part {part_number}")
-                        time.sleep(2)
-                        break
-                except:
+                    edit_text = edit.window_text() or ""
+                    logger.debug(f"WORLDPAC: Edit {i}: '{edit_text[:50] if edit_text else 'empty'}'")
+                    
+                    # Look for search-related edit controls
+                    # Skip VIN and year fields
+                    if "vin" in edit_text.lower():
+                        continue
+                    if edit_text.strip().isdigit() and len(edit_text.strip()) == 4:
+                        continue  # Skip year field
+                    
+                    # Try to use this edit control
+                    edit.set_focus()
+                    time.sleep(0.2)
+                    
+                    # Clear and type part number
+                    edit.type_keys("^a")  # Select all
+                    time.sleep(0.1)
+                    edit.type_keys(part_number, with_spaces=True)
+                    time.sleep(0.1)
+                    edit.type_keys("{ENTER}")
+                    
+                    found_search = True
+                    logger.info(f"WORLDPAC: Entered part in edit control {i}")
+                    time.sleep(2)  # Wait for results
+                    break
+                    
+                except Exception as e:
+                    logger.debug(f"WORLDPAC: Edit {i} failed: {e}")
                     continue
             
+            # Method 2: If no edit control worked, use pyautogui keyboard
+            if not found_search:
+                logger.info("WORLDPAC: Using pyautogui fallback for search")
+                # Focus the window and use keyboard
+                target.set_focus()
+                time.sleep(0.3)
+                
+                # Press Tab a few times to navigate to search field
+                for _ in range(3):
+                    pyautogui.press('tab')
+                    time.sleep(0.1)
+                
+                # Type the part number
+                pyautogui.hotkey('ctrl', 'a')
+                time.sleep(0.1)
+                pyautogui.typewrite(part_number, interval=0.05)
+                pyautogui.press('enter')
+                time.sleep(2)
+            
             # Extract price from results
-            # Look for price patterns in the window
             price = self._extract_price_from_window(target)
             
             if price:
@@ -316,34 +364,62 @@ class WorldpacAutomation:
     def _extract_price_from_window(self, window) -> Optional[Decimal]:
         """
         Extract price from the current window.
-        Looks for patterns like $XX.XX
+        Scans all text elements for $ patterns.
         """
         try:
             import re
             
             # Get all text elements from window
-            texts = []
-            for el in window.descendants():
-                try:
-                    text = el.window_text()
-                    if text:
-                        texts.append(text)
-                except:
-                    continue
+            all_texts = []
             
-            # Find price patterns
+            # Method 1: Get from descendants
+            try:
+                for el in window.descendants():
+                    try:
+                        text = el.window_text()
+                        if text and "$" in text:
+                            all_texts.append(text)
+                    except:
+                        continue
+            except:
+                pass
+            
+            # Method 2: Also check Static and Text controls specifically
+            try:
+                statics = window.descendants(control_type="Text")
+                for s in statics:
+                    try:
+                        text = s.window_text()
+                        if text and "$" in text:
+                            all_texts.append(text)
+                    except:
+                        continue
+            except:
+                pass
+            
+            logger.info(f"WORLDPAC: Found {len(all_texts)} text elements with $ symbol")
+            
+            # Find price patterns - look for realistic prices ($5.00 - $999.99)
             price_pattern = r'\$(\d+\.?\d*)'
+            prices_found = []
             
-            for text in texts:
+            for text in all_texts:
                 matches = re.findall(price_pattern, text)
                 for match in matches:
                     try:
                         price = Decimal(match)
-                        if price > 0:
-                            logger.info(f"WORLDPAC: Found price ${price}")
-                            return price
+                        # Filter out unrealistic prices
+                        if price > 0 and price < 10000:
+                            prices_found.append(price)
+                            logger.info(f"WORLDPAC: Found price ${price} in '{text[:30]}...'")
                     except:
                         continue
+            
+            if prices_found:
+                # Return the first reasonable price (usually the main price)
+                best_price = min(prices_found)  # Get cheapest
+                logger.info(f"WORLDPAC: Best price for part: ${best_price}")
+                return best_price
             
             return None
             
