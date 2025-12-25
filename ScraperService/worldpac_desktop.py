@@ -145,21 +145,53 @@ class WorldpacAutomation:
             return False
     
     def open_catalog(self) -> bool:
-        """Open the catalog dialog if not already open."""
+        """
+        Open the catalog dialog by clicking the Catalog button.
+        The Catalog button is at the top right of the main window.
+        """
         try:
             # Check if catalog is already open
             if self._find_catalog_window():
+                logger.info("WORLDPAC: Catalog already open")
                 return True
             
-            # Try to open catalog via keyboard shortcut or click
-            # Press Ctrl+L for catalog (common shortcut) or click menu
+            # Focus main window
             self.main_window.set_focus()
             time.sleep(0.5)
             
-            # Try clicking on "New Catalog & Results" link
-            pyautogui.click(pyautogui.locateCenterOnScreen('new_catalog_button.png', confidence=0.8))
+            # Get main window rectangle
+            rect = self.main_window.rectangle()
+            win_left = rect.left
+            win_top = rect.top
+            win_width = rect.width()
             
-            time.sleep(1)
+            logger.info(f"WORLDPAC: Main window at ({win_left}, {win_top}), width={win_width}")
+            
+            # Based on screenshot, Catalog button is:
+            # - Near top right of window
+            # - About 400px from left edge (visible in screenshot with "Catalog" icon)
+            # - About 55px from top
+            catalog_btn_x = win_left + 400
+            catalog_btn_y = win_top + 55
+            
+            logger.info(f"WORLDPAC: Clicking Catalog button at ({catalog_btn_x}, {catalog_btn_y})")
+            pyautogui.click(catalog_btn_x, catalog_btn_y)
+            time.sleep(2)  # Wait for catalog dialog to open
+            
+            # Check if catalog opened
+            if self._find_catalog_window():
+                logger.info("WORLDPAC: Catalog dialog opened successfully")
+                return True
+            
+            # Try alternative position - catalog icon might be elsewhere
+            # Try clicking "New Catalog & Results" link at top right
+            alt_x = win_left + win_width - 100  # Near right edge
+            alt_y = win_top + 30
+            
+            logger.info(f"WORLDPAC: Trying alternative Catalog position at ({alt_x}, {alt_y})")
+            pyautogui.click(alt_x, alt_y)
+            time.sleep(2)
+            
             return self._find_catalog_window()
             
         except Exception as e:
@@ -542,6 +574,7 @@ class WorldpacAutomation:
     def search_with_vin_and_job(self, vin: str, job_description: str) -> List[Dict]:
         """
         Complete Worldpac search flow:
+        0. Open Catalog dialog from main window (NEW!)
         1. Enter VIN
         2. Click search
         3. Handle vehicle selection popup (click Ok)
@@ -555,6 +588,16 @@ class WorldpacAutomation:
             if not self.connected:
                 if not self.connect():
                     return results
+            
+            # =========================================
+            # STEP 0: Open Catalog dialog first!
+            # =========================================
+            logger.info("WORLDPAC: Opening Catalog dialog from main window...")
+            if not self.open_catalog():
+                logger.warning("WORLDPAC: Could not open Catalog dialog")
+                # Continue anyway, maybe it's already in the right state
+            
+            time.sleep(1)
             
             # Refresh catalog window reference
             self._find_catalog_window()
