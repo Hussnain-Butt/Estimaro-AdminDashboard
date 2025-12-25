@@ -66,14 +66,21 @@ class ScraperClient:
             "job_description": job_description
         })
     
-    async def get_pricing(self, part_numbers: List[str]) -> dict:
+    async def get_pricing(self, part_numbers: List[str], vin: str = None, job_description: str = None) -> dict:
         """Get pricing from vendors via Scraper Service (multi-vendor comparison)"""
         logger.info(f"Calling Scraper Service for multi-vendor pricing: {part_numbers}")
         
-        # Use multi-vendor endpoint to search both SSF and Worldpac
-        return await self._make_request("/scrape/multi-vendor", {
+        # Build request payload with optional VIN and job for Worldpac
+        payload = {
             "part_numbers": part_numbers
-        })
+        }
+        if vin:
+            payload["vin"] = vin
+        if job_description:
+            payload["job_description"] = job_description
+        
+        # Use multi-vendor endpoint to search both SSF and Worldpac
+        return await self._make_request("/scrape/multi-vendor", payload)
     
     async def health_check(self) -> dict:
         """Check if Scraper Service is healthy"""

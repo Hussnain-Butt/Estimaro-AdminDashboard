@@ -212,7 +212,7 @@ class VendorService:
         
         return scored_offers
 
-    async def _fetch_vendor_offers(self, part_numbers: List[str]) -> List[VendorOffer]:
+    async def _fetch_vendor_offers(self, part_numbers: List[str], vin: str = None, job_description: str = None) -> List[VendorOffer]:
         """Fetch offers from all configured vendor adapters"""
         from app.core.config import settings
 
@@ -238,7 +238,8 @@ class VendorService:
 
         all_offers = []
         for adapter in adapters:
-            results = await adapter.get_prices(part_numbers)
+            # Pass VIN and job_description for Worldpac complete search flow
+            results = await adapter.get_prices(part_numbers, vin=vin, job_description=job_description)
             for res in results:
                 # Map VendorPriceResult to VendorOffer
                 all_offers.append(VendorOffer(
@@ -261,7 +262,9 @@ class VendorService:
         self,
         part_numbers: List[str],
         part_descriptions: List[str] = None,
-        weights: VendorWeights = None
+        weights: VendorWeights = None,
+        vin: str = None,
+        job_description: str = None
     ) -> Dict:
         """
         Compare vendors for multiple parts using SCRAPERS.
@@ -275,7 +278,7 @@ class VendorService:
         # The adapters handle batching or we call per part?
         # My adapters implemented get_prices(List[str]), so we can pass all at once.
         
-        all_fetched_offers = await self._fetch_vendor_offers(part_numbers)
+        all_fetched_offers = await self._fetch_vendor_offers(part_numbers, vin=vin, job_description=job_description)
         
         results = {
             "success": True,

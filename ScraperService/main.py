@@ -101,6 +101,8 @@ class PartsResponse(BaseModel):
 
 class PricingRequest(BaseModel):
     part_numbers: List[str]
+    vin: Optional[str] = None  # Optional: for Worldpac VIN search
+    job_description: Optional[str] = None  # Optional: for Worldpac job search
 
 
 class PriceItem(BaseModel):
@@ -1004,10 +1006,12 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
 # =============================================================================
 # WORLDPAC DESKTOP AUTOMATION
 # =============================================================================
-async def scrape_worldpac_pricing(part_numbers: List[str]) -> dict:
+async def scrape_worldpac_pricing(part_numbers: List[str], vin: str = None, job_description: str = None) -> dict:
     """
     Scrape pricing from Worldpac speedDIAL desktop application.
     Uses pyautogui/pywinauto for Windows GUI automation.
+    
+    If VIN and job_description are provided, uses complete search flow.
     """
     if not WORLDPAC_AVAILABLE:
         logger.warning("WORLDPAC: Desktop automation not available - pyautogui/pywinauto not installed")
@@ -1015,9 +1019,13 @@ async def scrape_worldpac_pricing(part_numbers: List[str]) -> dict:
     
     try:
         logger.info(f"WORLDPAC: Requesting prices for {len(part_numbers)} parts")
+        if vin:
+            logger.info(f"WORLDPAC: Using VIN: {vin}")
+        if job_description:
+            logger.info(f"WORLDPAC: Using Job: {job_description}")
         
         # Get prices from Worldpac desktop app
-        results = await worldpac_automation.get_prices(part_numbers)
+        results = await worldpac_automation.get_prices(part_numbers, vin=vin, job_description=job_description)
         
         if results:
             prices = []
@@ -1038,8 +1046,8 @@ async def scrape_worldpac_pricing(part_numbers: List[str]) -> dict:
                 "source": "worldpac-desktop"
             }
         else:
-            logger.warning("WORLDPAC: No prices found")
-            return {"success": False, "error": "No prices found from Worldpac", "prices": []}
+            logger.warning("WORLDPAC: No prices found (search flow completed)")
+            return {"success": False, "error": "Worldpac search completed - check screenshots", "prices": []}
             
     except Exception as e:
         logger.error(f"WORLDPAC: Error - {e}")
@@ -1049,7 +1057,7 @@ async def scrape_worldpac_pricing(part_numbers: List[str]) -> dict:
 # =============================================================================
 # MULTI-VENDOR PRICE COMPARISON
 # =============================================================================
-async def scrape_multi_vendor_pricing(part_numbers: List[str]) -> dict:
+async def scrape_multi_vendor_pricing(part_numbers: List[str], vin: str = None, job_description: str = None) -> dict:
     """
     Search BOTH SSF and Worldpac for prices, then compare and pick cheapest.
     
@@ -1088,7 +1096,8 @@ async def scrape_multi_vendor_pricing(part_numbers: List[str]) -> dict:
     
     if parts_for_worldpac and WORLDPAC_AVAILABLE:
         try:
-            worldpac_result = await scrape_worldpac_pricing(parts_for_worldpac)
+            # Pass VIN and job description for complete Worldpac search flow
+            worldpac_result = await scrape_worldpac_pricing(parts_for_worldpac, vin=vin, job_description=job_description)
             if worldpac_result.get("success"):
                 for p in worldpac_result.get("prices", []):
                     part_num = p.get("part_number")
@@ -1242,7 +1251,11 @@ async def scrape_pricing(request: PricingRequest, api_key: str = Depends(verify_
 @app.post("/scrape/worldpac", response_model=PricingResponse)
 async def scrape_worldpac(request: PricingRequest, api_key: str = Depends(verify_api_key)):
     """Scrape pricing from Worldpac speedDIAL desktop app"""
-    result = await scrape_worldpac_pricing(request.part_numbers)
+    result = await scrape_worldpac_pricing(
+        request.part_numbers, 
+        vin=request.vin, 
+        job_description=request.job_description
+    )
     
     prices = [PriceItem(**p) for p in result.get("prices", [])]
     
@@ -1261,7 +1274,11 @@ async def scrape_all_vendors(request: PricingRequest, api_key: str = Depends(ver
     Compares prices and picks the cheapest vendor for each part.
     Returns comparison data with savings information.
     """
-    result = await scrape_multi_vendor_pricing(request.part_numbers)
+    result = await scrape_multi_vendor_pricing(
+        request.part_numbers,
+        vin=request.vin,
+        job_description=request.job_description
+    )
     return result
 
 

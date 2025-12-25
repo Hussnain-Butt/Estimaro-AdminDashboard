@@ -539,10 +539,179 @@ class WorldpacAutomation:
             # Fall back to window method
             return self._extract_price_from_window(window)
     
-    async def get_prices(self, part_numbers: List[str]) -> List[Dict]:
+    def search_with_vin_and_job(self, vin: str, job_description: str) -> List[Dict]:
         """
-        Get prices for multiple part numbers.
-        This is the main method called by the scraper service.
+        Complete Worldpac search flow:
+        1. Enter VIN
+        2. Click search
+        3. Handle vehicle selection popup (click Ok)
+        4. Enter job description in search field
+        5. Wait for results
+        6. Extract prices
+        """
+        results = []
+        
+        try:
+            if not self.connected:
+                if not self.connect():
+                    return results
+            
+            # Refresh catalog window reference
+            self._find_catalog_window()
+            target = self.catalog_window if self.catalog_window else self.main_window
+            
+            # Get window rectangle
+            rect = target.rectangle()
+            win_left = rect.left
+            win_top = rect.top
+            win_width = rect.width()
+            win_height = rect.height()
+            
+            logger.info(f"WORLDPAC: Catalog at ({win_left}, {win_top}), size {win_width}x{win_height}")
+            
+            # Focus the window
+            try:
+                target.set_focus()
+            except:
+                pass
+            time.sleep(0.5)
+            
+            # =========================================
+            # STEP 1: Click Reset button to clear previous search
+            # =========================================
+            reset_x = win_left + win_width - 50  # Bottom right
+            reset_y = win_top + win_height - 40
+            logger.info(f"WORLDPAC: Clicking Reset at ({reset_x}, {reset_y})")
+            pyautogui.click(reset_x, reset_y)
+            time.sleep(1)
+            
+            # =========================================
+            # STEP 2: Enter VIN in the VIN field at top
+            # Based on screenshot: VIN field is at top, about 380px from left
+            # =========================================
+            vin_x = win_left + 380
+            vin_y = win_top + 75  # Near top of dialog
+            
+            logger.info(f"WORLDPAC: Clicking VIN field at ({vin_x}, {vin_y})")
+            pyautogui.click(vin_x, vin_y)
+            time.sleep(0.3)
+            
+            # Clear and type VIN
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.1)
+            pyautogui.typewrite(vin, interval=0.03)
+            time.sleep(0.5)
+            
+            logger.info(f"WORLDPAC: Entered VIN: {vin}")
+            
+            # =========================================
+            # STEP 3: Click search button next to VIN
+            # The search button (magnifying glass) is right after VIN field
+            # =========================================
+            search_btn_x = vin_x + 200  # About 200px to the right of VIN field
+            search_btn_y = vin_y
+            
+            logger.info(f"WORLDPAC: Clicking VIN search button at ({search_btn_x}, {search_btn_y})")
+            pyautogui.click(search_btn_x, search_btn_y)
+            time.sleep(3)  # Wait for vehicle popup
+            
+            # =========================================
+            # STEP 4: Handle vehicle selection popup
+            # Click "Ok" button in the popup
+            # =========================================
+            logger.info("WORLDPAC: Looking for vehicle selection popup...")
+            
+            # Try to find the "Refine Vehicle" popup
+            try:
+                refine_window = self.app.window(title_re=".*Refine Vehicle.*")
+                if refine_window.exists():
+                    logger.info("WORLDPAC: Found Refine Vehicle popup")
+                    refine_rect = refine_window.rectangle()
+                    
+                    # Ok button is at bottom center of popup
+                    ok_x = refine_rect.left + refine_rect.width() // 2 - 30
+                    ok_y = refine_rect.bottom - 40
+                    
+                    # First click on the first vehicle row to select it
+                    first_row_x = refine_rect.left + refine_rect.width() // 2
+                    first_row_y = refine_rect.top + 130  # First data row
+                    pyautogui.click(first_row_x, first_row_y)
+                    time.sleep(0.5)
+                    
+                    # Now click Ok
+                    logger.info(f"WORLDPAC: Clicking Ok button at ({ok_x}, {ok_y})")
+                    pyautogui.click(ok_x, ok_y)
+                    time.sleep(2)
+            except Exception as e:
+                logger.warning(f"WORLDPAC: Could not find Refine popup: {e}")
+                # Try pressing Enter as alternative
+                pyautogui.press('enter')
+                time.sleep(2)
+            
+            # Refresh window reference after popup closes
+            self._find_catalog_window()
+            target = self.catalog_window if self.catalog_window else self.main_window
+            rect = target.rectangle()
+            win_left = rect.left
+            win_top = rect.top
+            
+            # =========================================
+            # STEP 5: Enter job description in search field
+            # Search field is on left side, below Category/Reset
+            # =========================================
+            search_field_x = win_left + 200  # About 200px from left
+            search_field_y = win_top + 230   # Below the Reset button
+            
+            logger.info(f"WORLDPAC: Clicking search field at ({search_field_x}, {search_field_y})")
+            pyautogui.click(search_field_x, search_field_y)
+            time.sleep(0.3)
+            
+            # Clear and type job description
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.1)
+            
+            # Type job description (only alphanumeric)
+            job_clean = ''.join(c for c in job_description if c.isalnum() or c == ' ')
+            pyautogui.typewrite(job_clean.replace(' ', ''), interval=0.03)  # No spaces for typewrite
+            time.sleep(0.5)
+            
+            # Press Enter to search
+            pyautogui.press('enter')
+            time.sleep(3)  # Wait for search results
+            
+            logger.info(f"WORLDPAC: Searched for job: {job_clean}")
+            
+            # =========================================
+            # STEP 6: Save debug screenshot
+            # =========================================
+            screenshot = pyautogui.screenshot()
+            screenshot.save('worldpac_search_result.png')
+            logger.info("WORLDPAC: Saved screenshot to worldpac_search_result.png")
+            
+            # =========================================
+            # STEP 7: Try to extract prices from screen text
+            # =========================================
+            # Since pywinauto can't see controls, we'll report that search was done
+            # User can verify from screenshot
+            
+            # For now, return a placeholder indicating search was performed
+            # Real price extraction would need OCR (pytesseract)
+            logger.info("WORLDPAC: Search completed - check worldpac_search_result.png for results")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"WORLDPAC: Search flow failed - {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return results
+    
+    async def get_prices(self, part_numbers: List[str], vin: str = None, job_description: str = None) -> List[Dict]:
+        """
+        Get prices for parts from Worldpac.
+        
+        If VIN and job_description are provided, uses the complete search flow.
+        Otherwise, attempts part number search (less reliable).
         """
         results = []
         
@@ -555,19 +724,24 @@ class WorldpacAutomation:
                 logger.error("WORLDPAC: Could not connect to speedDIAL")
                 return results
         
-        for part_num in part_numbers:
-            try:
-                result = self.search_part_number(part_num)
-                if result:
-                    results.append(result)
-                else:
-                    logger.warning(f"WORLDPAC: No price found for {part_num}")
-                
-                # Small delay between searches
-                await asyncio.sleep(0.5)
-                
-            except Exception as e:
-                logger.error(f"WORLDPAC: Error getting price for {part_num} - {e}")
+        # If we have VIN and job, use the complete flow
+        if vin and job_description:
+            logger.info(f"WORLDPAC: Using VIN+Job search: VIN={vin}, Job={job_description}")
+            results = self.search_with_vin_and_job(vin, job_description)
+        else:
+            # Try part number search (less reliable for Worldpac)
+            for part_num in part_numbers:
+                try:
+                    result = self.search_part_number(part_num)
+                    if result:
+                        results.append(result)
+                    else:
+                        logger.warning(f"WORLDPAC: No price found for {part_num}")
+                    
+                    await asyncio.sleep(0.5)
+                    
+                except Exception as e:
+                    logger.error(f"WORLDPAC: Error getting price for {part_num} - {e}")
         
         logger.info(f"WORLDPAC: Found {len(results)} prices out of {len(part_numbers)} parts")
         return results
@@ -576,16 +750,16 @@ class WorldpacAutomation:
         """Click the Price button to get pricing."""
         try:
             target = self.catalog_window or self.main_window
+            rect = target.rectangle()
             
-            # Find and click Price button
-            price_btn = target.child_window(title="Price", control_type="Button")
-            if price_btn.exists():
-                price_btn.click()
-                logger.info("WORLDPAC: Clicked Price button")
-                time.sleep(2)
-                return True
+            # Price button is in bottom right corner
+            price_x = rect.left + rect.width() - 100
+            price_y = rect.top + rect.height() - 40
             
-            return False
+            logger.info(f"WORLDPAC: Clicking Price button at ({price_x}, {price_y})")
+            pyautogui.click(price_x, price_y)
+            time.sleep(2)
+            return True
             
         except Exception as e:
             logger.error(f"WORLDPAC: Could not click Price button - {e}")

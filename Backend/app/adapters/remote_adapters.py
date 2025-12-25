@@ -99,7 +99,7 @@ class RemoteVendorAdapter(VendorAdapterInterface):
     Raises ScraperServiceError on failure - NO FALLBACK DATA.
     """
     
-    async def get_prices(self, part_numbers: List[str]) -> List[VendorPriceResult]:
+    async def get_prices(self, part_numbers: List[str], vin: str = None, job_description: str = None) -> List[VendorPriceResult]:
         # Filter out placeholder part numbers
         valid_parts = [pn for pn in part_numbers if pn and pn != "MANUAL-LOOKUP"]
         
@@ -108,8 +108,12 @@ class RemoteVendorAdapter(VendorAdapterInterface):
             return []
         
         logger.info(f"REMOTE VENDOR: Requesting prices for {valid_parts}")
+        if vin:
+            logger.info(f"REMOTE VENDOR: Using VIN for Worldpac: {vin}")
+        if job_description:
+            logger.info(f"REMOTE VENDOR: Using Job for Worldpac: {job_description}")
         
-        result = await scraper_client.get_pricing(valid_parts)
+        result = await scraper_client.get_pricing(valid_parts, vin=vin, job_description=job_description)
         
         if result.get("success"):
             prices = []

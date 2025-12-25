@@ -300,7 +300,9 @@ class AutoGenerateService:
                 vendor_result = await vendor_service.compare_vendors(
                     part_numbers=part_numbers,
                     part_descriptions=part_descriptions,
-                    weights=weights
+                    weights=weights,
+                    vin=vin,  # Pass VIN for Worldpac search
+                    job_description=service_request  # Pass service request as job description
                 )
                 
                 result["steps"]["vendor_compare"] = {
