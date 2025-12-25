@@ -20,8 +20,16 @@ import asyncio
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 from decimal import Decimal
+
+# Import Worldpac desktop automation (optional - may not be available on all systems)
+try:
+    from worldpac_desktop import worldpac_automation, WorldpacAutomation
+    WORLDPAC_AVAILABLE = True
+except ImportError:
+    WORLDPAC_AVAILABLE = False
+    worldpac_automation = None
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -445,29 +453,49 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
             except:
                 continue
         
-        # Step 7: Click on first matching result
+        # Step 7: Click on MATCHING result - prioritize job-specific selectors
         if job_searched:
             try:
-                # Try to click on first labor item in list
+                # IMPORTANT: Try job-specific selectors FIRST, then generic ones
                 result_selectors = [
-                    "a.itype-name",  # Links in the list
-                    f"a:has-text('{job_description}')",
-                    ".ad-repair-itype-table a",  # Table links
-                    f"text={job_description}",
-                    "tr.ng-star-inserted a"
+                    f"a:has-text('{job_description}')",  # Exact text match FIRST!
+                    f"text={job_description} >> nth=0",   # First matching text
+                    f"a:has-text('{job_description.split()[0]}')",  # First word match
+                    "a.itype-name >> nth=0",  # First link in list (fallback)
+                    ".ad-repair-itype-table a >> nth=0",  # First table link (fallback)
                 ]
+                
+                clicked = False
                 for sel in result_selectors:
                     try:
+                        # Wait briefly for results to appear
+                        await asyncio.sleep(0.5)
                         el = await page.query_selector(sel)
                         if el:
-                            await el.click()
-                            await asyncio.sleep(2)
-                            logger.info(f"ALLDATA: Clicked job result using {sel}")
-                            break
-                    except:
+                            # Verify the element text contains our job keyword
+                            text = await el.text_content()
+                            if text and (job_description.lower() in text.lower() or 
+                                        job_description.split()[0].lower() in text.lower()):
+                                await el.click()
+                                await asyncio.sleep(2)
+                                logger.info(f"ALLDATA: Clicked job result using {sel}, text: {text[:50]}")
+                                clicked = True
+                                break
+                            elif "itype-name" in sel or "itype-table" in sel:
+                                # Fallback - click anyway but log warning
+                                await el.click()
+                                await asyncio.sleep(2)
+                                logger.warning(f"ALLDATA: Clicked FALLBACK result using {sel}, text: {text[:50] if text else 'N/A'}")
+                                clicked = True
+                                break
+                    except Exception as e:
+                        logger.debug(f"ALLDATA: Selector {sel} failed: {e}")
                         continue
-            except:
-                pass
+                
+                if not clicked:
+                    logger.warning("ALLDATA: Could not click any job result")
+            except Exception as e:
+                logger.warning(f"ALLDATA: Error clicking job result: {e}")
         
         # Step 8: Extract labor hours from the page
         logger.info("ALLDATA: Extracting labor hours...")
@@ -974,6 +1002,167 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
 
 
 # =============================================================================
+# WORLDPAC DESKTOP AUTOMATION
+# =============================================================================
+async def scrape_worldpac_pricing(part_numbers: List[str]) -> dict:
+    """
+    Scrape pricing from Worldpac speedDIAL desktop application.
+    Uses pyautogui/pywinauto for Windows GUI automation.
+    """
+    if not WORLDPAC_AVAILABLE:
+        logger.warning("WORLDPAC: Desktop automation not available - pyautogui/pywinauto not installed")
+        return {"success": False, "error": "Worldpac desktop automation not available", "prices": []}
+    
+    try:
+        logger.info(f"WORLDPAC: Requesting prices for {len(part_numbers)} parts")
+        
+        # Get prices from Worldpac desktop app
+        results = await worldpac_automation.get_prices(part_numbers)
+        
+        if results:
+            prices = []
+            for r in results:
+                prices.append({
+                    "vendor": "Worldpac",
+                    "part_number": r.get("part_number", ""),
+                    "brand": "OEM",
+                    "price": float(r.get("price", 0)),
+                    "stock_status": r.get("stock_status", "Available"),
+                    "warehouse": "Worldpac"
+                })
+            
+            logger.info(f"WORLDPAC: SUCCESS - Found {len(prices)} prices")
+            return {
+                "success": True,
+                "prices": prices,
+                "source": "worldpac-desktop"
+            }
+        else:
+            logger.warning("WORLDPAC: No prices found")
+            return {"success": False, "error": "No prices found from Worldpac", "prices": []}
+            
+    except Exception as e:
+        logger.error(f"WORLDPAC: Error - {e}")
+        return {"success": False, "error": str(e), "prices": []}
+
+
+# =============================================================================
+# MULTI-VENDOR PRICE COMPARISON
+# =============================================================================
+async def scrape_multi_vendor_pricing(part_numbers: List[str]) -> dict:
+    """
+    Search BOTH SSF and Worldpac for prices, then compare and pick cheapest.
+    
+    Flow:
+    1. Search SSF (web) for all parts
+    2. Search Worldpac (desktop) for parts not found on SSF or for comparison
+    3. Compare prices and pick cheapest vendor for each part
+    4. Return merged results with vendor comparison
+    """
+    logger.info(f"MULTI-VENDOR: Starting price comparison for {len(part_numbers)} parts")
+    
+    all_prices = []
+    ssf_prices = {}
+    worldpac_prices = {}
+    
+    # Step 1: Get SSF prices
+    try:
+        ssf_result = await scrape_vendor_pricing(part_numbers)
+        if ssf_result.get("success"):
+            for p in ssf_result.get("prices", []):
+                part_num = p.get("part_number")
+                if part_num:
+                    ssf_prices[part_num] = p
+            logger.info(f"MULTI-VENDOR: SSF returned {len(ssf_prices)} prices")
+    except Exception as e:
+        logger.warning(f"MULTI-VENDOR: SSF search failed - {e}")
+    
+    # Step 2: Get Worldpac prices (for parts not found on SSF, or for comparison)
+    parts_for_worldpac = []
+    for part_num in part_numbers:
+        # Search Worldpac if:
+        # - Part not found on SSF, OR
+        # - We want to compare prices
+        if part_num not in ssf_prices or True:  # Always search for comparison
+            parts_for_worldpac.append(part_num)
+    
+    if parts_for_worldpac and WORLDPAC_AVAILABLE:
+        try:
+            worldpac_result = await scrape_worldpac_pricing(parts_for_worldpac)
+            if worldpac_result.get("success"):
+                for p in worldpac_result.get("prices", []):
+                    part_num = p.get("part_number")
+                    if part_num:
+                        worldpac_prices[part_num] = p
+                logger.info(f"MULTI-VENDOR: Worldpac returned {len(worldpac_prices)} prices")
+        except Exception as e:
+            logger.warning(f"MULTI-VENDOR: Worldpac search failed - {e}")
+    
+    # Step 3: Compare and pick cheapest
+    comparison_results = []
+    for part_num in part_numbers:
+        ssf_price = ssf_prices.get(part_num)
+        worldpac_price = worldpac_prices.get(part_num)
+        
+        if ssf_price and worldpac_price:
+            # Both vendors have price - pick cheapest
+            ssf_val = float(ssf_price.get("price", 9999))
+            wp_val = float(worldpac_price.get("price", 9999))
+            
+            if ssf_val <= wp_val:
+                primary = ssf_price
+                secondary = worldpac_price
+            else:
+                primary = worldpac_price
+                secondary = ssf_price
+            
+            comparison_results.append({
+                "part_number": part_num,
+                "primary": primary,
+                "secondary": secondary,
+                "savings": abs(ssf_val - wp_val),
+                "cheaper_vendor": primary.get("vendor")
+            })
+            all_prices.append(primary)
+            
+        elif ssf_price:
+            # Only SSF has price
+            comparison_results.append({
+                "part_number": part_num,
+                "primary": ssf_price,
+                "secondary": None,
+                "savings": 0,
+                "cheaper_vendor": "SSF"
+            })
+            all_prices.append(ssf_price)
+            
+        elif worldpac_price:
+            # Only Worldpac has price
+            comparison_results.append({
+                "part_number": part_num,
+                "primary": worldpac_price,
+                "secondary": None,
+                "savings": 0,
+                "cheaper_vendor": "Worldpac"
+            })
+            all_prices.append(worldpac_price)
+        
+        else:
+            # Neither vendor has price
+            logger.warning(f"MULTI-VENDOR: No price from any vendor for {part_num}")
+    
+    logger.info(f"MULTI-VENDOR: Final result - {len(all_prices)} prices from {len(comparison_results)} comparisons")
+    
+    return {
+        "success": len(all_prices) > 0,
+        "prices": all_prices,
+        "comparison": comparison_results,
+        "vendors_searched": ["SSF"] + (["Worldpac"] if WORLDPAC_AVAILABLE else []),
+        "source": "multi-vendor"
+    }
+
+
+# =============================================================================
 # API ENDPOINTS
 # =============================================================================
 @app.get("/")
@@ -981,7 +1170,15 @@ async def root():
     return {
         "service": "Estimaro Scraper Service",
         "status": "running",
-        "endpoints": ["/scrape/labor", "/scrape/parts", "/scrape/pricing", "/health"]
+        "endpoints": [
+            "/scrape/labor", 
+            "/scrape/parts", 
+            "/scrape/pricing",
+            "/scrape/worldpac",
+            "/scrape/multi-vendor",
+            "/health"
+        ],
+        "worldpac_available": WORLDPAC_AVAILABLE
     }
 
 
@@ -1040,6 +1237,32 @@ async def scrape_pricing(request: PricingRequest, api_key: str = Depends(verify_
         source=result.get("source", "vendor"),
         error=result.get("error")
     )
+
+
+@app.post("/scrape/worldpac", response_model=PricingResponse)
+async def scrape_worldpac(request: PricingRequest, api_key: str = Depends(verify_api_key)):
+    """Scrape pricing from Worldpac speedDIAL desktop app"""
+    result = await scrape_worldpac_pricing(request.part_numbers)
+    
+    prices = [PriceItem(**p) for p in result.get("prices", [])]
+    
+    return PricingResponse(
+        success=result.get("success", False),
+        prices=prices,
+        source=result.get("source", "worldpac"),
+        error=result.get("error")
+    )
+
+
+@app.post("/scrape/multi-vendor")
+async def scrape_all_vendors(request: PricingRequest, api_key: str = Depends(verify_api_key)):
+    """
+    Search BOTH SSF and Worldpac for prices.
+    Compares prices and picks the cheapest vendor for each part.
+    Returns comparison data with savings information.
+    """
+    result = await scrape_multi_vendor_pricing(request.part_numbers)
+    return result
 
 
 # =============================================================================
