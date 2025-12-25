@@ -147,7 +147,7 @@ class WorldpacAutomation:
     def open_catalog(self) -> bool:
         """
         Open the catalog dialog by clicking the Catalog button.
-        The Catalog button is at the top right of the main window.
+        Tries multiple positions where the Catalog button might be.
         """
         try:
             # Check if catalog is already open
@@ -164,35 +164,61 @@ class WorldpacAutomation:
             win_left = rect.left
             win_top = rect.top
             win_width = rect.width()
+            win_height = rect.height()
             
-            logger.info(f"WORLDPAC: Main window at ({win_left}, {win_top}), width={win_width}")
+            logger.info(f"WORLDPAC: Main window at ({win_left}, {win_top}), size {win_width}x{win_height}")
             
-            # Based on screenshot, Catalog button is:
-            # - Near top right of window
-            # - About 400px from left edge (visible in screenshot with "Catalog" icon)
-            # - About 55px from top
-            catalog_btn_x = win_left + 400
-            catalog_btn_y = win_top + 55
+            # Save debug screenshot BEFORE clicking
+            screenshot = pyautogui.screenshot()
+            screenshot.save('worldpac_before_catalog_click.png')
+            logger.info("WORLDPAC: Saved pre-click screenshot to worldpac_before_catalog_click.png")
             
-            logger.info(f"WORLDPAC: Clicking Catalog button at ({catalog_btn_x}, {catalog_btn_y})")
-            pyautogui.click(catalog_btn_x, catalog_btn_y)
-            time.sleep(2)  # Wait for catalog dialog to open
+            # List of positions to try for Catalog button
+            # Based on the user's screenshot, Catalog icon is in the toolbar area
+            # The toolbar appears to be at around 35-70px from top
+            click_positions = [
+                # Position 1: Catalog icon in toolbar (book icon)
+                # Appears to be around 350-380px from left edge
+                (win_left + 360, win_top + 55, "toolbar catalog icon"),
+                
+                # Position 2: Try center-left of toolbar
+                (win_left + 300, win_top + 55, "center-left toolbar"),
+                
+                # Position 3: Try Replacement Parts area (might trigger catalog)
+                (win_left + 450, win_top + 55, "replacement parts area"),
+                
+                # Position 4: "New Catalog & Results" link at top right
+                (win_left + win_width - 100, win_top + 18, "new catalog link"),
+                
+                # Position 5: Try slightly lower in case toolbar is lower
+                (win_left + 360, win_top + 65, "toolbar lower"),
+            ]
             
-            # Check if catalog opened
-            if self._find_catalog_window():
-                logger.info("WORLDPAC: Catalog dialog opened successfully")
-                return True
+            for x, y, description in click_positions:
+                logger.info(f"WORLDPAC: Trying click at ({x}, {y}) - {description}")
+                pyautogui.click(x, y)
+                time.sleep(2)
+                
+                # Check if catalog opened
+                if self._find_catalog_window():
+                    logger.info(f"WORLDPAC: Catalog opened with {description}!")
+                    return True
             
-            # Try alternative position - catalog icon might be elsewhere
-            # Try clicking "New Catalog & Results" link at top right
-            alt_x = win_left + win_width - 100  # Near right edge
-            alt_y = win_top + 30
-            
-            logger.info(f"WORLDPAC: Trying alternative Catalog position at ({alt_x}, {alt_y})")
-            pyautogui.click(alt_x, alt_y)
+            # If all positions failed, try double-clicking
+            logger.info("WORLDPAC: Trying double-click on Catalog button")
+            pyautogui.doubleClick(win_left + 360, win_top + 55)
             time.sleep(2)
             
-            return self._find_catalog_window()
+            if self._find_catalog_window():
+                logger.info("WORLDPAC: Catalog opened with double-click!")
+                return True
+            
+            # Save failure screenshot
+            screenshot = pyautogui.screenshot()
+            screenshot.save('worldpac_catalog_click_failed.png')
+            logger.warning("WORLDPAC: All catalog click attempts failed - saved worldpac_catalog_click_failed.png")
+            
+            return False
             
         except Exception as e:
             logger.warning(f"WORLDPAC: Could not open catalog - {e}")
