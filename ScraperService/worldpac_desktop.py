@@ -174,24 +174,27 @@ class WorldpacAutomation:
             logger.info("WORLDPAC: Saved pre-click screenshot to worldpac_before_catalog_click.png")
             
             # List of positions to try for Catalog button
-            # Based on the user's screenshot, Catalog icon is in the toolbar area
-            # The toolbar appears to be at around 35-70px from top
+            # UPDATED based on actual screenshot analysis:
+            # - Catalog icon with book is in toolbar between DC Direct and Replacement Parts
+            # - "New Catalog & Results" link is at TOP RIGHT with checkmark
             click_positions = [
-                # Position 1: Catalog icon in toolbar (book icon)
-                # Appears to be around 350-380px from left edge
-                (win_left + 360, win_top + 55, "toolbar catalog icon"),
+                # Position 1: "New Catalog & Results" link at top right (MOST RELIABLE)
+                # Visible in screenshot at far right, just below title bar
+                (win_left + win_width - 80, win_top + 18, "New Catalog & Results link"),
                 
-                # Position 2: Try center-left of toolbar
-                (win_left + 300, win_top + 55, "center-left toolbar"),
+                # Position 2: Catalog icon in toolbar (book icon)
+                # Between DC Direct checkbox and Replacement Parts tab
+                # Appears around 395-405 from left edge, 55-65 from top
+                (win_left + 395, win_top + 60, "Catalog book icon"),
                 
-                # Position 3: Try Replacement Parts area (might trigger catalog)
-                (win_left + 450, win_top + 55, "replacement parts area"),
+                # Position 3: Click directly on "Catalog" text below icon
+                (win_left + 395, win_top + 70, "Catalog text label"),
                 
-                # Position 4: "New Catalog & Results" link at top right
-                (win_left + win_width - 100, win_top + 18, "new catalog link"),
+                # Position 4: Slightly more to the left of catalog icon
+                (win_left + 375, win_top + 60, "Catalog icon left"),
                 
-                # Position 5: Try slightly lower in case toolbar is lower
-                (win_left + 360, win_top + 65, "toolbar lower"),
+                # Position 5: Try the Replacement Parts tab header
+                (win_left + 380, win_top + 45, "Replacement Parts header area"),
             ]
             
             for x, y, description in click_positions:
