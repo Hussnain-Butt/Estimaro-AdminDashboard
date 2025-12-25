@@ -173,28 +173,28 @@ class WorldpacAutomation:
             screenshot.save('worldpac_before_catalog_click.png')
             logger.info("WORLDPAC: Saved pre-click screenshot to worldpac_before_catalog_click.png")
             
+            # USER MEASURED EXACT POSITION:
+            # Catalog button at X≈780, Y≈95 from 2048×1098 screenshot
+            # Window-relative position (if window at 39, 21): X=780-39=741, Y=95-21=74
+            
             # List of positions to try for Catalog button
-            # UPDATED based on actual screenshot analysis:
-            # - Catalog icon with book is in toolbar between DC Direct and Replacement Parts
-            # - "New Catalog & Results" link is at TOP RIGHT with checkmark
             click_positions = [
-                # Position 1: "New Catalog & Results" link at top right (MOST RELIABLE)
-                # Visible in screenshot at far right, just below title bar
+                # Position 1: USER'S EXACT MEASURED POSITION (absolute screen coords)
+                (780, 95, "USER MEASURED: absolute (780, 95)"),
+                
+                # Position 2: Window-relative calculation
+                # If window at (39, 21): 780-39=741, 95-21=74
+                (win_left + 741, win_top + 74, "Window-relative (741, 74)"),
+                
+                # Position 3: Slight variations for DPI scaling (125% = 0.8x)
+                (int(780 * 0.8), int(95 * 0.8), "DPI scaled 0.8x (624, 76)"),
+                
+                # Position 4: "New Catalog & Results" link at top right
                 (win_left + win_width - 80, win_top + 18, "New Catalog & Results link"),
                 
-                # Position 2: Catalog icon in toolbar (book icon)
-                # Between DC Direct checkbox and Replacement Parts tab
-                # Appears around 395-405 from left edge, 55-65 from top
-                (win_left + 395, win_top + 60, "Catalog book icon"),
-                
-                # Position 3: Click directly on "Catalog" text below icon
-                (win_left + 395, win_top + 70, "Catalog text label"),
-                
-                # Position 4: Slightly more to the left of catalog icon
-                (win_left + 375, win_top + 60, "Catalog icon left"),
-                
-                # Position 5: Try the Replacement Parts tab header
-                (win_left + 380, win_top + 45, "Replacement Parts header area"),
+                # Position 5: Center of catalog icon area based on user description
+                # "Between DC Direct and Replacement Parts, under banner"
+                (win_left + 400, win_top + 55, "Toolbar center estimate"),
             ]
             
             for x, y, description in click_positions:
