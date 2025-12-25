@@ -659,13 +659,13 @@ class WorldpacAutomation:
             
             # =========================================
             # STEP 2: Enter VIN in the VIN field at top
-            # CORRECTED based on screenshot analysis:
-            # VIN field "VIN - Minimum of 10 Chars" is at approximately:
-            # - 265px from left edge of catalog dialog
-            # - 35px from top of catalog dialog (in first row of inputs)
+            # CORRECTED: Previous click at 300px hit Year dropdown!
+            # VIN field "VIN - Minimum of 10 Chars" is AFTER Mobile Scan, around:
+            # - 380px from left edge of catalog dialog (NOT 300!)
+            # - 33px from top of catalog dialog (first row)
             # =========================================
-            vin_x = win_left + 300  # VIN input field center
-            vin_y = win_top + 35    # First row of inputs
+            vin_x = win_left + 380  # VIN input field - RIGHT of Year/Make/Model
+            vin_y = win_top + 33    # First row of inputs
             
             logger.info(f"WORLDPAC: Clicking VIN field at ({vin_x}, {vin_y})")
             pyautogui.click(vin_x, vin_y)
