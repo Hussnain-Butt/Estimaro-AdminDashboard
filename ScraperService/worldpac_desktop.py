@@ -46,31 +46,60 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # COORDINATE CONSTANTS (Based on screenshots from user)
 # These are RELATIVE to the Catalog window position
+# Window position detected: (158, 123), Window size: 1228x690
 # =============================================================================
 CATALOG_COORDS = {
-    # Vehicle selection row (top area)
-    "vin_field": (340, 120),           # VIN input field
-    "vin_search_icon": (435, 120),     # Magnifying glass next to VIN
+    # TOP ROW - "Vehicle | History | Mobile Scan | VIN field | search icon"
+    # This row is around y=47 from top of Catalog window
+    "vin_field": (370, 47),            # VIN input field (after Mobile Scan dropdown)
+    "vin_search_icon": (430, 47),      # Magnifying glass next to VIN
     
-    # Vehicle popup coordinates (relative to popup)
-    "vehicle_row_first": (350, 175),   # First vehicle row in popup
-    "ok_button": (745, 560),           # OK button in popup
+    # YEAR/MAKE/MODEL ROW - around y=75
+    "year_dropdown": (140, 75),        # Year dropdown
+    "make_dropdown": (290, 75),        # Make dropdown  
+    "model_dropdown": (420, 75),       # Model dropdown
     
-    # Category panel (left side)
-    "category_search": (175, 225),      # "Search part type name" field
-    "replacement_parts": (165, 270),    # Replacement Parts in tree
+    # Vehicle selection popup (SEPARATE popup window - not relative to main catalog!)
+    # This popup appears on top, need to detect its position separately
+    "vehicle_row_first": (200, 55),    # Relative to POPUP window
+    "ok_button": (587, 440),           # OK button in popup (relative to popup)
     
-    # Middle panel - search results
-    "search_result_first": (440, 335),  # First result in "Engine Appearance Cover" etc.
+    # CATEGORY PANEL (left side) - "Category" tab and search field
+    # Category tab row at y=105, search field at y=130
+    "category_tab": (70, 105),         # "Category" tab
+    "reset_button_top": (130, 105),    # "Reset" button next to Category
+    "category_search": (150, 130),     # "Search part type name..." field
     
-    # Parts diagram popup
-    "checkbox_first": (560, 320),       # First checkbox in parts list
-    "price_button_popup": (660, 495),   # Price button in diagram popup
+    # CATEGORY TREE - left panel, starts around y=160
+    "oe_fluid_guide": (130, 165),      # OE Fluid Guide
+    "replacement_parts": (130, 185),   # Replacement Parts (expandable)
     
-    # Bottom buttons
-    "price_button": (820, 507),         # Main Price button
-    "reset_button": (868, 507),         # Reset button
+    # MIDDLE PANEL - "Parts and Labor / Diagrams / Subcategories"
+    # Tab row at y=105, content starts at y=130
+    "parts_labor_tab": (400, 105),     # Parts and Labor tab
+    "diagrams_tab": (480, 105),        # Diagrams tab
+    "search_result_first": (400, 160), # First search result in middle panel
+    "search_result_second": (400, 185),# Second result
+    
+    # RIGHT PANEL - Part Types / results grid
+    # Starts around x=600
+    "part_types_area": (700, 200),     # Part Types panel
+    
+    # PARTS DIAGRAM POPUP (when subcategory is clicked)
+    # This is a separate popup, coordinates relative to that popup
+    "checkbox_first": (400, 200),      # First checkbox in diagram popup
+    "checkbox_second": (400, 220),     # Second checkbox
+    "price_button_popup": (500, 380),  # Price button in diagram popup
+    "save_button_popup": (340, 380),   # Save button
+    "close_button_popup": (580, 380),  # Close button
+    
+    # BOTTOM ROW of main Catalog window - y=540 approx (690 height - 150)
+    # "Selected: 0" | Price button | Reset button
+    "selected_count": (550, 540),      # "Selected: 0" label
+    "price_button": (610, 540),        # Main Price button  
+    "reset_button": (710, 540),        # Reset button (bottom)
 }
+
 
 
 class WorldpacAutomation:
@@ -157,12 +186,43 @@ class WorldpacAutomation:
                 rect = target.rectangle()
                 self.win_left = rect.left
                 self.win_top = rect.top
-                logger.info(f"WORLDPAC: Window position updated to ({self.win_left}, {self.win_top})")
+                self.win_width = rect.width()
+                self.win_height = rect.height()
+                logger.info(f"WORLDPAC: Window at ({self.win_left}, {self.win_top}), size {self.win_width}x{self.win_height}")
         except Exception as e:
             logger.warning(f"WORLDPAC: Could not update window position: {e}")
     
-    def _click_relative(self, coord_name: str, offset_x: int = 0, offset_y: int = 0):
+    def _ensure_window_foreground(self):
+        """Ensure the Worldpac window is in foreground and focused."""
+        try:
+            target = self.catalog_window or self.main_window
+            if target:
+                # Restore if minimized
+                try:
+                    if target.is_minimized():
+                        target.restore()
+                        time.sleep(0.5)
+                except:
+                    pass
+                
+                # Set focus
+                target.set_focus()
+                time.sleep(0.3)
+                
+                # Update position after focus
+                self._update_window_position()
+                
+                logger.info("WORLDPAC: Window brought to foreground")
+                return True
+        except Exception as e:
+            logger.warning(f"WORLDPAC: Could not bring window to foreground: {e}")
+        return False
+    
+    def _click_relative(self, coord_name: str, offset_x: int = 0, offset_y: int = 0, take_screenshot: bool = True):
         """Click at a position relative to the catalog window."""
+        # Ensure window is focused first
+        self._ensure_window_foreground()
+        
         if coord_name in CATALOG_COORDS:
             rel_x, rel_y = CATALOG_COORDS[coord_name]
         else:
@@ -170,6 +230,10 @@ class WorldpacAutomation:
             
         abs_x = self.win_left + rel_x + offset_x
         abs_y = self.win_top + rel_y + offset_y
+        
+        # Take screenshot before click for debugging
+        if take_screenshot:
+            self._save_screenshot(f'worldpac_before_{coord_name}.png')
         
         logger.info(f"WORLDPAC: Clicking {coord_name} at ({abs_x}, {abs_y})")
         pyautogui.click(abs_x, abs_y)
@@ -733,5 +797,68 @@ async def test_worldpac():
             print(f"Results: {results}")
 
 
+def debug_coordinates():
+    """
+    Debug function to visualize where clicks will happen.
+    Takes a screenshot with red dots at click positions.
+    
+    Run from RDP server:
+        cd ScraperService
+        python -c "from worldpac_desktop import debug_coordinates; debug_coordinates()"
+    """
+    if not DESKTOP_AUTOMATION_AVAILABLE:
+        print("ERROR: pyautogui/pywinauto not installed!")
+        return
+    
+    from PIL import Image, ImageDraw
+    
+    wp = WorldpacAutomation()
+    print("Connecting to Worldpac...")
+    
+    if not wp.connect():
+        print("ERROR: Could not connect to Worldpac speedDIAL!")
+        print("Make sure the application is running.")
+        return
+    
+    wp._find_catalog_window()
+    wp._update_window_position()
+    
+    print(f"Window position: ({wp.win_left}, {wp.win_top})")
+    print(f"Window size: {wp.win_width}x{wp.win_height}")
+    
+    # Take screenshot
+    screenshot = pyautogui.screenshot()
+    draw = ImageDraw.Draw(screenshot)
+    
+    # Draw red circles at each coordinate position
+    for name, (rel_x, rel_y) in CATALOG_COORDS.items():
+        abs_x = wp.win_left + rel_x
+        abs_y = wp.win_top + rel_y
+        
+        # Draw a red circle
+        radius = 8
+        draw.ellipse(
+            [abs_x - radius, abs_y - radius, abs_x + radius, abs_y + radius],
+            fill='red',
+            outline='yellow',
+            width=2
+        )
+        
+        # Draw label
+        draw.text((abs_x + 10, abs_y - 5), name[:15], fill='yellow')
+        
+        print(f"  {name}: ({abs_x}, {abs_y})")
+    
+    # Save debug image
+    screenshot.save('worldpac_debug_coordinates.png')
+    print("\nSaved: worldpac_debug_coordinates.png")
+    print("Open this image to verify click positions are correct!")
+
+
 if __name__ == "__main__":
-    asyncio.run(test_worldpac())
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "debug":
+        debug_coordinates()
+    else:
+        asyncio.run(test_worldpac())
+
