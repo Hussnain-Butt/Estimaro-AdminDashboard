@@ -4,3 +4,9 @@ uvicorn[standard]==0.24.0
 playwright>=1.40.0
 pydantic==2.10.4
 python-dotenv==1.0.0
+
+# Worldpac Desktop Automation
+pyautogui>=0.9.54
+pywinauto>=0.6.8
+pillow>=10.0.0
+pyperclip>=1.8.2

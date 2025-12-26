@@ -5,7 +5,7 @@ This module automates the Worldpac speedDIAL desktop application
 using pyautogui and pywinauto for price lookups.
 
 Requirements:
-    pip install pyautogui pywinauto pillow
+    pip install pyautogui pywinauto pillow pyperclip
 
 Usage:
     from worldpac_desktop import WorldpacAutomation
@@ -16,6 +16,7 @@ Usage:
 import asyncio
 import logging
 import time
+import re
 from typing import List, Dict, Optional
 from decimal import Decimal
 
@@ -31,12 +32,56 @@ except ImportError:
     pyautogui = None
     pywinauto = None
 
+# Try to import clipboard library
+try:
+    import pyperclip
+    CLIPBOARD_AVAILABLE = True
+except ImportError:
+    CLIPBOARD_AVAILABLE = False
+    pyperclip = None
+
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# COORDINATE CONSTANTS (Based on screenshots from user)
+# These are RELATIVE to the Catalog window position
+# =============================================================================
+CATALOG_COORDS = {
+    # Vehicle selection row (top area)
+    "vin_field": (340, 120),           # VIN input field
+    "vin_search_icon": (435, 120),     # Magnifying glass next to VIN
+    
+    # Vehicle popup coordinates (relative to popup)
+    "vehicle_row_first": (350, 175),   # First vehicle row in popup
+    "ok_button": (745, 560),           # OK button in popup
+    
+    # Category panel (left side)
+    "category_search": (175, 225),      # "Search part type name" field
+    "replacement_parts": (165, 270),    # Replacement Parts in tree
+    
+    # Middle panel - search results
+    "search_result_first": (440, 335),  # First result in "Engine Appearance Cover" etc.
+    
+    # Parts diagram popup
+    "checkbox_first": (560, 320),       # First checkbox in parts list
+    "price_button_popup": (660, 495),   # Price button in diagram popup
+    
+    # Bottom buttons
+    "price_button": (820, 507),         # Main Price button
+    "reset_button": (868, 507),         # Reset button
+}
 
 
 class WorldpacAutomation:
     """
     Automates Worldpac speedDIAL desktop application for price lookups.
+    
+    Flow:
+    1. Enter VIN → Search → Select vehicle
+    2. Search category → Click subcategory  
+    3. Check parts → Click Price button
+    4. Extract prices from clipboard/screen
     """
     
     def __init__(self):
@@ -54,6 +99,10 @@ class WorldpacAutomation:
         self.type_delay = 0.05
         self.wait_after_action = 1.0
         
+        # Store window position for relative clicks
+        self.win_left = 0
+        self.win_top = 0
+        
     def is_available(self) -> bool:
         """Check if desktop automation libraries are available."""
         return DESKTOP_AUTOMATION_AVAILABLE
@@ -64,7 +113,7 @@ class WorldpacAutomation:
         Returns True if successful.
         """
         if not DESKTOP_AUTOMATION_AVAILABLE:
-            logger.error("Desktop automation libraries not installed. Run: pip install pyautogui pywinauto pillow")
+            logger.error("Desktop automation libraries not installed. Run: pip install pyautogui pywinauto pillow pyperclip")
             return False
         
         try:
@@ -86,6 +135,7 @@ class WorldpacAutomation:
                 if self._find_catalog_window():
                     logger.info("WORLDPAC: Catalog window found and ready")
                     self.catalog_window.set_focus()
+                    self._update_window_position()
                 else:
                     logger.info("WORLDPAC: Catalog window not found, using main window")
                     self.main_window.set_focus()
@@ -98,6 +148,60 @@ class WorldpacAutomation:
         except Exception as e:
             logger.error(f"WORLDPAC: Failed to connect - {e}")
             return False
+    
+    def _update_window_position(self):
+        """Update stored window position for relative click calculations."""
+        try:
+            target = self.catalog_window or self.main_window
+            if target:
+                rect = target.rectangle()
+                self.win_left = rect.left
+                self.win_top = rect.top
+                logger.info(f"WORLDPAC: Window position updated to ({self.win_left}, {self.win_top})")
+        except Exception as e:
+            logger.warning(f"WORLDPAC: Could not update window position: {e}")
+    
+    def _click_relative(self, coord_name: str, offset_x: int = 0, offset_y: int = 0):
+        """Click at a position relative to the catalog window."""
+        if coord_name in CATALOG_COORDS:
+            rel_x, rel_y = CATALOG_COORDS[coord_name]
+        else:
+            rel_x, rel_y = 0, 0
+            
+        abs_x = self.win_left + rel_x + offset_x
+        abs_y = self.win_top + rel_y + offset_y
+        
+        logger.info(f"WORLDPAC: Clicking {coord_name} at ({abs_x}, {abs_y})")
+        pyautogui.click(abs_x, abs_y)
+        time.sleep(self.click_delay)
+    
+    def _click_absolute(self, x: int, y: int, description: str = ""):
+        """Click at absolute screen coordinates."""
+        logger.info(f"WORLDPAC: Clicking {description} at ({x}, {y})")
+        pyautogui.click(x, y)
+        time.sleep(self.click_delay)
+    
+    def _type_text(self, text: str, clear_first: bool = True):
+        """Type text with optional clearing first."""
+        if clear_first:
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.1)
+            pyautogui.press('delete')
+            time.sleep(0.1)
+        
+        # Type character by character for reliability
+        for char in text:
+            pyautogui.typewrite(char, interval=self.type_delay)
+        time.sleep(0.3)
+    
+    def _save_screenshot(self, filename: str):
+        """Save a debug screenshot."""
+        try:
+            screenshot = pyautogui.screenshot()
+            screenshot.save(filename)
+            logger.info(f"WORLDPAC: Saved screenshot to {filename}")
+        except Exception as e:
+            logger.warning(f"WORLDPAC: Could not save screenshot: {e}")
     
     def _find_catalog_window(self) -> bool:
         """Find the Catalog popup window."""
@@ -147,79 +251,31 @@ class WorldpacAutomation:
     def open_catalog(self) -> bool:
         """
         Open the catalog dialog by clicking the Catalog button.
-        Tries multiple positions where the Catalog button might be.
         """
         try:
             # Check if catalog is already open
             if self._find_catalog_window():
                 logger.info("WORLDPAC: Catalog already open")
+                self._update_window_position()
                 return True
             
             # Focus main window
             self.main_window.set_focus()
             time.sleep(0.5)
             
-            # Get main window rectangle
+            # Click New Catalog & Results link (top right)
             rect = self.main_window.rectangle()
-            win_left = rect.left
-            win_top = rect.top
-            win_width = rect.width()
-            win_height = rect.height()
+            catalog_x = rect.left + rect.width() - 100
+            catalog_y = rect.top + 28
             
-            logger.info(f"WORLDPAC: Main window at ({win_left}, {win_top}), size {win_width}x{win_height}")
-            
-            # Save debug screenshot BEFORE clicking
-            screenshot = pyautogui.screenshot()
-            screenshot.save('worldpac_before_catalog_click.png')
-            logger.info("WORLDPAC: Saved pre-click screenshot to worldpac_before_catalog_click.png")
-            
-            # USER MEASURED EXACT POSITION:
-            # Catalog button at X≈780, Y≈95 from 2048×1098 screenshot
-            # Window-relative position (if window at 39, 21): X=780-39=741, Y=95-21=74
-            
-            # List of positions to try for Catalog button
-            click_positions = [
-                # Position 1: USER'S EXACT MEASURED POSITION (absolute screen coords)
-                (780, 95, "USER MEASURED: absolute (780, 95)"),
-                
-                # Position 2: Window-relative calculation
-                # If window at (39, 21): 780-39=741, 95-21=74
-                (win_left + 741, win_top + 74, "Window-relative (741, 74)"),
-                
-                # Position 3: Slight variations for DPI scaling (125% = 0.8x)
-                (int(780 * 0.8), int(95 * 0.8), "DPI scaled 0.8x (624, 76)"),
-                
-                # Position 4: "New Catalog & Results" link at top right
-                (win_left + win_width - 80, win_top + 18, "New Catalog & Results link"),
-                
-                # Position 5: Center of catalog icon area based on user description
-                # "Between DC Direct and Replacement Parts, under banner"
-                (win_left + 400, win_top + 55, "Toolbar center estimate"),
-            ]
-            
-            for x, y, description in click_positions:
-                logger.info(f"WORLDPAC: Trying click at ({x}, {y}) - {description}")
-                pyautogui.click(x, y)
-                time.sleep(2)
-                
-                # Check if catalog opened
-                if self._find_catalog_window():
-                    logger.info(f"WORLDPAC: Catalog opened with {description}!")
-                    return True
-            
-            # If all positions failed, try double-clicking
-            logger.info("WORLDPAC: Trying double-click on Catalog button")
-            pyautogui.doubleClick(win_left + 360, win_top + 55)
+            logger.info(f"WORLDPAC: Clicking New Catalog at ({catalog_x}, {catalog_y})")
+            pyautogui.click(catalog_x, catalog_y)
             time.sleep(2)
             
+            # Check if catalog opened
             if self._find_catalog_window():
-                logger.info("WORLDPAC: Catalog opened with double-click!")
+                self._update_window_position()
                 return True
-            
-            # Save failure screenshot
-            screenshot = pyautogui.screenshot()
-            screenshot.save('worldpac_catalog_click_failed.png')
-            logger.warning("WORLDPAC: All catalog click attempts failed - saved worldpac_catalog_click_failed.png")
             
             return False
             
@@ -227,289 +283,189 @@ class WorldpacAutomation:
             logger.warning(f"WORLDPAC: Could not open catalog - {e}")
             return False
     
-    def search_by_vin(self, vin: str) -> bool:
-        """
-        Search for vehicle by VIN.
-        """
+    def _click_reset(self):
+        """Click the Reset button to clear previous search."""
+        self._update_window_position()
+        self._click_relative("reset_button")
+        time.sleep(1)
+    
+    def _enter_vin(self, vin: str) -> bool:
+        """Enter VIN and search for vehicle."""
         try:
-            if not self.connected:
-                if not self.connect():
-                    return False
+            self._update_window_position()
             
-            self._find_catalog_window()
-            target = self.catalog_window or self.main_window
-            target.set_focus()
+            # Click VIN field
+            self._click_relative("vin_field")
             time.sleep(0.3)
             
-            # Find VIN field - look for text "VIN" near an edit control
-            # Use pyautogui to type in the VIN field
+            # Clear and type VIN
+            self._type_text(vin, clear_first=True)
+            logger.info(f"WORLDPAC: VIN entered: {vin}")
             
-            # Method 1: Use Tab to navigate to VIN field
-            # The VIN field appears to be after Year/Make/Model dropdowns
+            # Click search icon
+            self._click_relative("vin_search_icon")
+            time.sleep(3)  # Wait for vehicle popup
             
-            # Find and click on VIN field using image recognition or coordinates
-            # For now, use keyboard navigation
-            
-            logger.info(f"WORLDPAC: Entering VIN: {vin}")
-            
-            # Try to find VIN edit control
-            vin_fields = target.descendants(control_type="Edit")
-            for field in vin_fields:
-                try:
-                    # Check if field placeholder contains "VIN"
-                    field.set_focus()
-                    field.type_keys("^a")  # Select all
-                    field.type_keys(vin, with_spaces=True)
-                    time.sleep(0.5)
-                    field.type_keys("{ENTER}")
-                    logger.info("WORLDPAC: VIN entered successfully")
-                    time.sleep(2)  # Wait for results
-                    return True
-                except:
-                    continue
-            
-            # Fallback: use pyautogui
-            pyautogui.hotkey('ctrl', 'a')
-            pyautogui.typewrite(vin, interval=0.05)
-            pyautogui.press('enter')
-            time.sleep(2)
+            self._save_screenshot('worldpac_after_vin.png')
             return True
             
         except Exception as e:
-            logger.error(f"WORLDPAC: VIN search failed - {e}")
+            logger.error(f"WORLDPAC: VIN entry failed: {e}")
             return False
     
-    def search_by_ymm(self, year: str, make: str, model: str) -> bool:
-        """
-        Search for vehicle by Year/Make/Model.
-        """
+    def _select_vehicle(self) -> bool:
+        """Select the first vehicle from the popup and click OK."""
         try:
-            if not self.connected:
-                if not self.connect():
-                    return False
+            self._update_window_position()
             
-            self._find_catalog_window()
-            target = self.catalog_window or self.main_window
-            target.set_focus()
-            time.sleep(0.3)
-            
-            logger.info(f"WORLDPAC: Searching for {year} {make} {model}")
-            
-            # Find Year dropdown
-            year_combo = target.child_window(title="Year", control_type="ComboBox")
-            if year_combo.exists():
-                year_combo.select(year)
-                time.sleep(0.5)
-            
-            # Find Make dropdown
-            make_combo = target.child_window(title="Make", control_type="ComboBox")
-            if make_combo.exists():
-                make_combo.select(make)
-                time.sleep(0.5)
-            
-            # Find Model dropdown  
-            model_combo = target.child_window(title="Model", control_type="ComboBox")
-            if model_combo.exists():
-                model_combo.select(model)
-                time.sleep(0.5)
-            
-            # Click Refine button
-            refine_btn = target.child_window(title="Refine", control_type="Button")
-            if refine_btn.exists():
-                refine_btn.click()
-                time.sleep(2)
-            
-            logger.info("WORLDPAC: YMM search completed")
-            return True
-            
-        except Exception as e:
-            logger.error(f"WORLDPAC: YMM search failed - {e}")
-            return False
-    
-    def search_part_category(self, category: str) -> bool:
-        """
-        Click on a category in the parts tree (e.g., "Brake").
-        """
-        try:
-            target = self.catalog_window or self.main_window
-            target.set_focus()
-            
-            # Find the search box
-            search_box = target.child_window(
-                control_type="Edit",
-                found_index=0  # First edit box after vehicle selection
-            )
-            
-            if search_box.exists():
-                search_box.set_focus()
-                search_box.type_keys("^a")  # Select all
-                search_box.type_keys(category, with_spaces=True)
-                time.sleep(1)
-                
-                # Click on first matching result in tree
-                tree = target.child_window(control_type="Tree")
-                if tree.exists():
-                    items = tree.descendants(control_type="TreeItem")
-                    for item in items:
-                        if category.lower() in item.window_text().lower():
-                            item.click_input()
-                            logger.info(f"WORLDPAC: Clicked on category: {item.window_text()}")
-                            time.sleep(1)
-                            return True
-            
-            return False
-            
-        except Exception as e:
-            logger.error(f"WORLDPAC: Category search failed - {e}")
-            return False
-    
-    def search_part_number(self, part_number: str) -> Optional[Dict]:
-        """
-        Search for a specific part number and extract price.
-        Uses pyautogui for reliable input in speedDIAL.
-        """
-        try:
-            if not self.connected:
-                if not self.connect():
-                    return None
-            
-            # IMPORTANT: Always refresh the catalog window reference
-            self._find_catalog_window()
-            
-            target = self.catalog_window if self.catalog_window else self.main_window
-            
-            try:
-                target.set_focus()
-            except Exception as e:
-                logger.warning(f"WORLDPAC: Could not set focus: {e}")
-            
+            # Click on first vehicle row
+            self._click_relative("vehicle_row_first")
             time.sleep(0.5)
             
-            # Log window info for debugging
-            logger.info(f"WORLDPAC: Searching for part {part_number}")
-            logger.info(f"WORLDPAC: Using window: {target.window_text() if target else 'None'}")
+            # Click OK button
+            self._click_relative("ok_button")
+            time.sleep(2)
             
-            # Method 1: Try to find any Edit control and use it
-            found_search = False
-            edit_controls = target.descendants(control_type="Edit")
-            
-            logger.info(f"WORLDPAC: Found {len(edit_controls)} edit controls")
-            
-            for i, edit in enumerate(edit_controls):
-                try:
-                    edit_text = edit.window_text() or ""
-                    logger.debug(f"WORLDPAC: Edit {i}: '{edit_text[:50] if edit_text else 'empty'}'")
-                    
-                    # Look for search-related edit controls
-                    # Skip VIN and year fields
-                    if "vin" in edit_text.lower():
-                        continue
-                    if edit_text.strip().isdigit() and len(edit_text.strip()) == 4:
-                        continue  # Skip year field
-                    
-                    # Try to use this edit control
-                    edit.set_focus()
-                    time.sleep(0.2)
-                    
-                    # Clear and type part number
-                    edit.type_keys("^a")  # Select all
-                    time.sleep(0.1)
-                    edit.type_keys(part_number, with_spaces=True)
-                    time.sleep(0.1)
-                    edit.type_keys("{ENTER}")
-                    
-                    found_search = True
-                    logger.info(f"WORLDPAC: Entered part in edit control {i}")
-                    time.sleep(2)  # Wait for results
-                    break
-                    
-                except Exception as e:
-                    logger.debug(f"WORLDPAC: Edit {i} failed: {e}")
-                    continue
-            
-            # Method 2: Use pyautogui with window position
-            if not found_search:
-                logger.info("WORLDPAC: Using pyautogui with screen coordinates")
-                
-                try:
-                    # Get window rectangle
-                    rect = target.rectangle()
-                    win_left = rect.left
-                    win_top = rect.top
-                    win_width = rect.width()
-                    win_height = rect.height()
-                    
-                    logger.info(f"WORLDPAC: Catalog window at ({win_left}, {win_top}), size {win_width}x{win_height}")
-                    
-                    # Based on the screenshot, the search field "Search part type name" is:
-                    # - Left side of the catalog window
-                    # - About 170px from left edge
-                    # - About 220px from top of the dialog
-                    
-                    search_x = win_left + 170
-                    search_y = win_top + 220
-                    
-                    logger.info(f"WORLDPAC: Clicking search field at ({search_x}, {search_y})")
-                    
-                    # First, click Reset button to clear previous search (bottom right)
-                    reset_x = win_left + win_width - 50
-                    reset_y = win_top + win_height - 50
-                    pyautogui.click(reset_x, reset_y)
-                    time.sleep(1)
-                    
-                    # Click on the search field
-                    pyautogui.click(search_x, search_y)
-                    time.sleep(0.3)
-                    
-                    # Clear and type
-                    pyautogui.hotkey('ctrl', 'a')
-                    time.sleep(0.1)
-                    
-                    # Type the search term (use job description for Worldpac, not part number)
-                    # Worldpac searches by part TYPE, not part NUMBER
-                    pyautogui.typewrite(part_number.replace('_', ''), interval=0.03)
-                    time.sleep(0.5)
-                    
-                    pyautogui.press('enter')
-                    time.sleep(2)
-                    
-                    found_search = True
-                    logger.info("WORLDPAC: Typed search term using screen coordinates")
-                    
-                except Exception as e:
-                    logger.error(f"WORLDPAC: Screen coordinate method failed: {e}")
-            
-            # Extract price from results - use screen capture method
-            price = self._extract_price_from_screen(target)
-            
-            if price:
-                return {
-                    "part_number": part_number,
-                    "price": price,
-                    "vendor": "Worldpac",
-                    "stock_status": "Available"
-                }
-            
-            return None
+            self._save_screenshot('worldpac_after_vehicle_select.png')
+            logger.info("WORLDPAC: Vehicle selected")
+            return True
             
         except Exception as e:
-            logger.error(f"WORLDPAC: Part search failed - {e}")
-            return None
+            logger.error(f"WORLDPAC: Vehicle selection failed: {e}")
+            return False
     
-    def _extract_price_from_window(self, window) -> Optional[Decimal]:
-        """
-        Extract price from the current window.
-        Scans all text elements for $ patterns.
-        """
+    def _search_category(self, category: str) -> bool:
+        """Search for a category in the left panel."""
         try:
-            import re
+            self._update_window_position()
             
-            # Get all text elements from window
+            # Click category search field
+            self._click_relative("category_search")
+            time.sleep(0.3)
+            
+            # Clear and type category
+            self._type_text(category, clear_first=True)
+            
+            # Press Enter to search
+            pyautogui.press('enter')
+            time.sleep(2)
+            
+            self._save_screenshot('worldpac_after_category_search.png')
+            logger.info(f"WORLDPAC: Searched for category: {category}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"WORLDPAC: Category search failed: {e}")
+            return False
+    
+    def _click_search_result(self) -> bool:
+        """Click on the first search result in the middle panel."""
+        try:
+            self._update_window_position()
+            
+            # Click on first search result
+            self._click_relative("search_result_first")
+            time.sleep(2)
+            
+            self._save_screenshot('worldpac_after_result_click.png')
+            logger.info("WORLDPAC: Clicked on search result")
+            return True
+            
+        except Exception as e:
+            logger.error(f"WORLDPAC: Result click failed: {e}")
+            return False
+    
+    def _select_part_and_get_price(self) -> bool:
+        """Check a part checkbox and click Price button."""
+        try:
+            self._update_window_position()
+            
+            # Click on first checkbox
+            self._click_relative("checkbox_first")
+            time.sleep(0.5)
+            
+            # Click Price button (in popup)
+            self._click_relative("price_button_popup")
+            time.sleep(3)
+            
+            self._save_screenshot('worldpac_after_price_click.png')
+            logger.info("WORLDPAC: Clicked Price button")
+            return True
+            
+        except Exception as e:
+            logger.error(f"WORLDPAC: Price button click failed: {e}")
+            return False
+    
+    def _extract_prices_clipboard(self) -> List[Dict]:
+        """
+        Extract prices using clipboard method.
+        Tries to select all visible text and parse prices.
+        """
+        prices = []
+        
+        if not CLIPBOARD_AVAILABLE:
+            logger.warning("WORLDPAC: pyperclip not available, skipping clipboard extraction")
+            return prices
+        
+        try:
+            # Try to select all and copy
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.2)
+            pyautogui.hotkey('ctrl', 'c')
+            time.sleep(0.3)
+            
+            # Read from clipboard
+            text = pyperclip.paste()
+            
+            if text:
+                logger.info(f"WORLDPAC: Got clipboard text ({len(text)} chars)")
+                
+                # Find price patterns ($XX.XX format)
+                price_pattern = r'\$(\d+(?:,\d{3})*\.?\d*)'
+                matches = re.findall(price_pattern, text)
+                
+                for i, price_str in enumerate(matches):
+                    try:
+                        # Remove commas and convert to Decimal
+                        clean_price = price_str.replace(',', '')
+                        price_val = Decimal(clean_price)
+                        
+                        # Filter reasonable prices ($0.01 - $10,000)
+                        if Decimal('0.01') <= price_val <= Decimal('10000'):
+                            prices.append({
+                                "part_number": f"WORLDPAC_PART_{i+1}",
+                                "price": price_val,
+                                "vendor": "Worldpac",
+                                "stock_status": "Available"
+                            })
+                            logger.info(f"WORLDPAC: Found price ${price_val}")
+                    except:
+                        continue
+            
+            logger.info(f"WORLDPAC: Extracted {len(prices)} prices from clipboard")
+            
+        except Exception as e:
+            logger.error(f"WORLDPAC: Clipboard extraction failed: {e}")
+        
+        return prices
+    
+    def _extract_prices_screen(self) -> List[Dict]:
+        """
+        Extract prices by scanning screen for price patterns.
+        Uses pywinauto to find text controls.
+        """
+        prices = []
+        
+        try:
+            target = self.catalog_window or self.main_window
+            if not target:
+                return prices
+            
+            # Try to find all text elements
             all_texts = []
             
-            # Method 1: Get from descendants
             try:
-                for el in window.descendants():
+                for el in target.descendants():
                     try:
                         text = el.window_text()
                         if text and "$" in text:
@@ -519,96 +475,42 @@ class WorldpacAutomation:
             except:
                 pass
             
-            # Method 2: Also check Static and Text controls specifically
-            try:
-                statics = window.descendants(control_type="Text")
-                for s in statics:
-                    try:
-                        text = s.window_text()
-                        if text and "$" in text:
-                            all_texts.append(text)
-                    except:
-                        continue
-            except:
-                pass
+            logger.info(f"WORLDPAC: Found {len(all_texts)} text elements with $")
             
-            logger.info(f"WORLDPAC: Found {len(all_texts)} text elements with $ symbol")
-            
-            # Find price patterns - look for realistic prices ($5.00 - $999.99)
-            price_pattern = r'\$(\d+\.?\d*)'
-            prices_found = []
+            # Parse prices from text
+            price_pattern = r'\$(\d+(?:,\d{3})*\.?\d*)'
             
             for text in all_texts:
                 matches = re.findall(price_pattern, text)
-                for match in matches:
+                for price_str in matches:
                     try:
-                        price = Decimal(match)
-                        # Filter out unrealistic prices
-                        if price > 0 and price < 10000:
-                            prices_found.append(price)
-                            logger.info(f"WORLDPAC: Found price ${price} in '{text[:30]}...'")
+                        clean_price = price_str.replace(',', '')
+                        price_val = Decimal(clean_price)
+                        
+                        if Decimal('0.01') <= price_val <= Decimal('10000'):
+                            prices.append({
+                                "part_number": f"WORLDPAC_PART",
+                                "price": price_val,
+                                "vendor": "Worldpac",
+                                "stock_status": "Available"
+                            })
+                            logger.info(f"WORLDPAC: Found price ${price_val} in screen text")
                     except:
                         continue
             
-            if prices_found:
-                # Return the first reasonable price (usually the main price)
-                best_price = min(prices_found)  # Get cheapest
-                logger.info(f"WORLDPAC: Best price for part: ${best_price}")
-                return best_price
-            
-            return None
-            
         except Exception as e:
-            logger.error(f"WORLDPAC: Price extraction failed - {e}")
-            return None
-    
-    def _extract_price_from_screen(self, window) -> Optional[Decimal]:
-        """
-        Extract price from screen using screenshot and OCR.
-        Falls back to window-based extraction as pywinauto reports 0 UI elements.
-        """
-        try:
-            import re
-            from PIL import Image
-            
-            # Get window rectangle for screenshot
-            rect = window.rectangle()
-            
-            # Take screenshot of the window area
-            screenshot = pyautogui.screenshot(region=(
-                rect.left, rect.top, 
-                rect.width(), rect.height()
-            ))
-            
-            # Save screenshot for debugging
-            screenshot.save('worldpac_debug.png')
-            logger.info("WORLDPAC: Saved debug screenshot to worldpac_debug.png")
-            
-            # Try to find prices in the screenshot using simple pattern matching
-            # For now, we'll try to read any text that looks like prices
-            
-            # Since we can't do OCR without pytesseract, let's try alternative methods
-            
-            # Method 1: Check if the Price button shows any value
-            # The Price button in bottom-right might have a price after clicking
-            
-            # For now, fall back to the window-based extraction
-            return self._extract_price_from_window(window)
-            
-        except Exception as e:
-            logger.error(f"WORLDPAC: Screen extraction failed - {e}")
-            # Fall back to window method
-            return self._extract_price_from_window(window)
+            logger.error(f"WORLDPAC: Screen extraction failed: {e}")
+        
+        return prices
     
     def search_with_vin_and_job(self, vin: str, job_description: str) -> List[Dict]:
         """
         Complete Worldpac search flow:
-        0. Open Catalog dialog from main window (NEW!)
-        1. Enter VIN
-        2. Click search
-        3. Handle vehicle selection popup (click Ok)
-        4. Enter job description in search field
-        5. Wait for results
+        1. Open Catalog dialog (if not open)
+        2. Reset previous search
+        3. Enter VIN → Search → Select vehicle
+        4. Search category → Click subcategory
+        5. Check parts → Click Price button
         6. Extract prices
         """
         results = []
@@ -619,173 +521,98 @@ class WorldpacAutomation:
                     return results
             
             # =========================================
-            # STEP 0: Open Catalog dialog first!
+            # STEP 1: Open/Find Catalog
             # =========================================
-            logger.info("WORLDPAC: Opening Catalog dialog from main window...")
+            logger.info("WORLDPAC: Opening Catalog dialog...")
             if not self.open_catalog():
                 logger.warning("WORLDPAC: Could not open Catalog dialog")
-                # Continue anyway, maybe it's already in the right state
             
             time.sleep(1)
-            
-            # Refresh catalog window reference
-            self._find_catalog_window()
-            target = self.catalog_window if self.catalog_window else self.main_window
-            
-            # Get window rectangle
-            rect = target.rectangle()
-            win_left = rect.left
-            win_top = rect.top
-            win_width = rect.width()
-            win_height = rect.height()
-            
-            logger.info(f"WORLDPAC: Catalog at ({win_left}, {win_top}), size {win_width}x{win_height}")
-            
-            # Focus the window
-            try:
-                target.set_focus()
-            except:
-                pass
-            time.sleep(0.5)
+            self._update_window_position()
             
             # =========================================
-            # NEW APPROACH: Use KEYBOARD NAVIGATION instead of clicks!
-            # This is more reliable for desktop apps
+            # STEP 2: Reset previous search
             # =========================================
+            logger.info("WORLDPAC: Clicking Reset...")
+            self._click_reset()
+            time.sleep(1)
             
             # =========================================
-            # STEP 1: Click Reset button to clear
+            # STEP 3: Enter VIN and search
             # =========================================
-            reset_x = win_left + win_width - 50
-            reset_y = win_top + win_height - 40
-            logger.info(f"WORLDPAC: Clicking Reset at ({reset_x}, {reset_y})")
-            pyautogui.click(reset_x, reset_y)
+            logger.info(f"WORLDPAC: Entering VIN: {vin}")
+            if not self._enter_vin(vin):
+                logger.error("WORLDPAC: VIN entry failed")
+                return results
+            
+            # =========================================
+            # STEP 4: Select vehicle from popup
+            # =========================================
+            logger.info("WORLDPAC: Selecting vehicle...")
+            if not self._select_vehicle():
+                logger.warning("WORLDPAC: Vehicle selection may have failed")
+            
+            time.sleep(1)
+            self._update_window_position()
+            
+            # =========================================
+            # STEP 5: Search for category/job
+            # =========================================
+            # Map job description to category keywords
+            job_lower = job_description.lower()
+            category = job_description  # Default: use as-is
+            
+            # Smart category mapping
+            if "oil" in job_lower:
+                category = "Oil"
+            elif "brake" in job_lower:
+                category = "Brake"
+            elif "engine" in job_lower:
+                category = "Engine"
+            elif "air" in job_lower or "filter" in job_lower:
+                category = "Air Filter"
+            elif "coolant" in job_lower or "radiator" in job_lower:
+                category = "Cooling"
+            
+            logger.info(f"WORLDPAC: Searching category: {category}")
+            if not self._search_category(category):
+                logger.warning("WORLDPAC: Category search failed")
+            
+            # =========================================
+            # STEP 6: Click on first search result
+            # =========================================
+            logger.info("WORLDPAC: Clicking search result...")
+            if not self._click_search_result():
+                logger.warning("WORLDPAC: Could not click search result")
+            
             time.sleep(2)
             
             # =========================================
-            # STEP 2: Navigate to VIN field using TAB key
-            # After Reset, focus should be at top of form
-            # Press Tab multiple times to reach VIN field
+            # STEP 7: Select part and click Price
             # =========================================
-            logger.info("WORLDPAC: Navigating to VIN field using Tab key...")
+            logger.info("WORLDPAC: Selecting part and clicking Price...")
+            if not self._select_part_and_get_price():
+                logger.warning("WORLDPAC: Price button click failed")
             
-            # Click somewhere in the Vehicle section to start
-            vehicle_section_x = win_left + 100
-            vehicle_section_y = win_top + 80
-            pyautogui.click(vehicle_section_x, vehicle_section_y)
-            time.sleep(0.5)
-            
-            # Tab through: Vehicle tab → History dropdown → Mobile Scan → VIN field
-            # Usually VIN is 3-4 tabs from start
-            for i in range(4):
-                pyautogui.press('tab')
-                time.sleep(0.2)
-            
-            logger.info("WORLDPAC: Should be in VIN field now, typing VIN...")
-            
-            # Clear any existing content and type VIN
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(0.1)
-            pyautogui.typewrite(vin, interval=0.05)
-            time.sleep(0.5)
-            
-            logger.info(f"WORLDPAC: Entered VIN: {vin}")
+            time.sleep(2)
             
             # =========================================
-            # STEP 3: Press Tab to move to search button, then Enter
-            # Or just press Enter if VIN field auto-searches
+            # STEP 8: Extract prices
             # =========================================
-            logger.info("WORLDPAC: Pressing Tab then Enter to search...")
-            pyautogui.press('tab')  # Move to search button
-            time.sleep(0.3)
-            pyautogui.press('enter')  # Click search
-            time.sleep(4)  # Wait for vehicle popup
+            logger.info("WORLDPAC: Extracting prices...")
             
-            # Save screenshot after VIN search
-            pyautogui.screenshot().save('worldpac_after_vin_search.png')
-            logger.info("WORLDPAC: Saved screenshot after VIN search")
+            # Try clipboard method first
+            results = self._extract_prices_clipboard()
             
-            # =========================================
-            # STEP 4: Handle vehicle selection popup
-            # Popup should appear - press Enter to select first vehicle
-            # =========================================
-            logger.info("WORLDPAC: Handling vehicle popup with Enter key...")
+            # If clipboard failed, try screen method
+            if not results:
+                logger.info("WORLDPAC: Clipboard method failed, trying screen extraction...")
+                results = self._extract_prices_screen()
             
-            # Try to find popup window
-            popup_found = False
-            try:
-                for win in self.app.windows():
-                    title = win.window_text()
-                    if "Refine" in title or "Vehicle" in title:
-                        logger.info(f"WORLDPAC: Found popup: {title}")
-                        popup_found = True
-                        break
-            except:
-                pass
+            # Save final screenshot
+            self._save_screenshot('worldpac_final_result.png')
             
-            if popup_found:
-                logger.info("WORLDPAC: Popup found - pressing Enter to select vehicle")
-                pyautogui.press('enter')
-                time.sleep(2)
-            else:
-                logger.info("WORLDPAC: No popup detected - trying Enter anyway")
-                pyautogui.press('enter')
-                time.sleep(2)
-            
-            # Save screenshot after vehicle selection
-            pyautogui.screenshot().save('worldpac_after_vehicle_select.png')
-            logger.info("WORLDPAC: Saved screenshot after vehicle selection")
-            
-            # Refresh window reference
-            self._find_catalog_window()
-            target = self.catalog_window if self.catalog_window else self.main_window
-            
-            # =========================================
-            # STEP 5: Navigate to Category search field
-            # Click in the Category section, then type
-            # =========================================
-            logger.info("WORLDPAC: Navigating to Category search field...")
-            
-            # Click in Category search area (left side panel)
-            rect = target.rectangle()
-            category_x = rect.left + 165
-            category_y = rect.top + 175
-            
-            logger.info(f"WORLDPAC: Clicking Category search at ({category_x}, {category_y})")
-            pyautogui.click(category_x, category_y)
-            time.sleep(0.5)
-            
-            # Clear and type job description
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(0.2)
-            
-            job_clean = ''.join(c for c in job_description if c.isalnum() or c == ' ')
-            pyautogui.typewrite(job_clean.replace(' ', ''), interval=0.05)
-            time.sleep(0.5)
-            
-            # Press Enter to search
-            pyautogui.press('enter')
-            time.sleep(3)
-            
-            logger.info(f"WORLDPAC: Searched for job: {job_clean}")
-            
-            # =========================================
-            # STEP 6: Save debug screenshot
-            # =========================================
-            screenshot = pyautogui.screenshot()
-            screenshot.save('worldpac_search_result.png')
-            logger.info("WORLDPAC: Saved screenshot to worldpac_search_result.png")
-            
-            # =========================================
-            # STEP 7: Try to extract prices from screen text
-            # =========================================
-            # Since pywinauto can't see controls, we'll report that search was done
-            # User can verify from screenshot
-            
-            # For now, return a placeholder indicating search was performed
-            # Real price extraction would need OCR (pytesseract)
-            logger.info("WORLDPAC: Search completed - check worldpac_search_result.png for results")
-            
+            logger.info(f"WORLDPAC: Search complete - found {len(results)} prices")
             return results
             
         except Exception as e:
@@ -817,38 +644,62 @@ class WorldpacAutomation:
             logger.info(f"WORLDPAC: Using VIN+Job search: VIN={vin}, Job={job_description}")
             results = self.search_with_vin_and_job(vin, job_description)
         else:
-            # Try part number search (less reliable for Worldpac)
+            # Fallback: Try part number search
+            logger.info("WORLDPAC: No VIN provided, attempting part number search")
             for part_num in part_numbers:
                 try:
                     result = self.search_part_number(part_num)
                     if result:
                         results.append(result)
-                    else:
-                        logger.warning(f"WORLDPAC: No price found for {part_num}")
-                    
                     await asyncio.sleep(0.5)
-                    
                 except Exception as e:
                     logger.error(f"WORLDPAC: Error getting price for {part_num} - {e}")
         
         logger.info(f"WORLDPAC: Found {len(results)} prices out of {len(part_numbers)} parts")
         return results
     
-    def click_price_button(self) -> bool:
-        """Click the Price button to get pricing."""
+    def search_part_number(self, part_number: str) -> Optional[Dict]:
+        """
+        Search for a specific part number (fallback method).
+        """
         try:
-            target = self.catalog_window or self.main_window
-            rect = target.rectangle()
+            if not self.connected:
+                if not self.connect():
+                    return None
             
-            # Price button is in bottom right corner
-            price_x = rect.left + rect.width() - 100
-            price_y = rect.top + rect.height() - 40
+            self._find_catalog_window()
+            self._update_window_position()
             
-            logger.info(f"WORLDPAC: Clicking Price button at ({price_x}, {price_y})")
-            pyautogui.click(price_x, price_y)
+            # Click category search
+            self._click_relative("category_search")
+            time.sleep(0.3)
+            
+            # Type part number
+            self._type_text(part_number, clear_first=True)
+            pyautogui.press('enter')
+            time.sleep(2)
+            
+            # Try to extract prices
+            prices = self._extract_prices_clipboard()
+            if not prices:
+                prices = self._extract_prices_screen()
+            
+            if prices:
+                return prices[0]
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"WORLDPAC: Part search failed - {e}")
+            return None
+    
+    def click_price_button(self) -> bool:
+        """Click the main Price button at bottom."""
+        try:
+            self._update_window_position()
+            self._click_relative("price_button")
             time.sleep(2)
             return True
-            
         except Exception as e:
             logger.error(f"WORLDPAC: Could not click Price button - {e}")
             return False
@@ -865,6 +716,7 @@ async def test_worldpac():
     
     print("Testing Worldpac Desktop Automation...")
     print(f"Libraries available: {wp.is_available()}")
+    print(f"Clipboard available: {CLIPBOARD_AVAILABLE}")
     
     if wp.is_available():
         print("Connecting to speedDIAL...")
@@ -872,8 +724,13 @@ async def test_worldpac():
         print(f"Connected: {connected}")
         
         if connected:
-            print("Testing VIN search...")
-            wp.search_by_vin("WBAKN9C56ED682076")
+            print("Testing VIN + Job search...")
+            results = await wp.get_prices(
+                ["TEST"],
+                vin="WBA3A5C55CF256987",
+                job_description="Oil"
+            )
+            print(f"Results: {results}")
 
 
 if __name__ == "__main__":
