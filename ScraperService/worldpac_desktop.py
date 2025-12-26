@@ -51,8 +51,9 @@ logger = logging.getLogger(__name__)
 CATALOG_COORDS = {
     # TOP ROW - "Vehicle | History | Mobile Scan | VIN field | search icon"
     # This row is around y=47 from top of Catalog window
-    "vin_field": (370, 47),            # VIN input field (after Mobile Scan dropdown)
-    "vin_search_icon": (430, 47),      # Magnifying glass next to VIN
+    # VIN field is AFTER Mobile Scan dropdown, around x=270-380
+    "vin_field": (320, 47),            # VIN input field center
+    "vin_search_icon": (415, 47),      # Magnifying glass next to VIN
     
     # YEAR/MAKE/MODEL ROW - around y=75
     "year_dropdown": (140, 75),        # Year dropdown
@@ -358,44 +359,138 @@ class WorldpacAutomation:
         try:
             self._update_window_position()
             
-            # Click VIN field
-            self._click_relative("vin_field")
-            time.sleep(0.3)
+            # Click VIN field - need to click in the input area
+            self._click_relative("vin_field", take_screenshot=True)
+            time.sleep(0.5)
             
-            # Clear and type VIN
-            self._type_text(vin, clear_first=True)
+            # Triple-click to select all existing text, then delete
+            pyautogui.click(clicks=3)
+            time.sleep(0.2)
+            pyautogui.press('delete')
+            time.sleep(0.2)
+            
+            # Type VIN character by character
+            logger.info(f"WORLDPAC: Typing VIN: {vin}")
+            pyautogui.typewrite(vin, interval=0.05)
+            time.sleep(0.5)
             logger.info(f"WORLDPAC: VIN entered: {vin}")
             
-            # Click search icon
-            self._click_relative("vin_search_icon")
-            time.sleep(3)  # Wait for vehicle popup
+            # Click search icon (magnifying glass)
+            self._click_relative("vin_search_icon", take_screenshot=True)
+            time.sleep(4)  # Wait for vehicle popup to appear
             
-            self._save_screenshot('worldpac_after_vin.png')
+            self._save_screenshot('worldpac_after_vin_search.png')
             return True
             
         except Exception as e:
             logger.error(f"WORLDPAC: VIN entry failed: {e}")
             return False
     
-    def _select_vehicle(self) -> bool:
-        """Select the first vehicle from the popup and click OK."""
+    def _find_refine_vehicle_popup(self):
+        """
+        Find the 'Refine Vehicle' popup window that appears after VIN search.
+        This is a SEPARATE window from the main Catalog.
+        Returns the popup window object or None.
+        """
         try:
-            self._update_window_position()
+            # Look for popup with "Refine Vehicle" in title
+            windows = self.app.windows()
+            for win in windows:
+                try:
+                    title = win.window_text()
+                    if "Refine" in title and "Vehicle" in title:
+                        logger.info(f"WORLDPAC: Found Refine Vehicle popup: {title}")
+                        return win
+                except:
+                    continue
             
-            # Click on first vehicle row
-            self._click_relative("vehicle_row_first")
-            time.sleep(0.5)
+            # Alternative: Look for any new popup window
+            for win in windows:
+                try:
+                    title = win.window_text()
+                    # Skip main window and catalog
+                    if "speedDIAL for" in title and "Catalog" not in title:
+                        continue
+                    if "Catalog" in title and "Refine" not in title:
+                        continue
+                    # Check if it's a popup with vehicle list
+                    if "speedDIAL" in title:
+                        logger.info(f"WORLDPAC: Found potential popup: {title}")
+                        return win
+                except:
+                    continue
+                    
+            return None
+        except Exception as e:
+            logger.warning(f"WORLDPAC: Error finding popup: {e}")
+            return None
+    
+    def _select_vehicle(self) -> bool:
+        """
+        Select the first vehicle from the Refine Vehicle popup and click OK.
+        The popup is a SEPARATE window - need to detect its position!
+        """
+        try:
+            # First, try to find the Refine Vehicle popup
+            popup = self._find_refine_vehicle_popup()
             
-            # Click OK button
-            self._click_relative("ok_button")
-            time.sleep(2)
+            if popup:
+                # Get popup position
+                popup_rect = popup.rectangle()
+                popup_left = popup_rect.left
+                popup_top = popup_rect.top
+                popup_width = popup_rect.width()
+                popup_height = popup_rect.height()
+                
+                logger.info(f"WORLDPAC: Refine popup at ({popup_left}, {popup_top}), size {popup_width}x{popup_height}")
+                
+                # Focus the popup
+                popup.set_focus()
+                time.sleep(0.3)
+                
+                # Click first vehicle row - relative to POPUP
+                # First data row is around y=55-60 from popup top, x=center
+                vehicle_x = popup_left + (popup_width // 2)
+                vehicle_y = popup_top + 55
+                
+                self._save_screenshot('worldpac_before_vehicle_click.png')
+                logger.info(f"WORLDPAC: Clicking vehicle at ({vehicle_x}, {vehicle_y})")
+                pyautogui.click(vehicle_x, vehicle_y)
+                time.sleep(0.5)
+                
+                # Double-click to select (some UIs need this)
+                pyautogui.click(vehicle_x, vehicle_y)
+                time.sleep(0.5)
+                
+                # Click OK button - bottom of popup, center-right area
+                ok_x = popup_left + popup_width - 80
+                ok_y = popup_top + popup_height - 30
+                
+                logger.info(f"WORLDPAC: Clicking OK at ({ok_x}, {ok_y})")
+                pyautogui.click(ok_x, ok_y)
+                time.sleep(2)
+                
+            else:
+                # No popup found - maybe it auto-selected or closed
+                # Try clicking OK button using main window coordinates
+                logger.warning("WORLDPAC: Refine popup not found, trying fallback...")
+                self._update_window_position()
+                
+                # The popup might be embedded - try clicking in the expected area
+                # Based on user's screenshot, popup appears within catalog
+                self._click_relative("vehicle_row_first", take_screenshot=True)
+                time.sleep(0.5)
+                self._click_relative("ok_button")
+                time.sleep(2)
             
             self._save_screenshot('worldpac_after_vehicle_select.png')
-            logger.info("WORLDPAC: Vehicle selected")
+            logger.info("WORLDPAC: Vehicle selection attempted")
             return True
             
         except Exception as e:
             logger.error(f"WORLDPAC: Vehicle selection failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def _search_category(self, category: str) -> bool:
