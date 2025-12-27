@@ -23,7 +23,7 @@ class ScraperClient:
         # Get config from environment
         self.base_url = getattr(settings, 'SCRAPER_SERVICE_URL', 'http://localhost:5000')
         self.api_key = getattr(settings, 'SCRAPER_API_KEY', 'estimaro_scraper_secret_2024')
-        self.timeout = 60.0  # 60 seconds for scraping operations
+        self.timeout = 180.0  # 180 seconds for scraping operations (Worldpac takes ~60-90 seconds)
     
     async def _make_request(self, endpoint: str, data: dict) -> dict:
         """Make authenticated request to Scraper Service"""

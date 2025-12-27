@@ -1276,6 +1276,7 @@ async def scrape_worldpac_pricing(part_numbers: List[str], vin: str = None, job_
                     })
                 
                 logger.info(f"WORLDPAC: SUCCESS with keyword '{keyword}' - Found {len(prices)} prices")
+                logger.info(f"WORLDPAC: Actual prices = {[p['price'] for p in prices]}")
                 return {
                     "success": True,
                     "prices": prices,
