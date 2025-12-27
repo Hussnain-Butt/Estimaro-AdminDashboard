@@ -25,11 +25,21 @@ from decimal import Decimal
 
 # Import Worldpac desktop automation (optional - may not be available on all systems)
 try:
-    from worldpac_desktop import worldpac_automation, WorldpacAutomation
+    from worldpac_desktop import WorldpacAutomation
     WORLDPAC_AVAILABLE = True
+    worldpac_instance = None  # Created on first use
 except ImportError:
     WORLDPAC_AVAILABLE = False
-    worldpac_automation = None
+    WorldpacAutomation = None
+    worldpac_instance = None
+
+# Import Gemini AI Agent for intelligent automation
+try:
+    from gemini_agent import GeminiVisionAgent
+    AI_AVAILABLE = True
+except ImportError:
+    AI_AVAILABLE = False
+    GeminiVisionAgent = None
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -38,6 +48,19 @@ logger = logging.getLogger(__name__)
 # Configuration
 API_KEY = os.getenv("SCRAPER_API_KEY", "estimaro_scraper_secret_2024")
 CDP_PORT = 9222
+
+# AI Agent Configuration
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDTXqRjf6AjOsftTfYv5t05koE3SpVV1MM")
+AI_ENABLED = os.getenv("AI_ENABLED", "true").lower() == "true"
+
+# Initialize AI agent for smart keyword matching
+ai_agent = None
+if AI_ENABLED and AI_AVAILABLE:
+    try:
+        ai_agent = GeminiVisionAgent(GEMINI_API_KEY)
+        logger.info("✅ Gemini AI Agent initialized for ScraperService")
+    except Exception as e:
+        logger.warning(f"⚠️ AI Agent initialization failed: {e}")
 
 app = FastAPI(
     title="Estimaro Scraper Service",
@@ -300,6 +323,120 @@ async def discover_page_elements(page, element_type: str = "all") -> dict:
         logger.error(f"DOM Discovery error: {e}")
         return discovered
 
+
+# =============================================================================
+# AI-POWERED PAGE ANALYSIS
+# =============================================================================
+async def ai_analyze_page(page, context: str, expected: str) -> dict:
+    """
+    Use Gemini AI to analyze page state and diagnose issues.
+    
+    Args:
+        page: Playwright page object
+        context: What we were trying to do
+        expected: What we expected to see
+        
+    Returns:
+        {
+            "diagnosis": str,
+            "suggestion": str,
+            "found_elements": list,
+            "should_retry": bool
+        }
+    """
+    global ai_agent
+    
+    result = {
+        "diagnosis": "AI not available",
+        "suggestion": "Use manual fallback",
+        "found_elements": [],
+        "should_retry": False
+    }
+    
+    if not ai_agent or not ai_agent.initialized:
+        return result
+    
+    try:
+        # Take screenshot
+        screenshot_bytes = await page.screenshot()
+        
+        # Convert to PIL Image
+        from PIL import Image
+        import io
+        screenshot = Image.open(io.BytesIO(screenshot_bytes))
+        
+        # Ask AI to analyze
+        analysis = await ai_agent.analyze_failure(
+            screenshot,
+            f"Context: {context}",
+            f"Expected: {expected}"
+        )
+        
+        result["diagnosis"] = analysis.get("diagnosis", "Unknown")
+        result["suggestion"] = analysis.get("retry_strategy", "No suggestion")
+        result["should_retry"] = analysis.get("should_retry", False)
+        
+        logger.info(f"[AI] Diagnosis: {result['diagnosis']}")
+        logger.info(f"[AI] Suggestion: {result['suggestion']}")
+        
+        return result
+        
+    except Exception as e:
+        logger.warning(f"[AI] Page analysis error: {e}")
+        return result
+
+
+async def ai_find_element_on_page(page, description: str) -> dict:
+    """
+    Use Gemini AI to find an element on the page by description.
+    
+    Args:
+        page: Playwright page object
+        description: What element to find (e.g., "VIN input field")
+        
+    Returns:
+        {
+            "found": bool,
+            "selector": str or None,
+            "reasoning": str
+        }
+    """
+    global ai_agent
+    
+    if not ai_agent or not ai_agent.initialized:
+        return {"found": False, "selector": None, "reasoning": "AI not available"}
+    
+    try:
+        # Take screenshot
+        screenshot_bytes = await page.screenshot()
+        
+        # Convert to PIL Image
+        from PIL import Image
+        import io
+        screenshot = Image.open(io.BytesIO(screenshot_bytes))
+        
+        # Ask AI to find element
+        result = await ai_agent.find_element(screenshot, description)
+        
+        if result.get("success"):
+            logger.info(f"[AI] Found '{description}': {result.get('reasoning', '')}")
+            return {
+                "found": True,
+                "x": result.get("x"),
+                "y": result.get("y"),
+                "reasoning": result.get("reasoning", "")
+            }
+        else:
+            return {
+                "found": False,
+                "selector": None,
+                "reasoning": result.get("error", "Not found")
+            }
+            
+    except Exception as e:
+        logger.warning(f"[AI] Find element error: {e}")
+        return {"found": False, "selector": None, "reasoning": str(e)}
+
 async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
     """
     FULL AUTOMATION: Scrape labor time from ALLDATA
@@ -559,16 +696,40 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
             # DOM DISCOVERY - Auto-scan page for elements
             logger.error("ALLDATA: No labor hours found - running DOM Discovery...")
             discovered = await discover_page_elements(page, "price")
+            
+            # AI DIAGNOSIS - Ask AI what went wrong
+            ai_result = await ai_analyze_page(
+                page,
+                f"Trying to find labor hours for '{job_description}' in ALLDATA",
+                "Expected to see labor time values like '1.2 hrs' or '2.5 hours'"
+            )
+            
             return {
                 "success": False,
                 "error": f"Could not find labor hours for '{job_description}' in ALLDATA.",
                 "discovered_elements": discovered.get("prices", [])[:5],
-                "suggested_selectors": discovered.get("suggested_selectors", [])[:5]
+                "suggested_selectors": discovered.get("suggested_selectors", [])[:5],
+                "ai_diagnosis": ai_result.get("diagnosis"),
+                "ai_suggestion": ai_result.get("suggestion")
             }
         
     except Exception as e:
         logger.error(f"ALLDATA scrape error: {e}")
-        return {"success": False, "error": str(e)}
+        # AI diagnosis on exception
+        try:
+            ai_result = await ai_analyze_page(
+                page,
+                f"ALLDATA scraper crashed: {str(e)}",
+                "Expected normal ALLDATA page"
+            )
+            return {
+                "success": False, 
+                "error": str(e),
+                "ai_diagnosis": ai_result.get("diagnosis"),
+                "ai_suggestion": ai_result.get("suggestion")
+            }
+        except:
+            return {"success": False, "error": str(e)}
 
 async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
     """
@@ -843,18 +1004,42 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
             # DOM DISCOVERY - Auto-scan page for elements
             logger.error("PARTSLINK: No parts found - running DOM Discovery...")
             discovered = await discover_page_elements(page, "all")
+            
+            # AI DIAGNOSIS - Ask AI what went wrong
+            ai_result = await ai_analyze_page(
+                page,
+                f"Trying to find OEM parts for '{job_description}' in PartsLink24",
+                "Expected to see part numbers in format XX_XXXX (like 17_0525)"
+            )
+            
             return {
                 "success": False,
                 "parts": [],
                 "error": f"Could not find OEM parts for '{job_description}' in PartsLink24.",
                 "discovered_elements": discovered.get("inputs", [])[:5] + discovered.get("links", [])[:5],
                 "suggested_selectors": discovered.get("suggested_selectors", [])[:5],
+                "ai_diagnosis": ai_result.get("diagnosis"),
+                "ai_suggestion": ai_result.get("suggestion"),
                 "source": "partslink-error"
             }
         
     except Exception as e:
         logger.error(f"PARTSLINK scrape error: {e}")
-        return {"success": False, "error": str(e)}
+        # AI diagnosis on exception
+        try:
+            ai_result = await ai_analyze_page(
+                page,
+                f"PartsLink24 scraper crashed: {str(e)}",
+                "Expected normal PartsLink24 page"
+            )
+            return {
+                "success": False, 
+                "error": str(e),
+                "ai_diagnosis": ai_result.get("diagnosis"),
+                "ai_suggestion": ai_result.get("suggestion")
+            }
+        except:
+            return {"success": False, "error": str(e)}
 
 
 async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
@@ -989,18 +1174,42 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
             # DOM DISCOVERY - Auto-scan page for elements
             logger.error("SSF: No prices found - running DOM Discovery...")
             discovered = await discover_page_elements(page, "price")
+            
+            # AI DIAGNOSIS - Ask AI what went wrong
+            ai_result = await ai_analyze_page(
+                page,
+                f"Trying to find prices for parts in SSF Auto Parts",
+                "Expected to see price values like $12.50, $45.99 on the page"
+            )
+            
             return {
                 "success": False,
                 "prices": [],
                 "error": "Could not find prices from SSF.",
                 "discovered_elements": discovered.get("prices", [])[:5],
                 "suggested_selectors": discovered.get("suggested_selectors", [])[:5],
+                "ai_diagnosis": ai_result.get("diagnosis"),
+                "ai_suggestion": ai_result.get("suggestion"),
                 "source": "ssf-error"
             }
         
     except Exception as e:
         logger.error(f"SSF scrape error: {e}")
-        return {"success": False, "error": str(e)}
+        # AI diagnosis on exception
+        try:
+            ai_result = await ai_analyze_page(
+                page,
+                f"SSF scraper crashed: {str(e)}",
+                "Expected normal SSF Auto Parts page"
+            )
+            return {
+                "success": False, 
+                "error": str(e),
+                "ai_diagnosis": ai_result.get("diagnosis"),
+                "ai_suggestion": ai_result.get("suggestion")
+            }
+        except:
+            return {"success": False, "error": str(e)}
 
 
 # =============================================================================
@@ -1009,45 +1218,92 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
 async def scrape_worldpac_pricing(part_numbers: List[str], vin: str = None, job_description: str = None) -> dict:
     """
     Scrape pricing from Worldpac speedDIAL desktop application.
-    Uses pyautogui/pywinauto for Windows GUI automation.
+    Uses pyautogui/pywinauto for Windows GUI automation with OCR.
     
-    If VIN and job_description are provided, uses complete search flow.
+    NEW: AI-powered smart keyword expansion - tries multiple search terms.
+    
+    REQUIRES: VIN and job_description for the new flow.
     """
+    global worldpac_instance, ai_agent
+    
     if not WORLDPAC_AVAILABLE:
         logger.warning("WORLDPAC: Desktop automation not available - pyautogui/pywinauto not installed")
         return {"success": False, "error": "Worldpac desktop automation not available", "prices": []}
     
+    if not vin or not job_description:
+        logger.warning("WORLDPAC: VIN and job_description required for new flow")
+        return {"success": False, "error": "VIN and job_description required", "prices": []}
+    
     try:
-        logger.info(f"WORLDPAC: Requesting prices for {len(part_numbers)} parts")
-        if vin:
-            logger.info(f"WORLDPAC: Using VIN: {vin}")
-        if job_description:
-            logger.info(f"WORLDPAC: Using Job: {job_description}")
+        logger.info(f"WORLDPAC: Starting automation for VIN={vin}, Job={job_description}")
         
-        # Get prices from Worldpac desktop app
-        results = await worldpac_automation.get_prices(part_numbers, vin=vin, job_description=job_description)
+        # Create Worldpac instance if needed (with AI enabled)
+        if worldpac_instance is None:
+            worldpac_instance = WorldpacAutomation(ai_enabled=AI_ENABLED, gemini_api_key=GEMINI_API_KEY)
         
-        if results:
-            prices = []
-            for r in results:
-                prices.append({
-                    "vendor": "Worldpac",
-                    "part_number": r.get("part_number", ""),
-                    "brand": "OEM",
-                    "price": float(r.get("price", 0)),
-                    "stock_status": r.get("stock_status", "Available"),
-                    "warehouse": "Worldpac"
-                })
+        # Get AI-expanded keywords to try
+        keywords_to_try = [job_description]
+        if ai_agent and ai_agent.initialized:
+            try:
+                ai_keywords = await ai_agent.get_search_keywords(job_description)
+                if ai_keywords:
+                    # Prioritize AI keywords but include original
+                    keywords_to_try = ai_keywords[:4]  # Max 4 AI keywords
+                    if job_description not in keywords_to_try:
+                        keywords_to_try.insert(0, job_description.split()[0])  # Add first word as backup
+                    logger.info(f"WORLDPAC: AI keywords = {keywords_to_try}")
+            except Exception as e:
+                logger.warning(f"WORLDPAC: AI keyword expansion failed: {e}")
+        
+        # Try each keyword until we find parts
+        all_keywords_tried = []
+        for keyword in keywords_to_try:
+            logger.info(f"WORLDPAC: Trying keyword: '{keyword}'")
+            all_keywords_tried.append(keyword)
             
-            logger.info(f"WORLDPAC: SUCCESS - Found {len(prices)} prices")
-            return {
-                "success": True,
-                "prices": prices,
-                "source": "worldpac-desktop"
-            }
-        else:
-            logger.warning("WORLDPAC: No prices found (search flow completed)")
-            return {"success": False, "error": "Worldpac search completed - check screenshots", "prices": []}
+            result = worldpac_instance.get_prices_for_vin(vin, keyword)
+            
+            if result.get("success") and result.get("prices"):
+                prices = []
+                for price_value in result["prices"]:
+                    prices.append({
+                        "vendor": "Worldpac",
+                        "part_number": job_description,  # Use original job as reference
+                        "brand": "OEM",
+                        "price": float(price_value),
+                        "stock_status": "Available",
+                        "warehouse": "Worldpac"
+                    })
+                
+                logger.info(f"WORLDPAC: SUCCESS with keyword '{keyword}' - Found {len(prices)} prices")
+                return {
+                    "success": True,
+                    "prices": prices,
+                    "source": "worldpac-desktop",
+                    "parts_selected": result.get("parts_selected", 0),
+                    "keyword_used": keyword,
+                    "keywords_tried": all_keywords_tried
+                }
+            
+            # If no parts found with this keyword, try next
+            if result.get("no_parts_found"):
+                logger.info(f"WORLDPAC: No parts found for '{keyword}', trying next...")
+                continue
+            
+            # If other error (not "no parts found"), stop trying
+            if not result.get("success") and not result.get("no_parts_found"):
+                break
+        
+        # All keywords failed
+        error = f"No parts found for any keyword: {all_keywords_tried}"
+        logger.warning(f"WORLDPAC: {error}")
+        return {
+            "success": False, 
+            "error": error, 
+            "prices": [],
+            "keywords_tried": all_keywords_tried,
+            "no_parts_found": True
+        }
             
     except Exception as e:
         logger.error(f"WORLDPAC: Error - {e}")
@@ -1099,11 +1355,30 @@ async def scrape_multi_vendor_pricing(part_numbers: List[str], vin: str = None, 
             # Pass VIN and job description for complete Worldpac search flow
             worldpac_result = await scrape_worldpac_pricing(parts_for_worldpac, vin=vin, job_description=job_description)
             if worldpac_result.get("success"):
-                for p in worldpac_result.get("prices", []):
-                    part_num = p.get("part_number")
-                    if part_num:
-                        worldpac_prices[part_num] = p
-                logger.info(f"MULTI-VENDOR: Worldpac returned {len(worldpac_prices)} prices")
+                wp_prices_list = worldpac_result.get("prices", [])
+                logger.info(f"MULTI-VENDOR: Worldpac returned {len(wp_prices_list)} raw prices")
+                
+                # Worldpac returns generic prices for the job, not per-part
+                # Map first Worldpac price to all parts that need comparison
+                if wp_prices_list:
+                    # Use the minimum Worldpac price for comparison
+                    min_wp_price = min(wp_prices_list, key=lambda x: x.get("price", 9999))
+                    
+                    # Assign this price to EACH part number for comparison
+                    for i, part_num in enumerate(part_numbers):
+                        if i < len(wp_prices_list):
+                            # Use actual individual prices if available
+                            wp_price_entry = wp_prices_list[i].copy()
+                            wp_price_entry["part_number"] = part_num
+                            worldpac_prices[part_num] = wp_price_entry
+                        else:
+                            # Use the minimum price for remaining parts
+                            wp_price_entry = min_wp_price.copy()
+                            wp_price_entry["part_number"] = part_num
+                            worldpac_prices[part_num] = wp_price_entry
+                    
+                    logger.info(f"MULTI-VENDOR: Worldpac mapped {len(worldpac_prices)} prices to parts")
+                    
         except Exception as e:
             logger.warning(f"MULTI-VENDOR: Worldpac search failed - {e}")
     

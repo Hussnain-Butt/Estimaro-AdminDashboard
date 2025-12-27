@@ -10,3 +10,6 @@ pyautogui>=0.9.54
 pywinauto>=0.6.8
 pillow>=10.0.0
 pyperclip>=1.8.2
+
+# Gemini AI Agent
+google-generativeai>=0.8.0
