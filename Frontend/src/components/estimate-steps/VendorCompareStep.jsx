@@ -27,14 +27,14 @@ const VendorCompareStep = ({ vendorData }) => {
           Weights: Brand {weights.brand}% • Price {weights.price}% • Distance {weights.distance}%
         </div>
       </div>
-      
+
       {vendorData.parts.map((part, partIndex) => (
         <div key={partIndex} className="bg-background rounded-lg border border-border overflow-hidden">
           <div className="bg-primary/20 px-4 py-2 border-b border-border">
             <p className="font-semibold text-text-primary">{part.description || part.part_number}</p>
             <p className="text-xs text-text-secondary">Part #: {part.part_number}</p>
           </div>
-          
+
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
@@ -50,18 +50,15 @@ const VendorCompareStep = ({ vendorData }) => {
               </thead>
               <tbody>
                 {part.offers && part.offers.map((offer, offerIndex) => (
-                  <tr 
-                    key={offerIndex} 
-                    className={`border-b border-border/50 hover:bg-primary/10 transition-colors ${
-                      offer.selection === 'Primary' ? 'bg-success/10' : 
-                      offer.selection === 'Backup' ? 'bg-warning/10' : ''
-                    }`}
+                  <tr
+                    key={offerIndex}
+                    className={`border-b border-border/50 hover:bg-primary/10 transition-colors ${offer.is_cheapest ? 'bg-success/15 ring-1 ring-success/30' : ''
+                      }`}
                   >
                     <td className="p-3 text-text-primary font-semibold">
                       <div className="flex items-center space-x-2">
-                        <span className={`h-3 w-3 rounded-full ${
-                          offer.vendor_name === 'Worldpac' ? 'bg-blue-500' : 'bg-green-500'
-                        }`}></span>
+                        <span className={`h-3 w-3 rounded-full ${offer.vendor_name === 'Worldpac' ? 'bg-blue-500' : 'bg-green-500'
+                          }`}></span>
                         <span>{offer.vendor_name}</span>
                       </div>
                     </td>
@@ -71,13 +68,14 @@ const VendorCompareStep = ({ vendorData }) => {
                         <p className="text-xs text-text-secondary">{offer.brand_tier}</p>
                       </div>
                     </td>
-                    <td className="p-3 text-text-primary font-mono">${parseFloat(offer.price).toFixed(2)}</td>
+                    <td className={`p-3 font-mono ${offer.is_cheapest ? 'text-success font-bold text-lg' : 'text-text-primary'}`}>
+                      ${parseFloat(offer.price).toFixed(2)}
+                    </td>
                     <td className="p-3">
-                      <span className={`px-2 py-1 rounded text-xs ${
-                        offer.stock_status === 'In Stock' || offer.stock_status === 'Available' 
-                          ? 'bg-success/20 text-success' 
+                      <span className={`px-2 py-1 rounded text-xs ${offer.stock_status === 'In Stock' || offer.stock_status === 'Available'
+                          ? 'bg-success/20 text-success'
                           : 'bg-warning/20 text-warning'
-                      }`}>
+                        }`}>
                         {offer.stock_status} ({offer.stock_quantity})
                       </span>
                     </td>
@@ -85,8 +83,8 @@ const VendorCompareStep = ({ vendorData }) => {
                     <td className="p-3">
                       <div className="flex items-center space-x-2">
                         <div className="w-16 h-2 bg-background rounded-full overflow-hidden">
-                          <div 
-                            className="h-full bg-accent rounded-full" 
+                          <div
+                            className="h-full bg-accent rounded-full"
                             style={{ width: `${offer.scores?.composite || 0}%` }}
                           ></div>
                         </div>
@@ -94,13 +92,13 @@ const VendorCompareStep = ({ vendorData }) => {
                       </div>
                     </td>
                     <td className="p-3">
-                      {offer.selection === 'Primary' && (
-                        <span className="px-3 py-1 bg-success text-background rounded-full text-xs font-bold">
-                          ★ Primary
+                      {offer.is_cheapest && (
+                        <span className="px-3 py-1 bg-success text-background rounded-full text-xs font-bold animate-pulse">
+                          ✓ Cheapest
                         </span>
                       )}
-                      {offer.selection === 'Backup' && (
-                        <span className="px-3 py-1 bg-warning text-background rounded-full text-xs font-bold">
+                      {!offer.is_cheapest && offer.selection === 'Backup' && (
+                        <span className="px-3 py-1 bg-warning/60 text-background rounded-full text-xs font-bold">
                           Backup
                         </span>
                       )}
@@ -108,22 +106,32 @@ const VendorCompareStep = ({ vendorData }) => {
                   </tr>
                 ))}
               </tbody>
+
             </table>
           </div>
-          
-          {/* Part Summary */}
-          {part.primary && (
-            <div className="bg-surface/50 px-4 py-3 border-t border-border flex justify-between items-center">
-              <p className="text-sm text-text-secondary">
-                <span className="font-bold text-text-primary">Recommended:</span>{' '}
-                {part.primary.brand} from {part.primary.vendor}
-              </p>
-              <p className="text-sm font-bold text-accent">${parseFloat(part.primary.price).toFixed(2)}</p>
-            </div>
-          )}
+
+          {/* Part Summary - Show cheapest vendor used in estimate */}
+          {part.offers && part.offers.length > 0 && (() => {
+            const cheapest = part.offers.find(o => o.is_cheapest) || part.offers[0]
+            return (
+              <div className="bg-success/10 px-4 py-3 border-t border-success/30 flex justify-between items-center">
+                <p className="text-sm text-text-secondary">
+                  <span className="font-bold text-success">✓ Using in Estimate:</span>{' '}
+                  {cheapest.brand} from <span className="font-bold">{cheapest.vendor_name}</span>
+                  {part.offers.length > 1 && (
+                    <span className="text-xs ml-2 text-text-secondary">
+                      (saves ${(Math.max(...part.offers.map(o => parseFloat(o.price))) - parseFloat(cheapest.price)).toFixed(2)} vs other vendor)
+                    </span>
+                  )}
+                </p>
+                <p className="text-lg font-bold text-success">${parseFloat(cheapest.price).toFixed(2)}</p>
+              </div>
+            )
+          })()}
         </div>
+
       ))}
-      
+
       {/* Summary */}
       <div className="bg-background p-4 rounded-lg border border-border">
         <div className="flex justify-between items-center">

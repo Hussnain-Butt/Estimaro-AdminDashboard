@@ -819,6 +819,63 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         
         await asyncio.sleep(3)  # Wait for results
         
+        # Step 4b: Handle Model Selection page if it appears
+        # PartsLink24 sometimes shows a model selection page after VIN search
+        logger.info("PARTSLINK: Checking for model selection page...")
+        await asyncio.sleep(2)
+        
+        # Check if we're on model selection page by looking for Model column
+        model_page = await page.query_selector("text=Model") or await page.query_selector("text=Tech. Info")
+        if model_page:
+            logger.info("PARTSLINK: Model selection page detected - selecting model...")
+            
+            # Extract series from VIN (position 4-5 for BMW)
+            # WBA3A5C55CF256987 - "3A" = 3 Series
+            vin_series = vin[3:5] if len(vin) >= 5 else ""
+            series_map = {
+                "1": "1'", "2": "2'", "3": "3'", "4": "4'", "5": "5'", 
+                "6": "6'", "7": "7'", "8": "8'"
+            }
+            
+            # Get the series number from VIN
+            series_num = vin_series[0] if vin_series else "3"
+            model_to_select = series_map.get(series_num, "3'")
+            
+            logger.info(f"PARTSLINK: VIN indicates series '{series_num}', looking for model '{model_to_select}'")
+            
+            # Try to click on the model row
+            model_selectors = [
+                f"text='{model_to_select}'",  # Exact match with quotes
+                f"div:has-text('{model_to_select}')",
+                f"span:has-text('{model_to_select}')",
+                f"td:has-text('{model_to_select}')",
+            ]
+            
+            model_clicked = False
+            for sel in model_selectors:
+                try:
+                    el = await page.query_selector(sel)
+                    if el:
+                        await el.click()
+                        logger.info(f"PARTSLINK: Clicked model '{model_to_select}' using {sel}")
+                        model_clicked = True
+                        await asyncio.sleep(3)  # Wait for page to update
+                        break
+                except Exception as e:
+                    logger.debug(f"PARTSLINK: Model selector '{sel}' failed: {e}")
+                    continue
+            
+            if not model_clicked:
+                # Fallback: click first model row
+                logger.info("PARTSLINK: Specific model not found, clicking first model row...")
+                try:
+                    first_row = await page.query_selector("div[role='row']") or await page.query_selector("tr")
+                    if first_row:
+                        await first_row.click()
+                        await asyncio.sleep(2)
+                except:
+                    pass
+        
         # Step 5: If vehicle selection page, click "To the parts catalog"
         logger.info("PARTSLINK: Checking for 'To the parts catalog' button...")
         catalog_clicked = False
@@ -852,29 +909,36 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         # This ensures we find parts related to the actual problem (Air Conditioner, not Radiator)
         logger.info(f"PARTSLINK: Searching for parts related to: {job_description}")
         
-        # Wait for page to fully load
-        await asyncio.sleep(2)
+        # Wait for page to fully load (MUI components take longer)
+        await asyncio.sleep(4)
         
         # Step 6a: Use "Search for parts" input with job description
         search_selectors = [
             "input[placeholder='Search for parts']",  # Exact match - safest
+            "input.MuiInputBase-input[placeholder='Search for parts']",  # MUI specific
+            "#\\:r3\\:",  # Dynamic MUI ID (escaped)
+            "input[type='text'][placeholder*='Search']",  # Partial match
+            ".MuiOutlinedInput-input[placeholder*='parts']",  # MUI class
         ]
         
         searched = False
         for sel in search_selectors:
             try:
                 try:
-                    await page.wait_for_selector(sel, timeout=3000)
+                    await page.wait_for_selector(sel, timeout=5000)
                 except:
                     continue
                     
                 el = await page.query_selector(sel)
                 if el and await el.is_visible():
                     logger.info(f"PARTSLINK: Search input found with {sel}")
-                    await el.fill(job_description)  # Search for "Air Conditioner"
+                    await el.click()  # Focus first
+                    await asyncio.sleep(0.3)
+                    await el.fill(job_description)  # Search for "Brake Pad"
+                    await asyncio.sleep(0.5)
                     await page.keyboard.press("Enter")
                     logger.info(f"PARTSLINK: Searched for '{job_description}' using {sel}")
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(4)  # Wait longer for MUI search results
                     searched = True
                     break
             except Exception as e:
@@ -1383,54 +1447,67 @@ async def scrape_multi_vendor_pricing(part_numbers: List[str], vin: str = None, 
         except Exception as e:
             logger.warning(f"MULTI-VENDOR: Worldpac search failed - {e}")
     
-    # Step 3: Compare and pick cheapest
+    # Step 3: Compare and return BOTH vendors with cheapest indicator
     comparison_results = []
     for part_num in part_numbers:
         ssf_price = ssf_prices.get(part_num)
         worldpac_price = worldpac_prices.get(part_num)
         
         if ssf_price and worldpac_price:
-            # Both vendors have price - pick cheapest
+            # Both vendors have price - mark cheapest
             ssf_val = float(ssf_price.get("price", 9999))
             wp_val = float(worldpac_price.get("price", 9999))
             
+            # Add is_cheapest flag to each
+            ssf_entry = ssf_price.copy()
+            wp_entry = worldpac_price.copy()
+            
             if ssf_val <= wp_val:
-                primary = ssf_price
-                secondary = worldpac_price
+                ssf_entry["is_cheapest"] = True
+                wp_entry["is_cheapest"] = False
+                cheaper_vendor = "SSF"
             else:
-                primary = worldpac_price
-                secondary = ssf_price
+                ssf_entry["is_cheapest"] = False
+                wp_entry["is_cheapest"] = True
+                cheaper_vendor = "Worldpac"
             
             comparison_results.append({
                 "part_number": part_num,
-                "primary": primary,
-                "secondary": secondary,
+                "ssf": ssf_entry,
+                "worldpac": wp_entry,
                 "savings": abs(ssf_val - wp_val),
-                "cheaper_vendor": primary.get("vendor")
+                "cheaper_vendor": cheaper_vendor
             })
-            all_prices.append(primary)
+            
+            # Add BOTH vendors to all_prices for display
+            all_prices.append(ssf_entry)
+            all_prices.append(wp_entry)
             
         elif ssf_price:
             # Only SSF has price
+            ssf_entry = ssf_price.copy()
+            ssf_entry["is_cheapest"] = True
             comparison_results.append({
                 "part_number": part_num,
-                "primary": ssf_price,
-                "secondary": None,
+                "ssf": ssf_entry,
+                "worldpac": None,
                 "savings": 0,
                 "cheaper_vendor": "SSF"
             })
-            all_prices.append(ssf_price)
+            all_prices.append(ssf_entry)
             
         elif worldpac_price:
             # Only Worldpac has price
+            wp_entry = worldpac_price.copy()
+            wp_entry["is_cheapest"] = True
             comparison_results.append({
                 "part_number": part_num,
-                "primary": worldpac_price,
-                "secondary": None,
+                "ssf": None,
+                "worldpac": wp_entry,
                 "savings": 0,
                 "cheaper_vendor": "Worldpac"
             })
-            all_prices.append(worldpac_price)
+            all_prices.append(wp_entry)
         
         else:
             # Neither vendor has price
