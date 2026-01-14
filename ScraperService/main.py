@@ -50,7 +50,7 @@ API_KEY = os.getenv("SCRAPER_API_KEY", "estimaro_scraper_secret_2024")
 CDP_PORT = 9222
 
 # AI Agent Configuration
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDTXqRjf6AjOsftTfYv5t05koE3SpVV1MM")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Must be set via environment variable
 AI_ENABLED = os.getenv("AI_ENABLED", "true").lower() == "true"
 
 # Initialize AI agent for smart keyword matching
@@ -448,14 +448,16 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
     
     try:
         import re
+        
+        # STEP 0: Always navigate to entry point (home) first for clean state
+        entry_point = "https://my.alldata.com/migrate/#/home"
+        logger.info(f"ALLDATA: Navigating to entry point: {entry_point}")
+        await page.goto(entry_point, wait_until="domcontentloaded")
+        await asyncio.sleep(3)  # Wait for page to fully load
+        
         current_url = page.url.lower()
         
         # Step 1: Check if logged in
-        if "alldata" not in current_url:
-            await page.goto("https://my.alldata.com", wait_until="domcontentloaded")
-            await asyncio.sleep(2)
-            current_url = page.url.lower()
-        
         is_logged_in = "alldata" in current_url and not any(x in current_url for x in ["/login", "/signin", "/auth", "authn"])
         if any(x in current_url for x in ["/migrate", "/home", "/dashboard", "#/"]):
             is_logged_in = True
@@ -464,6 +466,7 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
         
         if not is_logged_in:
             return {"success": False, "error": "Not logged into ALLDATA. Please login in Chrome first."}
+
         
         # Step 2: Navigate to REPAIR section if on home
         repair_clicked = False
@@ -742,15 +745,16 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
     
     try:
         import re
+        
+        # STEP 0: Always navigate to entry point (startup.do) first for clean state
+        entry_point = "https://www.partslink24.com/partslink24/startup.do"
+        logger.info(f"PARTSLINK: Navigating to entry point: {entry_point}")
+        await page.goto(entry_point, wait_until="domcontentloaded")
+        await asyncio.sleep(3)  # Wait for page to fully load
+        
         current_url = page.url.lower()
         
-        # Step 1: Check if logged in
-        if "partslink" not in current_url:
-            await page.goto("https://www.partslink24.com/partslink24/user/brandMenu.do", wait_until="domcontentloaded")
-            await asyncio.sleep(2)
-            current_url = page.url.lower()
-        
-        # Login detection - login.do means NOT logged in!
+        # Step 1: Check if logged in - login.do means NOT logged in!
         is_logged_in = False
         if "partslink" in current_url:
             if "login.do" in current_url or "/login" in current_url:
@@ -763,13 +767,7 @@ async def scrape_partslink_parts(vin: str, job_description: str) -> dict:
         
         if not is_logged_in:
             return {"success": False, "error": "Not logged into PartsLink24. Please login in Chrome first."}
-        
-        # Step 2: ALWAYS navigate to startup.do for fresh VIN search
-        # This fixes issue where tab is already on search results and VIN input is missing
-        if "startup.do" not in current_url:
-            logger.info("PARTSLINK: Navigating to startup.do for fresh search...")
-            await page.goto("https://www.partslink24.com/partslink24/startup.do", wait_until="domcontentloaded")
-            await asyncio.sleep(2)
+
         
         # Step 3: Enter VIN and search
         logger.info("PARTSLINK: Entering VIN...")
@@ -1118,15 +1116,16 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
     
     try:
         import re
+        
+        # STEP 0: Always navigate to entry point (Catalog) first for clean state
+        entry_point = "https://shop.ssfautoparts.com/Catalog"
+        logger.info(f"SSF: Navigating to entry point: {entry_point}")
+        await page.goto(entry_point, wait_until="domcontentloaded")
+        await asyncio.sleep(3)  # Wait for page to fully load
+        
         current_url = page.url.lower()
         
-        # Step 1: Navigate to SSF if not there
-        if "ssf" not in current_url:
-            await page.goto("https://shop.ssfautoparts.com/Catalog", wait_until="domcontentloaded")
-            await asyncio.sleep(2)
-            current_url = page.url.lower()
-        
-        # Step 2: Check if logged in
+        # Step 1: Check if logged in
         is_logged_in = "ssf" in current_url and not any(x in current_url for x in ["/login", "/signin", "/auth"])
         if any(x in current_url for x in ["/catalog", "/account", "/cart", "/checkout"]):
             is_logged_in = True
@@ -1135,11 +1134,7 @@ async def scrape_vendor_pricing(part_numbers: List[str]) -> dict:
         
         if not is_logged_in:
             return {"success": False, "error": "Not logged into SSF. Please login in Chrome first."}
-        
-        # Step 3: Navigate to catalog if not there
-        if "/catalog" not in current_url:
-            await page.goto("https://shop.ssfautoparts.com/Catalog", wait_until="domcontentloaded")
-            await asyncio.sleep(2)
+
         
         # Step 4: Process each part number
         for part_num in part_numbers:

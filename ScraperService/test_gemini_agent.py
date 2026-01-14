@@ -29,11 +29,11 @@ async def test_keyword_expansion():
     print("GEMINI AI AGENT - KEYWORD EXPANSION TEST")
     print("=" * 60)
     
-    # Get API key - use environment variable or default
-    api_key = os.getenv("GEMINI_API_KEY", "AIzaSyDTXqRjf6AjOsftTfYv5t05koE3SpVV1MM")
+    # Get API key - use environment variable (required)
+    api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         print("\n[ERROR] Set GEMINI_API_KEY environment variable")
-        print("   Example: set GEMINI_API_KEY=AIzaSyDTXqRjf6AjOsftTfYv5t05koE3SpVV1MM")
+        print("   Example: set GEMINI_API_KEY=your-actual-api-key-here")
         return False
     
     # Initialize agent
