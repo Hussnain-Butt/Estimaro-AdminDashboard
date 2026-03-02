@@ -449,11 +449,20 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
     try:
         import re
         
-        # STEP 0: Always navigate to entry point (home) first for clean state
-        entry_point = "https://my.alldata.com/migrate/#/home"
-        logger.info(f"ALLDATA: Navigating to entry point: {entry_point}")
-        await page.goto(entry_point, wait_until="domcontentloaded")
-        await asyncio.sleep(3)  # Wait for page to fully load
+        # STEP 0: Check if we are already on a relevant ALLDATA page to avoid reloads
+        current_url = page.url.lower()
+        if "alldata.com" in current_url and any(x in current_url for x in ["/home", "/select-vehicle", "/repair"]):
+            logger.info(f"ALLDATA: Already on ALLDATA domain at {current_url}. Skipping initial navigation.")
+        else:
+            entry_point = "https://my.alldata.com/migrate/#/home"
+            logger.info(f"ALLDATA: Navigating to entry point: {entry_point}")
+            try:
+                await page.goto(entry_point, wait_until="domcontentloaded", timeout=15000)
+            except Exception as e:
+                logger.warning(f"ALLDATA: Initial goto failed: {e}. Trying alternative entry point.")
+                await page.goto("https://my.alldata.com/", wait_until="domcontentloaded", timeout=15000)
+            
+            await asyncio.sleep(4)  # Wait for page to fully load and redirect
         
         current_url = page.url.lower()
         
@@ -513,8 +522,14 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
         current_url = page.url.lower()
         if "select-vehicle" not in current_url and "repair" not in current_url:
             logger.info("ALLDATA: Navigating directly to select-vehicle page...")
-            await page.goto("https://my.alldata.com/migrate/repair/#/select-vehicle", wait_until="domcontentloaded")
-            await asyncio.sleep(2)
+            # Use the correct modern path with /migrate/
+            try:
+                await page.goto("https://my.alldata.com/migrate/repair/#/select-vehicle", wait_until="domcontentloaded", timeout=10000)
+            except:
+                # Absolute fallback if it 404s
+                logger.warning("ALLDATA: Direct navigation to select-vehicle failed. Attempting Home fallback.")
+                await page.goto("https://my.alldata.com/migrate/#/home", wait_until="domcontentloaded")
+            await asyncio.sleep(3)
         
         # Step 4: Enter VIN and search
         logger.info("ALLDATA: Entering VIN...")
@@ -1635,7 +1650,7 @@ async def scrape_all_vendors(request: PricingRequest, api_key: str = Depends(ver
 # =============================================================================
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting Estimaro Scraper Service...")
-    print(f"📡 Chrome CDP Port: {CDP_PORT}")
-    print(f"🔑 API Key: {API_KEY[:10]}...")
+    print("Starting Estimaro Scraper Service...")
+    print(f"Chrome CDP Port: {CDP_PORT}")
+    print(f"API Key: {API_KEY[:10]}...")
     uvicorn.run(app, host="0.0.0.0", port=5000)
