@@ -16,6 +16,7 @@ REM Activate and install
 call venv\Scripts\activate
 echo Installing dependencies...
 pip install -r requirements.txt
+pip install playwright-stealth
 playwright install chromium
 
 echo.

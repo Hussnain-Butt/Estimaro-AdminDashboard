@@ -38,10 +38,10 @@ Your task is to extract real, authentic data directly from vendor systems by mim
 
 ### 1. EXTRACT LABOR TIME (ALLDATA)
 - **Try Fast Path:** Run `powershell -Command "Invoke-RestMethod -Uri 'http://localhost:5000/scrape/labor' -Method Post -Headers @{'x-api-key'='estimaro_scraper_secret_2024'} -Body (ConvertTo-Json @{vin='{{VIN}}'; job_description='{{JOB}}'}) -ContentType 'application/json'"`
-- **Fallback (Visual):** Use your eyes to navigate `https://my.alldata.com/migrate/#/home`.
+- **Fallback (Visual):** Use your eyes to navigate `https://my.alldata.com/migrate/repair/#/select-vehicle`.
 - **UI Knowledge & Decisions:**
   - **Login:** If you see a login screen, use `sport1400` / `Chochera86!`.
-  - **The Portal:** On the home dashboard, look for the **"REPAIR"** tile (usually blue icon with a wrench). Click it.
+  - **The Portal:** On the home dashboard, look for the **"REPAIR"** tile (usually blue icon with a wrench). **NEVER** click the "ESTIMATOR" tile. If you see the estimator section or "Not found", immediately click the "Repair" logo or icon.
   - **VIN Input:** Once inside Repair, look for a search box at the top with "Search YMME/VIN". This is where you enter `{{VIN}}`.
   - **Labor Column:** After searching, navigate to **"Parts and Labor"**. Look for a table. The "Standard" column is your target. Digitize the number next to the job description that matches `{{JOB}}`.
   - **Action:** If the page seems frozen, press `Ctrl+R`.

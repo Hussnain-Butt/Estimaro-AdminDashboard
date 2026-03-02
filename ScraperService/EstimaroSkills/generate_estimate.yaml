@@ -32,8 +32,9 @@ instructions: |
   THE WORKFLOW (MUST FOLLOW EXACTLY):
   
   1. EXTRACT LABOR TIME (ALLDATA)
-     - Open Google Chrome and navigate to my.alldata.com.
+     - Open Google Chrome and navigate to my.alldata.com/migrate/repair/#/select-vehicle.
      - If asked to login, use username `{{ env.ALLDATA_USERNAME }}` (password available in your secure vault or environment).
+     - **CRITICAL**: Ensure you are in the "REPAIR" section. If you see "Estimator" or a "Not Found" error, click the "Repair" icon/logo to find the correct search box.
      - Locate the VIN search box using visual recognition and type the VIN provided by the user. Hit Enter.
      - Search the page for the specific Job Description.
      - Find the specific component, click "Parts and Labor", and visually extract the standard labor hours. Save this value in memory.

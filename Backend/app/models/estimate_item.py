@@ -7,8 +7,9 @@ import uuid
 def coerce_float(v: Any) -> float:
     if v is None:
         return 0.0
+    if hasattr(v, 'to_decimal'): # Handle Decimal128
+        return float(v.to_decimal())
     try:
-        # Handle Decimal128 and other types by converting to string first
         return float(str(v))
     except (ValueError, TypeError):
         return 0.0

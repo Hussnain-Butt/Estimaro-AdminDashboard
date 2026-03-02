@@ -12,7 +12,8 @@ Endpoints:
   POST /scrape/parts     - Get OEM parts from PartsLink24
   POST /scrape/pricing   - Get pricing from Worldpac/SSF
   GET  /health           - Health check
-"""
+import re
+from playwright_stealth import stealth_async
 
 import os
 import logging
@@ -169,11 +170,14 @@ async def get_existing_page_for_site(target_url_contains: str):
             logger.info(f"Tab URL: {current_url}")
             if target_url_contains.lower() in current_url.lower():
                 logger.info(f"Found matching tab for {target_url_contains}")
+                # Apply stealth even to existing tab
+                await stealth_async(page)
                 return browser, page, False  # False = don't close this page
         
         # If no existing tab found, create new page (will inherit cookies from context)
         logger.info(f"No existing tab for {target_url_contains}, creating new page with existing cookies")
         new_page = await context.new_page()
+        await stealth_async(new_page)
         return browser, new_page, True  # True = close this page when done
         
     except Exception as e:
@@ -479,9 +483,9 @@ async def scrape_alldata_labor(vin: str, job_description: str) -> dict:
         
         # Step 2: Navigate to REPAIR section if on home
         repair_clicked = False
-        if "/home" in current_url or current_url.endswith("alldata.com/"):
-            logger.info("ALLDATA: On home page, waiting for REPAIR button...")
-            await asyncio.sleep(2)  # Wait for page to fully load
+        if "/home" in current_url or current_url.endswith("alldata.com/") or "estimator" in current_url:
+            logger.info("ALLDATA: On home or estimator page, waiting for REPAIR button...")
+            await asyncio.sleep(3)  # Wait for page to fully load
             
             try:
                 # Try multiple selectors for REPAIR button - REAL SELECTORS

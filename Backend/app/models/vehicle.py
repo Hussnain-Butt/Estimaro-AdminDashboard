@@ -1,7 +1,7 @@
 from beanie import Document, Indexed
 from pydantic import Field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 
 class Vehicle(Document):
     """
@@ -19,6 +19,9 @@ class Vehicle(Document):
     mileage: Optional[int] = None
     
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    # Runtime fields (not stored in DB)
+    customer: Optional[Any] = Field(None, exclude=True)
     
     class Settings:
         name = "vehicles"
