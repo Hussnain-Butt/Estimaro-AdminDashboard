@@ -12,8 +12,13 @@ Endpoints:
   POST /scrape/parts     - Get OEM parts from PartsLink24
   POST /scrape/pricing   - Get pricing from Worldpac/SSF
   GET  /health           - Health check
+"""
 import re
-from playwright_stealth import stealth_async
+try:
+    from playwright_stealth import stealth_async
+    STEALTH_AVAILABLE = True
+except ImportError:
+    STEALTH_AVAILABLE = False
 
 import os
 import logging
@@ -170,14 +175,16 @@ async def get_existing_page_for_site(target_url_contains: str):
             logger.info(f"Tab URL: {current_url}")
             if target_url_contains.lower() in current_url.lower():
                 logger.info(f"Found matching tab for {target_url_contains}")
-                # Apply stealth even to existing tab
-                await stealth_async(page)
+                # Apply stealth even to existing tab (optional)
+                if STEALTH_AVAILABLE:
+                    await stealth_async(page)
                 return browser, page, False  # False = don't close this page
         
         # If no existing tab found, create new page (will inherit cookies from context)
         logger.info(f"No existing tab for {target_url_contains}, creating new page with existing cookies")
         new_page = await context.new_page()
-        await stealth_async(new_page)
+        if STEALTH_AVAILABLE:
+            await stealth_async(new_page)
         return browser, new_page, True  # True = close this page when done
         
     except Exception as e:

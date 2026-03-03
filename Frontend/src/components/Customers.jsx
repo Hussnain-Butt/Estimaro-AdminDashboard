@@ -10,7 +10,8 @@ const CustomersPage = () => {
   useEffect(() => {
     const fetchCustomers = async () => {
       try {
-        const response = await axios.get('http://localhost:8000/api/v1/customers/')
+        const API_URL = import.meta.env.VITE_API_URL || 'https://backend-production-9f132.up.railway.app/api/v1'
+        const response = await axios.get(`${API_URL}/customers/`)
         setCustomers(response.data)
         if (response.data.length > 0) {
           setSelectedCustomer(response.data[0])
@@ -155,11 +156,11 @@ const CustomersPage = () => {
         {/* Customers Table Section */}
         <div className="flex-1 bg-[#1a202c] rounded-2xl p-6 shadow-xl overflow-hidden flex flex-col">
           <h2 className="text-2xl font-bold mb-6 text-gray-200">Customers</h2>
-          
+
           {loading ? (
-             <div className="text-gray-400 text-center mt-10">Loading customers...</div>
+            <div className="text-gray-400 text-center mt-10">Loading customers...</div>
           ) : error ? (
-             <div className="text-red-400 text-center mt-10">{error}</div>
+            <div className="text-red-400 text-center mt-10">{error}</div>
           ) : (
             <div className="flex-1 overflow-auto rounded-lg">
               <table className="w-full text-left text-sm whitespace-nowrap table-auto">
@@ -189,9 +190,8 @@ const CustomersPage = () => {
                   {customers.map((customer) => (
                     <tr
                       key={customer._id}
-                      className={`cursor-pointer transition-all duration-200 hover:bg-[#2a4376] ${
-                        selectedCustomer?._id === customer._id ? 'bg-[#2a4376]' : 'bg-transparent'
-                      }`}
+                      className={`cursor-pointer transition-all duration-200 hover:bg-[#2a4376] ${selectedCustomer?._id === customer._id ? 'bg-[#2a4376]' : 'bg-transparent'
+                        }`}
                       onClick={() => setSelectedCustomer(customer)}
                     >
                       <td className="px-6 py-4 font-medium text-white">{customer.first_name} {customer.last_name}</td>
@@ -213,7 +213,7 @@ const CustomersPage = () => {
                 </tbody>
               </table>
               {customers.length === 0 && (
-                  <div className="text-gray-400 text-center mt-10">No customers found.</div>
+                <div className="text-gray-400 text-center mt-10">No customers found.</div>
               )}
             </div>
           )}
@@ -225,9 +225,9 @@ const CustomersPage = () => {
           <div className="flex-1 space-y-4">
             {selectedCustomer && (
               <>
-                 <div className="mb-6">
-                    <h3 className="text-xl font-bold text-white">{selectedCustomer.first_name} {selectedCustomer.last_name}</h3>
-                 </div>
+                <div className="mb-6">
+                  <h3 className="text-xl font-bold text-white">{selectedCustomer.first_name} {selectedCustomer.last_name}</h3>
+                </div>
                 <DetailItem
                   icon={<LucideMail className="w-5 h-5 text-gray-400" />}
                   label="Email"

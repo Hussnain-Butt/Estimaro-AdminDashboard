@@ -8,7 +8,7 @@
 import axios from 'axios';
 
 // Create axios instance with base configuration
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://backend-production-9f132.up.railway.app/api/v1';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
