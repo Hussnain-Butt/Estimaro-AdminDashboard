@@ -36,7 +36,7 @@ origins = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
     "http://localhost:3000",
-    "https://frontend-production-1aae.up.railway.app",
+    "https://frontend-production-2b00.up.railway.app",
 ]
 
 # Agar settings mein PORTAL_BASE_URL hai
