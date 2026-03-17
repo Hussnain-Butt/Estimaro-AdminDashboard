@@ -11,21 +11,23 @@ import { useToast } from './ui/Toast'
 //  STEP COMPONENTS
 // ===================================================================================
 
+// InputField is defined OUTSIDE IntakeStep to prevent re-mounting on every keystroke
+const InputField = ({ label, placeholder, value, fieldKey, type = "text", required = false, updateData }) => (
+  <div>
+    <label className="block text-sm font-medium text-text-secondary mb-2">
+      {label} {required && <span className="text-danger">*</span>}
+    </label>
+    <input
+      type={type}
+      placeholder={placeholder}
+      value={value}
+      onChange={(e) => updateData(fieldKey, e.target.value)}
+      className="bg-background text-text-primary placeholder-text-secondary/50 w-full px-4 py-3 rounded-lg border border-border focus:outline-none focus:ring-2 focus:ring-accent transition-all duration-300"
+    />
+  </div>
+)
+
 const IntakeStep = ({ data, updateData }) => {
-  const InputField = ({ label, placeholder, value, fieldKey, type = "text", required = false }) => (
-    <div>
-      <label className="block text-sm font-medium text-text-secondary mb-2">
-        {label} {required && <span className="text-danger">*</span>}
-      </label>
-      <input
-        type={type}
-        placeholder={placeholder}
-        value={value}
-        onChange={(e) => updateData(fieldKey, e.target.value)}
-        className="bg-background text-text-primary placeholder-text-secondary/50 w-full px-4 py-3 rounded-lg border border-border focus:outline-none focus:ring-2 focus:ring-accent transition-all duration-300"
-      />
-    </div>
-  )
 
   return (
     <div className="space-y-8">
@@ -38,6 +40,7 @@ const IntakeStep = ({ data, updateData }) => {
           value={data.vin}
           fieldKey="vin"
           required
+          updateData={updateData}
         />
         <InputField
           label="Service Request"
@@ -45,6 +48,7 @@ const IntakeStep = ({ data, updateData }) => {
           value={data.serviceRequest}
           fieldKey="serviceRequest"
           required
+          updateData={updateData}
         />
         <InputField
           label="Customer Name"
@@ -52,6 +56,7 @@ const IntakeStep = ({ data, updateData }) => {
           value={data.customerName}
           fieldKey="customerName"
           required
+          updateData={updateData}
         />
         <InputField
           label="Customer Email"
@@ -59,6 +64,7 @@ const IntakeStep = ({ data, updateData }) => {
           value={data.customerEmail}
           fieldKey="customerEmail"
           type="email"
+          updateData={updateData}
         />
         <InputField
           label="Customer Phone"
@@ -66,6 +72,7 @@ const IntakeStep = ({ data, updateData }) => {
           value={data.customerPhone}
           fieldKey="customerPhone"
           required
+          updateData={updateData}
         />
         <InputField
           label="Odometer (km)"
@@ -73,6 +80,7 @@ const IntakeStep = ({ data, updateData }) => {
           value={data.odometer}
           fieldKey="odometer"
           type="number"
+          updateData={updateData}
         />
       </div>
     </div>
