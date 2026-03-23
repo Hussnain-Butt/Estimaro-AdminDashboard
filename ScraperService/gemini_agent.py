@@ -380,6 +380,132 @@ If you can see where we should click instead, provide new_coords.
                 "new_coords": None,
                 "should_retry": False
             }
+            
+    async def extract_table_data(self, screenshot, expected_columns: List[str]) -> List[Dict]:
+        """
+        Extract structured table data from a screenshot.
+        
+        Args:
+            screenshot: PIL Image
+            expected_columns: List of columns to extract (e.g. ['description', 'part_number', 'price'])
+            
+        Returns:
+            List of dictionaries representing the rows.
+        """
+        if not self.initialized:
+            return []
+            
+        start_time = time.time()
+        try:
+            self._log(f"Extracting table data with cols: {expected_columns}")
+            if isinstance(screenshot, str):
+                screenshot = Image.open(screenshot)
+                
+            cols_str = ", ".join([f'"{c}": <value>' for c in expected_columns])
+            
+            prompt = f"""You are a data extraction expert. Look at this screenshot and extract the top 5-10 rows from the main table or list.
+Ensure you extract these columns: {expected_columns}.
+Format amounts as numbers, strings as strings.
+
+Respond with ONLY a JSON array containing the rows (no markdown, no explanation):
+[
+    {{ {cols_str} }},
+    ...
+]
+"""
+            response = self.model.generate_content([prompt, screenshot])
+            response_text = response.text.strip()
+            
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+                if response_text.endswith("```"):
+                    response_text = response_text[:-3]
+            response_text = response_text.strip()
+            
+            rows = json.loads(response_text)
+            if not isinstance(rows, list):
+                if isinstance(rows, dict) and 'results' in rows:
+                    rows = rows['results']
+                else:
+                    rows = []
+                    
+            self.stats["api_calls"] += 1
+            latency = int((time.time() - start_time) * 1000)
+            self.stats["total_latency_ms"] += latency
+            
+            self._log(f"Extracted {len(rows)} rows ({latency}ms)")
+            return rows
+        except Exception as e:
+            self._log(f"extract_table_data error: {e}", "error")
+            return []
+            
+    async def match_exact_part(self, vehicle_context: str, requested_part: str, scraped_results: List[Dict]) -> Optional[Dict]:
+        """
+        Given a list of scraped parts, use AI to find the exact match for the requested part.
+        
+        Args:
+            vehicle_context: Description of the vehicle (e.g., "2002 BMW 325i")
+            requested_part: What we are looking for (e.g., "Front Brake Pads")
+            scraped_results: List of dictionaries with scraped data
+            
+        Returns:
+            The winning dictionary from scraped_results, or None if no match.
+        """
+        if not self.initialized or not scraped_results:
+            return None
+            
+        start_time = time.time()
+        
+        try:
+            self._log(f"Matching exact part for '{requested_part}' out of {len(scraped_results)} results")
+            
+            results_json = json.dumps(scraped_results, indent=2)
+            
+            prompt = f"""You are an automotive parts mapping expert.
+Here is the vehicle context: {vehicle_context}
+Here is the requested part: {requested_part}
+
+Here are {len(scraped_results)} scraped results from a vendor catalog:
+{results_json}
+
+Your task is to find the EXACT match for the requested part.
+Return ONLY the exact matching JSON object from the list.
+If none match perfectly (e.g., it asks for front but only rear is available), return null.
+
+Respond with ONLY valid JSON (the selected object or null). No markdown code blocks, no explanation, just the raw JSON object or null.
+"""
+            
+            response = self.model.generate_content(prompt)
+            response_text = response.text.strip()
+            
+            # Clean markdown if present
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+                if response_text.endswith("```"):
+                    response_text = response_text[:-3]
+            response_text = response_text.strip()
+            
+            if response_text == "null" or not response_text:
+                self._log("AI decided no parts match perfectly.")
+                return None
+                
+            winning_part = json.loads(response_text)
+            
+            # Update stats
+            self.stats["api_calls"] += 1
+            latency = int((time.time() - start_time) * 1000)
+            self.stats["total_latency_ms"] += latency
+            
+            self._log(f"AI Selected Match: {winning_part.get('part_number', winning_part.get('description', 'Found'))} ({latency}ms)")
+            return winning_part
+            
+        except Exception as e:
+            self._log(f"match_exact_part error: {e}", "error")
+            return None
     
     def get_stats(self) -> Dict:
         """Get usage statistics."""

@@ -410,6 +410,34 @@ class WorldpacAutomation:
         except Exception as e:
             self._log(f"Job search failed: {e}", "error")
             return False
+            
+    def _search_part_number(self, part_number: str) -> bool:
+        """Search for an exact OEM part number in category field."""
+        try:
+            self._log(f"Searching for exact part number: {part_number}")
+            self._update_window_position()
+            
+            # Click category search (which also accepts part numbers in speedDIAL)
+            search_x = self.win_left + CONFIG["category_search_rel"][0]
+            search_y = self.win_top + CONFIG["category_search_rel"][1]
+            pyautogui.click(search_x, search_y)
+            time.sleep(0.3)
+            
+            # Clear and type part number
+            pyautogui.hotkey('ctrl', 'a')
+            pyautogui.press('delete')
+            time.sleep(0.1)
+            
+            pyautogui.typewrite(part_number, interval=0.03)
+            pyautogui.press('enter')
+            time.sleep(2)
+            
+            self._log(f"Part number '{part_number}' searched")
+            return True
+            
+        except Exception as e:
+            self._log(f"Part number search failed: {e}", "error")
+            return False
     
     def _click_search_result(self) -> bool:
         """Click on first search result."""
@@ -626,13 +654,14 @@ If you cannot find any prices, explain why in the diagnosis and issue fields.
             self._log(f"[AI] Price extraction error: {e}", "error")
             return []
     
-    def get_prices_for_vin(self, vin: str, job: str) -> Dict:
+    def get_prices_for_vin(self, vin: str, job: str = None, part_number: str = None) -> Dict:
         """
-        Get prices for a VIN and job description.
+        Get prices for a VIN and job description or exact part number.
         
         Args:
             vin: Vehicle Identification Number
             job: Job description (e.g., "Brake", "Engine Oil Leak")
+            part_number: Exact OEM part number
         
         Returns:
             Dict with status and prices
@@ -641,6 +670,7 @@ If you cannot find any prices, explain why in the diagnosis and issue fields.
             "success": False,
             "vin": vin,
             "job": job,
+            "part_number": part_number,
             "parts_selected": 0,
             "prices": [],
             "error": None
@@ -663,10 +693,18 @@ If you cannot find any prices, explain why in the diagnosis and issue fields.
                 result["error"] = "Vehicle selection failed"
                 return result
             
-            # Step 3: Search job
-            if not self._search_job(job):
-                result["error"] = "Job search failed"
-                return result
+            # Step 3: Search
+            search_term = ""
+            if part_number:
+                if not self._search_part_number(part_number):
+                    result["error"] = "Part number search failed"
+                    return result
+                search_term = part_number
+            else:
+                if not self._search_job(job):
+                    result["error"] = "Job search failed"
+                    return result
+                search_term = job.split()[0] if job else job
             
             # Step 4: Click search result
             if not self._click_search_result():
@@ -678,8 +716,7 @@ If you cannot find any prices, explain why in the diagnosis and issue fields.
             result["parts_selected"] = parts
             
             if parts == 0:
-                search_term = job.split()[0] if job else job
-                result["error"] = f"No parts found for '{search_term}' in Worldpac. Try a different job description (e.g., 'Brake', 'Engine', 'Cooling')."
+                result["error"] = f"No parts found for '{search_term}' in Worldpac."
                 result["no_parts_found"] = True  # Flag for frontend
                 return result
             
@@ -688,15 +725,43 @@ If you cannot find any prices, explain why in the diagnosis and issue fields.
                 result["error"] = "Price button click failed"
                 return result
             
-            # Step 7: Extract prices via OCR (with AI fallback)
+            # Step 7: Extract prices or full table
+            if self.ai_agent and self.ai_agent.initialized:
+                self._log("Extracting table data via AI Vision to find EXACT match...")
+                time.sleep(2) # ensure price popup loaded
+                screenshot = pyautogui.screenshot()
+                cols = ['description', 'part_number', 'brand', 'price']
+                table_data = run_async_safe(self.ai_agent.extract_table_data(screenshot, cols))
+                
+                if table_data:
+                    self._log(f"Extracted {len(table_data)} rows. Ask AI to pick best match for '{job or part_number}'...")
+                    req_part = part_number if part_number else job
+                    best_match = run_async_safe(self.ai_agent.match_exact_part(vin, req_part, table_data))
+                    
+                    if best_match:
+                        price = best_match.get('price')
+                        if price:
+                            try:
+                                if isinstance(price, str):
+                                    price = float(price.replace('$', '').replace(',', ''))
+                                result["prices"] = [price]
+                                result["best_match"] = best_match
+                                result["success"] = True
+                                self._log(f"SUCCESS: AI exact match found. Price: ${price}")
+                                return result
+                            except ValueError:
+                                self._log("AI returned unparseable price, falling back.", "warning")
+                    else:
+                        self._log("AI found no exact match among the extracted rows.", "warning")
+            
+            # Fallback if AI fails or is disabled
             prices = self._extract_prices_ocr()
             result["prices"] = prices
             
             if prices:
                 result["success"] = True
-                self._log(f"SUCCESS: Found {len(prices)} prices for {job}")
+                self._log(f"SUCCESS: Found {len(prices)} prices via standard extraction")
             else:
-                # Use AI to diagnose why no prices were found
                 if self.ai_agent and self.ai_agent.initialized:
                     self._log("[AI] Diagnosing price extraction failure...")
                     try:
@@ -704,7 +769,7 @@ If you cannot find any prices, explain why in the diagnosis and issue fields.
                         analysis = run_async_safe(self.ai_agent.analyze_failure(
                             screenshot,
                             "No prices found in Worldpac after clicking Price button",
-                            f"VIN: {vin}, Job: {job}, Parts Selected: {parts}"
+                            f"VIN: {vin}, Job/Part: {job or part_number}, Parts Selected: {parts}"
                         ))
                         diagnosis = analysis.get("diagnosis", "Unknown issue")
                         suggestion = analysis.get("retry_strategy", "None")

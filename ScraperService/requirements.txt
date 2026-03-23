@@ -14,3 +14,6 @@ pyperclip>=1.8.2
 
 # Gemini AI Agent
 google-generativeai>=0.8.0
+
+# Fuzzy matching
+rapidfuzz>=3.5.0

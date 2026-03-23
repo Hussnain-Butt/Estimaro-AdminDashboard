@@ -1327,8 +1327,8 @@ async def scrape_worldpac_pricing(part_numbers: List[str], vin: str = None, job_
             worldpac_instance = WorldpacAutomation(ai_enabled=AI_ENABLED, gemini_api_key=GEMINI_API_KEY)
         
         # Get AI-expanded keywords to try
-        keywords_to_try = [job_description]
-        if ai_agent and ai_agent.initialized:
+        keywords_to_try = [job_description] if job_description else []
+        if ai_agent and ai_agent.initialized and job_description:
             try:
                 ai_keywords = await ai_agent.get_search_keywords(job_description)
                 if ai_keywords:
@@ -1340,48 +1340,68 @@ async def scrape_worldpac_pricing(part_numbers: List[str], vin: str = None, job_
             except Exception as e:
                 logger.warning(f"WORLDPAC: AI keyword expansion failed: {e}")
         
-        # Try each keyword until we find parts
+        all_prices = []
         all_keywords_tried = []
-        for keyword in keywords_to_try:
-            logger.info(f"WORLDPAC: Trying keyword: '{keyword}'")
-            all_keywords_tried.append(keyword)
-            
-            result = worldpac_instance.get_prices_for_vin(vin, keyword)
-            
-            if result.get("success") and result.get("prices"):
-                prices = []
-                for price_value in result["prices"]:
-                    prices.append({
-                        "vendor": "Worldpac",
-                        "part_number": job_description,  # Use original job as reference
-                        "brand": "OEM",
-                        "price": float(price_value),
-                        "stock_status": "Available",
-                        "warehouse": "Worldpac"
-                    })
-                
-                logger.info(f"WORLDPAC: SUCCESS with keyword '{keyword}' - Found {len(prices)} prices")
-                logger.info(f"WORLDPAC: Actual prices = {[p['price'] for p in prices]}")
-                return {
-                    "success": True,
-                    "prices": prices,
-                    "source": "worldpac-desktop",
-                    "parts_selected": result.get("parts_selected", 0),
-                    "keyword_used": keyword,
-                    "keywords_tried": all_keywords_tried
-                }
-            
-            # If no parts found with this keyword, try next
-            if result.get("no_parts_found"):
-                logger.info(f"WORLDPAC: No parts found for '{keyword}', trying next...")
-                continue
-            
-            # If other error (not "no parts found"), stop trying
-            if not result.get("success") and not result.get("no_parts_found"):
-                break
         
-        # All keywords failed
-        error = f"No parts found for any keyword: {all_keywords_tried}"
+        # 1. First, try exact OEM part numbers if provided
+        if part_numbers:
+            logger.info(f"WORLDPAC: Trying exact OEM part numbers: {part_numbers}")
+            for part in part_numbers:
+                if "MANUAL" in part.upper() or "LOOKUP" in part.upper(): continue
+                result = worldpac_instance.get_prices_for_vin(vin, part_number=part)
+                if result.get("success") and result.get("prices"):
+                    for price_value in result["prices"]:
+                        all_prices.append({
+                            "vendor": "Worldpac",
+                            "part_number": part,
+                            "brand": "OEM Match",
+                            "price": float(price_value),
+                            "stock_status": "Available",
+                            "warehouse": "Worldpac"
+                        })
+                    logger.info(f"WORLDPAC: SUCCESS with OEM part '{part}' - Found {len(result['prices'])} prices")
+        
+        # 2. If no prices found from parts, fallback to keywords
+        if not all_prices and keywords_to_try:
+            for keyword in keywords_to_try:
+                logger.info(f"WORLDPAC: Trying keyword: '{keyword}'")
+                all_keywords_tried.append(keyword)
+                
+                result = worldpac_instance.get_prices_for_vin(vin, job=keyword)
+                
+                if result.get("success") and result.get("prices"):
+                    for price_value in result["prices"]:
+                        all_prices.append({
+                            "vendor": "Worldpac",
+                            "part_number": job_description,  # Use original job as reference
+                            "brand": "Keyword Match",
+                            "price": float(price_value),
+                            "stock_status": "Available",
+                            "warehouse": "Worldpac"
+                        })
+                    
+                    logger.info(f"WORLDPAC: SUCCESS with keyword '{keyword}' - Found {len(result['prices'])} prices")
+                    break
+                
+                if result.get("no_parts_found"):
+                    logger.info(f"WORLDPAC: No parts found for '{keyword}', trying next...")
+                    continue
+                
+                if not result.get("success") and not result.get("no_parts_found"):
+                    break
+        
+        if all_prices:
+            return {
+                "success": True,
+                "prices": all_prices,
+                "source": "worldpac-desktop",
+                "parts_selected": len(all_prices),
+                "keyword_used": "OEM_PARTS" if part_numbers else (all_keywords_tried[-1] if all_keywords_tried else "None"),
+                "keywords_tried": all_keywords_tried
+            }
+        
+        # All ways failed
+        error = f"No parts found for OEM parts: {part_numbers} or keywords: {all_keywords_tried}"
         logger.warning(f"WORLDPAC: {error}")
         return {
             "success": False, 
@@ -1597,7 +1617,15 @@ async def scrape_parts(request: PartsRequest, api_key: str = Depends(verify_api_
     """Scrape OEM parts from PartsLink24"""
     result = await scrape_partslink_parts(request.vin, request.job_description)
     
-    parts = [PartItem(**p) for p in result.get("parts", [])]
+    parts_list = result.get("parts", [])
+    if parts_list and request.job_description:
+        try:
+            from filters import apply_programmatic_filters
+            parts_list = apply_programmatic_filters(parts_list, request.job_description)
+        except Exception as e:
+            pass # Keep original if filter fails
+            
+    parts = [PartItem(**p) for p in parts_list]
     
     return PartsResponse(
         success=result.get("success", False),
@@ -1612,7 +1640,15 @@ async def scrape_pricing(request: PricingRequest, api_key: str = Depends(verify_
     """Scrape pricing from Worldpac/SSF"""
     result = await scrape_vendor_pricing(request.part_numbers)
     
-    prices = [PriceItem(**p) for p in result.get("prices", [])]
+    prices_list = result.get("prices", [])
+    if prices_list and request.job_description:
+        try:
+            from filters import apply_programmatic_filters
+            prices_list = apply_programmatic_filters(prices_list, request.job_description)
+        except Exception as e:
+            pass
+            
+    prices = [PriceItem(**p) for p in prices_list]
     
     return PricingResponse(
         success=result.get("success", False),
@@ -1631,7 +1667,15 @@ async def scrape_worldpac(request: PricingRequest, api_key: str = Depends(verify
         job_description=request.job_description
     )
     
-    prices = [PriceItem(**p) for p in result.get("prices", [])]
+    prices_list = result.get("prices", [])
+    if prices_list and request.job_description:
+        try:
+            from filters import apply_programmatic_filters
+            prices_list = apply_programmatic_filters(prices_list, request.job_description)
+        except Exception as e:
+            pass
+            
+    prices = [PriceItem(**p) for p in prices_list]
     
     return PricingResponse(
         success=result.get("success", False),
