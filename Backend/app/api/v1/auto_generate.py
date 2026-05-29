@@ -165,7 +165,7 @@ class JobSubmitRequest(BaseModel):
 
 class JobSubmitResponse(BaseModel):
     job_id: str
-    status: JobStatus
+    status: str
     progress: str
     progress_pct: int
     created_at: datetime
@@ -173,7 +173,7 @@ class JobSubmitResponse(BaseModel):
 
 class JobStatusResponse(BaseModel):
     job_id: str
-    status: JobStatus
+    status: str
     progress: str
     progress_pct: int
     created_at: datetime
@@ -241,10 +241,10 @@ async def get_job(job_id: str):
     response_model=List[JobStatusResponse],
     summary="List recent jobs (last 50)",
 )
-async def list_jobs(status_filter: Optional[JobStatus] = Query(None)):
+async def list_jobs(status_filter: Optional[str] = Query(None)):
     q = AutoGenJob.find()
     if status_filter:
-        q = AutoGenJob.find(AutoGenJob.status == status_filter.value)
+        q = AutoGenJob.find(AutoGenJob.status == status_filter)
     jobs = await q.sort("-created_at").limit(50).to_list()
     return [
         JobStatusResponse(
@@ -279,10 +279,10 @@ async def worker_claim_next(
     x_worker_secret: Optional[str] = Header(None, alias="X-Worker-Secret"),
 ):
     _require_worker_secret(x_worker_secret)
-    job = await AutoGenJob.find_one(AutoGenJob.status == JobStatus.QUEUED.value, sort=[("created_at", 1)])
+    job = await AutoGenJob.find_one(AutoGenJob.status == JobStatus.QUEUED, sort=[("created_at", 1)])
     if not job:
         return None
-    job.status = JobStatus.RUNNING.value
+    job.status = JobStatus.RUNNING
     job.worker_id = worker_id
     job.attempts += 1
     job.started_at = datetime.utcnow()
@@ -329,7 +329,7 @@ async def worker_result(
     if not job:
         raise HTTPException(404, "Job not found")
     job.result = payload.result.model_dump()
-    job.status = JobStatus.SUCCESS.value
+    job.status = JobStatus.SUCCESS
     job.progress = "Completed"
     job.progress_pct = 100
     job.completed_at = datetime.utcnow()
@@ -351,7 +351,7 @@ async def worker_fail(
     if not job:
         raise HTTPException(404, "Job not found")
     job.error = payload.error
-    job.status = JobStatus.FAILED.value
+    job.status = JobStatus.FAILED
     job.progress = f"Failed: {payload.error[:80]}"
     job.progress_pct = 100
     job.completed_at = datetime.utcnow()

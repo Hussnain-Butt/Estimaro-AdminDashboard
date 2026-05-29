@@ -1,25 +1,12 @@
-"""
-Auto-Generate Job document.
-
-Queued estimate request that the off-Railway worker (Estimaro agent on VPS)
-picks up, runs through the ALLDATA vision agent, and posts back.
-"""
-from beanie import Document
+"""Auto-Generate Job document."""
+from beanie import Document, Indexed
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-import enum
 import uuid
 
 
-class JobStatus(str, enum.Enum):
-    QUEUED = "queued"
-    RUNNING = "running"
-    SUCCESS = "success"
-    FAILED = "failed"
-
-
-# --- API schemas (for OpenAPI typing only; not stored as nested doc) ---
+# --- API schemas only (NOT stored as nested documents) ---
 
 class LaborLine(BaseModel):
     description: str
@@ -70,41 +57,48 @@ class JobResult(BaseModel):
     elapsed_sec: float = 0.0
 
 
-# --- Beanie document — stores result as plain dict to avoid nested-doc init issues ---
+# Plain string status (no Enum on document — avoids init quirks)
+JOB_QUEUED = "queued"
+JOB_RUNNING = "running"
+JOB_SUCCESS = "success"
+JOB_FAILED = "failed"
+
+
+# Backwards-compat alias for routes (str-enum-like)
+class JobStatus(str):
+    QUEUED = JOB_QUEUED
+    RUNNING = JOB_RUNNING
+    SUCCESS = JOB_SUCCESS
+    FAILED = JOB_FAILED
+
 
 class AutoGenJob(Document):
-    """Single auto-generate request, end-to-end audit trail."""
+    job_id: str = Indexed(str, unique=True, default_factory=lambda: f"job_{uuid.uuid4().hex[:12]}")
 
-    job_id: str = Field(default_factory=lambda: f"job_{uuid.uuid4().hex[:12]}")
-
-    # input
-    vin: str
-    serviceRequest: str
-    customerName: str
+    vin: str = ""
+    serviceRequest: str = ""
+    customerName: str = ""
     customerEmail: Optional[str] = None
-    customerPhone: str
+    customerPhone: str = ""
     odometer: Optional[int] = None
     laborRate: float = 150.0
     partsMarkup: float = 30.0
     taxRate: float = 0.0925
 
-    # lifecycle
-    status: str = JobStatus.QUEUED.value
+    status: str = JOB_QUEUED
     progress: str = "Queued"
     progress_pct: int = 0
 
-    # worker bookkeeping
     worker_id: Optional[str] = None
     attempts: int = 0
 
-    # output stored as dict (typed by JobResult on the way in/out at the API layer)
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
-    # timestamps
     created_at: datetime = Field(default_factory=datetime.utcnow)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
     class Settings:
         name = "auto_gen_jobs"
+        use_state_management = True
