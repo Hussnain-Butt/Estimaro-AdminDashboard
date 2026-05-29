@@ -4,10 +4,10 @@ Auto-Generate Job document.
 Queued estimate request that the off-Railway worker (Estimaro agent on VPS)
 picks up, runs through the ALLDATA vision agent, and posts back.
 """
-from beanie import Document, Indexed
+from beanie import Document
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional, List, Any
+from typing import Optional, List, Dict, Any
 import enum
 import uuid
 
@@ -18,6 +18,8 @@ class JobStatus(str, enum.Enum):
     SUCCESS = "success"
     FAILED = "failed"
 
+
+# --- API schemas (for OpenAPI typing only; not stored as nested doc) ---
 
 class LaborLine(BaseModel):
     description: str
@@ -55,10 +57,10 @@ class Breakdown(BaseModel):
 
 
 class JobResult(BaseModel):
-    vehicleInfo: VehicleInfo
-    laborItems: List[LaborLine] = []
-    partsItems: List[PartLine] = []
-    breakdown: Breakdown
+    vehicleInfo: VehicleInfo = Field(default_factory=VehicleInfo)
+    laborItems: List[LaborLine] = Field(default_factory=list)
+    partsItems: List[PartLine] = Field(default_factory=list)
+    breakdown: Breakdown = Field(default_factory=Breakdown)
     section_path: Optional[str] = None
     extraction_confidence: float = 0.0
     verification_match: bool = False
@@ -68,10 +70,11 @@ class JobResult(BaseModel):
     elapsed_sec: float = 0.0
 
 
+# --- Beanie document — stores result as plain dict to avoid nested-doc init issues ---
+
 class AutoGenJob(Document):
     """Single auto-generate request, end-to-end audit trail."""
 
-    # public id used everywhere
     job_id: str = Field(default_factory=lambda: f"job_{uuid.uuid4().hex[:12]}")
 
     # input
@@ -86,16 +89,16 @@ class AutoGenJob(Document):
     taxRate: float = 0.0925
 
     # lifecycle
-    status: JobStatus = JobStatus.QUEUED
-    progress: str = "Queued"          # short human-readable status
-    progress_pct: int = 0             # 0-100
+    status: str = JobStatus.QUEUED.value
+    progress: str = "Queued"
+    progress_pct: int = 0
 
     # worker bookkeeping
     worker_id: Optional[str] = None
     attempts: int = 0
 
-    # output
-    result: Optional[JobResult] = None
+    # output stored as dict (typed by JobResult on the way in/out at the API layer)
+    result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
     # timestamps
@@ -105,4 +108,3 @@ class AutoGenJob(Document):
 
     class Settings:
         name = "auto_gen_jobs"
-        use_state_management = True
