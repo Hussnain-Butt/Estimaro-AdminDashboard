@@ -4,6 +4,14 @@ _screenshots/
 .claude/
 *.log
 
+# Python / agent runtime artifacts
+__pycache__/
+*.pyc
+.env
+venv/
+EstimaroAgent/screenshots/
+EstimaroAgent/venv/
+
 # OS
 .DS_Store
 Thumbs.db
