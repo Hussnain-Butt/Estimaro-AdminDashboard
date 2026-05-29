@@ -85,6 +85,27 @@ class JobStatusResponse(BaseModel):
     error: Optional[str] = None
 
 
+class WorkerClaimResponse(BaseModel):
+    """Returned to the worker when it claims a job — includes the input
+    fields (vin, serviceRequest, rates...) the worker needs to process it."""
+    job_id: str
+    status: str
+    progress: str
+    progress_pct: int
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    # Job inputs the worker pipeline requires
+    vin: str
+    serviceRequest: str
+    customerName: str
+    customerEmail: Optional[str] = None
+    customerPhone: str
+    odometer: Optional[int] = None
+    laborRate: float = 150.0
+    partsMarkup: float = 30.0
+    taxRate: float = 0.0925
+
+
 class WorkerProgressUpdate(BaseModel):
     progress: str
     progress_pct: int = 0

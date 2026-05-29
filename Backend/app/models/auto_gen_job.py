@@ -41,4 +41,4 @@ class AutoGenJob(Document):
     completed_at: Optional[datetime] = None
 
     class Settings:
-        name = "auto_gen_jobs"
+        name = "auto_gen_jobs_v3"

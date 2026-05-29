@@ -18,7 +18,7 @@ from app.models.auto_gen_job import (
 )
 from app.schemas.auto_gen_job_schemas import (
     JobSubmitRequest, JobSubmitResponse, JobStatusResponse,
-    WorkerProgressUpdate, WorkerResultPayload, WorkerErrorPayload,
+    WorkerClaimResponse, WorkerProgressUpdate, WorkerResultPayload, WorkerErrorPayload,
 )
 from app.services.auto_generate_service import auto_generate_service
 import traceback
@@ -233,7 +233,7 @@ async def list_jobs(status_filter: Optional[str] = Query(None)):
 
 @router.get(
     "/jobs/pending/next",
-    response_model=Optional[JobStatusResponse],
+    response_model=Optional[WorkerClaimResponse],
     summary="WORKER: claim the next queued job",
 )
 async def worker_claim_next(
@@ -251,10 +251,13 @@ async def worker_claim_next(
     job.progress = "Worker picked up — decoding VIN"
     job.progress_pct = 10
     await job.save()
-    return JobStatusResponse(
+    return WorkerClaimResponse(
         job_id=job.job_id, status=job.status, progress=job.progress, progress_pct=job.progress_pct,
-        created_at=job.created_at, started_at=job.started_at, completed_at=job.completed_at,
-        result=job.result, error=job.error,
+        created_at=job.created_at, started_at=job.started_at,
+        vin=job.vin, serviceRequest=job.serviceRequest,
+        customerName=job.customerName, customerEmail=job.customerEmail,
+        customerPhone=job.customerPhone, odometer=job.odometer,
+        laborRate=job.laborRate, partsMarkup=job.partsMarkup, taxRate=job.taxRate,
     )
 
 
