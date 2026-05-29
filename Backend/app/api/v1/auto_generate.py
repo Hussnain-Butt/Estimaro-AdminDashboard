@@ -7,7 +7,7 @@ Two flows:
      runs the ALLDATA vision agent, posts result back. Frontend polls.
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Query
-from datetime import datetime
+from datetime import datetime, timedelta
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, Dict, List
 from decimal import Decimal
@@ -241,6 +241,32 @@ async def worker_claim_next(
     x_worker_secret: Optional[str] = Header(None, alias="X-Worker-Secret"),
 ):
     _require_worker_secret(x_worker_secret)
+
+    # --- Recover orphaned jobs -------------------------------------------
+    # A worker can crash / be restarted mid-run, leaving a job stuck in
+    # 'running' forever (no failure ever posted). Before handing out new
+    # work, requeue jobs whose run is older than STALE_SECONDS, and give up
+    # permanently after MAX_ATTEMPTS so a poison job can't loop forever.
+    STALE_SECONDS = 900   # 15 min — comfortably longer than a full agent run
+    MAX_ATTEMPTS = 3
+    cutoff = datetime.utcnow() - timedelta(seconds=STALE_SECONDS)
+    stale_jobs = await AutoGenJob.find(
+        AutoGenJob.status == JOB_RUNNING,
+        AutoGenJob.started_at < cutoff,
+    ).to_list()
+    for sj in stale_jobs:
+        if sj.attempts >= MAX_ATTEMPTS:
+            sj.status = JOB_FAILED
+            sj.error = f"Abandoned after {sj.attempts} attempts (worker crashed or timed out)"
+            sj.progress = "Failed: abandoned after repeated worker failures"
+            sj.progress_pct = 100
+            sj.completed_at = datetime.utcnow()
+        else:
+            sj.status = JOB_QUEUED
+            sj.progress = "Re-queued after a stale/abandoned run"
+            sj.progress_pct = 5
+        await sj.save()
+
     job = await AutoGenJob.find_one(AutoGenJob.status == JOB_QUEUED, sort=[("created_at", 1)])
     if not job:
         return None
