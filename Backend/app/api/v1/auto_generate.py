@@ -14,7 +14,11 @@ from decimal import Decimal
 
 from app.core.config import settings
 from app.models.auto_gen_job import (
-    AutoGenJob, JobStatus, JobResult,
+    AutoGenJob, JOB_QUEUED, JOB_RUNNING, JOB_SUCCESS, JOB_FAILED,
+)
+from app.schemas.auto_gen_job_schemas import (
+    JobSubmitRequest, JobSubmitResponse, JobStatusResponse,
+    WorkerProgressUpdate, WorkerResultPayload, WorkerErrorPayload,
 )
 from app.services.auto_generate_service import auto_generate_service
 import traceback
@@ -150,38 +154,8 @@ async def auto_generate_estimate(
 
 # ============================================================================
 # NEW: Async job queue (frontend → backend → worker → backend → frontend)
+# (Request/response schemas live in app.schemas.auto_gen_job_schemas)
 # ============================================================================
-class JobSubmitRequest(BaseModel):
-    vin: str = Field(..., min_length=17, max_length=17)
-    serviceRequest: str = Field(..., min_length=1)
-    customerName: str = Field(..., min_length=1)
-    customerEmail: Optional[EmailStr] = None
-    customerPhone: str = Field(..., min_length=10)
-    odometer: Optional[int] = Field(None, ge=0)
-    laborRate: Optional[float] = 150.0
-    partsMarkup: Optional[float] = 30.0
-    taxRate: Optional[float] = 0.0925
-
-
-class JobSubmitResponse(BaseModel):
-    job_id: str
-    status: str
-    progress: str
-    progress_pct: int
-    created_at: datetime
-
-
-class JobStatusResponse(BaseModel):
-    job_id: str
-    status: str
-    progress: str
-    progress_pct: int
-    created_at: datetime
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    result: Optional[JobResult] = None
-    error: Optional[str] = None
-
 
 @router.post(
     "/jobs",
@@ -256,18 +230,6 @@ async def list_jobs(status_filter: Optional[str] = Query(None)):
 
 
 # ---------- worker-only endpoints ----------
-class WorkerProgressUpdate(BaseModel):
-    progress: str
-    progress_pct: int = 0
-
-
-class WorkerResultPayload(BaseModel):
-    result: JobResult
-
-
-class WorkerErrorPayload(BaseModel):
-    error: str
-
 
 @router.get(
     "/jobs/pending/next",
@@ -279,10 +241,10 @@ async def worker_claim_next(
     x_worker_secret: Optional[str] = Header(None, alias="X-Worker-Secret"),
 ):
     _require_worker_secret(x_worker_secret)
-    job = await AutoGenJob.find_one(AutoGenJob.status == JobStatus.QUEUED, sort=[("created_at", 1)])
+    job = await AutoGenJob.find_one(AutoGenJob.status == JOB_QUEUED, sort=[("created_at", 1)])
     if not job:
         return None
-    job.status = JobStatus.RUNNING
+    job.status = JOB_RUNNING
     job.worker_id = worker_id
     job.attempts += 1
     job.started_at = datetime.utcnow()
@@ -329,7 +291,7 @@ async def worker_result(
     if not job:
         raise HTTPException(404, "Job not found")
     job.result = payload.result.model_dump()
-    job.status = JobStatus.SUCCESS
+    job.status = JOB_SUCCESS
     job.progress = "Completed"
     job.progress_pct = 100
     job.completed_at = datetime.utcnow()
@@ -351,7 +313,7 @@ async def worker_fail(
     if not job:
         raise HTTPException(404, "Job not found")
     job.error = payload.error
-    job.status = JobStatus.FAILED
+    job.status = JOB_FAILED
     job.progress = f"Failed: {payload.error[:80]}"
     job.progress_pct = 100
     job.completed_at = datetime.utcnow()
