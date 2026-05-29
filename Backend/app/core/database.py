@@ -24,6 +24,7 @@ async def init_db():
     from app.models.customer import Customer
     from app.models.vehicle import Vehicle
     from app.models.user import User
+    from app.models.auto_gen_job import AutoGenJob
 
     # Initialize Beanie
     await init_beanie(
@@ -32,7 +33,8 @@ async def init_db():
             User,
             Customer,
             Vehicle,
-            Estimate
+            Estimate,
+            AutoGenJob,
         ]
     )
 

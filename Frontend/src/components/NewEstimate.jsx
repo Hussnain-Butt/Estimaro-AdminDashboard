@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { gsap } from 'gsap'
 import { ExclamationCircleIcon, TrashIcon, PlusIcon, SparklesIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline'
-import { autoGenerateEstimate, pushToTekmetric, generateApprovalLink, createDraftEstimate, updateEstimate } from '../services/api'
+import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, pushToTekmetric, generateApprovalLink, createDraftEstimate, updateEstimate } from '../services/api'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import VendorCompareStep from './estimate-steps/VendorCompareStep'
@@ -420,9 +420,17 @@ const NewEstimate = () => {
   const [flags, setFlags] = useState([])
   const [confidenceScore, setConfidenceScore] = useState(null)
 
-  // Auto-Generate Handler
+  // Live agent progress state (new queue-based flow)
+  const [agentProgress, setAgentProgress] = useState(null)
+  // shape: { jobId, status, progress, progress_pct }
+
+  // Auto-Generate Handler — NEW queue-based flow (frontend → backend → VPS agent)
   const handleAutoGenerate = async () => {
-    const canGenerate = formData.vin.length === 17 && formData.serviceRequest && formData.customerName && formData.customerPhone
+    const canGenerate =
+      formData.vin.length === 17 &&
+      formData.serviceRequest &&
+      formData.customerName &&
+      formData.customerPhone
 
     if (!canGenerate) {
       toast.error('Please fill all required fields: VIN (17 chars), Service Request, Customer Name, and Phone')
@@ -430,8 +438,10 @@ const NewEstimate = () => {
     }
 
     setIsGenerating(true)
+    setAgentProgress({ jobId: null, status: 'queued', progress: 'Submitting…', progress_pct: 2 })
 
-    const result = await autoGenerateEstimate({
+    // 1. Submit the job
+    const submit = await submitAutoGenJob({
       vin: formData.vin,
       serviceRequest: formData.serviceRequest,
       customerName: formData.customerName,
@@ -439,97 +449,122 @@ const NewEstimate = () => {
       customerPhone: formData.customerPhone,
       odometer: formData.odometer,
       laborRate: formData.laborRate,
+      taxRate: formData.taxRate,
     })
 
-    if (result.success) {
-      const responseData = result.data
-      const estimateData = responseData.estimate_data
-
-      // Create merged data object for immediate saving
-      const mergedData = {
-        vin: formData.vin,
-        serviceRequest: formData.serviceRequest,
-        customerName: formData.customerName,
-        customerEmail: formData.customerEmail,
-        customerPhone: formData.customerPhone,
-        odometer: formData.odometer,
-        // Use response data for vehicle info
-        vehicleInfo: estimateData.vehicleInfo,
-        laborItems: estimateData.laborItems.map((item, idx) => ({
-          id: idx + 1,
-          description: item.description,
-          hours: parseFloat(item.hours),
-          rate: parseFloat(item.rate),
-          total: item.total,
-          source: 'ALLDATA'
-        })),
-        partsItems: estimateData.partsItems.map((item, idx) => ({
-          id: idx + 1,
-          description: item.description,
-          partNumber: item.partNumber,
-          quantity: item.quantity,
-          cost: item.cost,
-          markup: item.markup,
-          total: item.total,
-          vendor: item.vendor,
-          reasonBadge: item.reason_badge // Map reason badge
-        }))
-      }
-
-      // Update form data state
-      setFormData(prev => ({
-        ...prev,
-        vehicleInfo: mergedData.vehicleInfo,
-        laborItems: mergedData.laborItems,
-        partsItems: mergedData.partsItems
-      }))
-
-      // Update totals with cleaning kit
-      if (estimateData.breakdown) {
-        setCalculatedTotals({
-          laborTotal: estimateData.breakdown.laborTotal,
-          partsTotal: estimateData.breakdown.partsTotal,
-          subtotal: estimateData.breakdown.subtotal,
-          taxAmount: estimateData.breakdown.taxAmount,
-          cleaningKit: estimateData.breakdown.cleaningKit,
-          total: estimateData.breakdown.total,
-        })
-      }
-
-      // Set vendor comparison data
-      if (estimateData.vendorComparison) {
-        setVendorData(estimateData.vendorComparison)
-      }
-
-      // Set flags (recall alerts, warranty alerts, etc.)
-      if (responseData.flags && responseData.flags.length > 0) {
-        setFlags(responseData.flags)
-      }
-
-      // Set confidence score
-      if (responseData.confidence_score) {
-        setConfidenceScore(responseData.confidence_score)
-      }
-
-      autoProgressSteps()
-
-      // AUTO-SAVE: Save to database immediately using mergedData
-      await handleSaveDraft(true, mergedData)
-    } else {
-      // Check for backend's critical_errors for specific error messages
-      const responseData = result.data
-      if (responseData?.critical_errors?.length > 0) {
-        responseData.critical_errors.forEach(err => {
-          toast.error(err, 'Scraper Error')
-        })
-      } else if (responseData?.error_message) {
-        toast.error(responseData.error_message, 'Generation Failed')
-      } else {
-        toast.error(result.error || 'Failed to auto-generate estimate', 'Error')
-      }
+    if (!submit.success) {
+      toast.error(submit.error || 'Failed to submit job', 'Error')
+      setIsGenerating(false)
+      setAgentProgress(null)
+      return
     }
 
+    const jobId = submit.data.job_id
+    setAgentProgress({
+      jobId,
+      status: submit.data.status,
+      progress: submit.data.progress,
+      progress_pct: submit.data.progress_pct,
+    })
+
+    // 2. Poll until terminal
+    const poll = await pollAutoGenJob(jobId, {
+      intervalMs: 2500,
+      timeoutMs: 600000,
+      onProgress: (job) =>
+        setAgentProgress({
+          jobId: job.job_id,
+          status: job.status,
+          progress: job.progress,
+          progress_pct: job.progress_pct,
+        }),
+    })
+
+    if (!poll.success) {
+      toast.error(poll.error || 'Polling failed', 'Error')
+      setIsGenerating(false)
+      return
+    }
+
+    const job = poll.data
+
+    if (job.status === 'failed') {
+      toast.error(job.error || 'Agent failed to complete the estimate', 'Generation Failed')
+      setIsGenerating(false)
+      return
+    }
+
+    // 3. Success — populate state from the agent result
+    const r = job.result || {}
+    const veh = r.vehicleInfo || {}
+    const laborItems = (r.laborItems || []).map((item, idx) => ({
+      id: idx + 1,
+      description: item.description,
+      hours: parseFloat(item.hours),
+      rate: parseFloat(item.rate),
+      total: parseFloat(item.total).toFixed(2),
+      source: item.source || 'ALLDATA',
+      skill: item.skill,
+    }))
+    const partsItems = (r.partsItems || []).map((item, idx) => ({
+      id: idx + 1,
+      description: item.description,
+      partNumber: item.partNumber,
+      quantity: item.quantity,
+      cost: item.cost,
+      markup: item.markup,
+      total: parseFloat(item.total).toFixed(2),
+      vendor: item.vendor || 'ALLDATA',
+    }))
+
+    const mergedData = {
+      vin: formData.vin,
+      serviceRequest: formData.serviceRequest,
+      customerName: formData.customerName,
+      customerEmail: formData.customerEmail,
+      customerPhone: formData.customerPhone,
+      odometer: formData.odometer,
+      vehicleInfo: veh,
+      laborItems,
+      partsItems,
+    }
+
+    setFormData((prev) => ({
+      ...prev,
+      vehicleInfo: veh,
+      laborItems,
+      partsItems,
+    }))
+
+    const bd = r.breakdown || {}
+    setCalculatedTotals({
+      laborTotal: (bd.laborTotal ?? 0).toFixed(2),
+      partsTotal: (bd.partsTotal ?? 0).toFixed(2),
+      subtotal: (bd.subtotal ?? 0).toFixed(2),
+      taxAmount: (bd.taxAmount ?? 0).toFixed(2),
+      cleaningKit: null,
+      total: (bd.total ?? 0).toFixed(2),
+    })
+
+    setConfidenceScore({
+      extraction: r.extraction_confidence ?? null,
+      verification: r.verification_confidence ?? null,
+      verification_match: r.verification_match ?? null,
+      verification_reason: r.verification_reason ?? null,
+      section_path: r.section_path ?? null,
+      agent_steps: r.agent_steps ?? null,
+      elapsed_sec: r.elapsed_sec ?? null,
+    })
+
+    autoProgressSteps()
+    await handleSaveDraft(true, mergedData)
+
     setIsGenerating(false)
+    setAgentProgress(null)
+    toast.success(
+      `Estimate ready: ${laborItems.length} labor item(s), ${partsItems.length} part(s)`,
+      'Done'
+    )
   }
 
   // Helper to prepare payload
@@ -853,6 +888,86 @@ const NewEstimate = () => {
           ))}
         </div>
       </div>
+
+      {/* Live agent progress panel */}
+      {(isGenerating || agentProgress) && (
+        <div className="w-full max-w-4xl mx-auto mb-4 bg-surface border border-accent/40 rounded-xl p-5 shadow-lg">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <div className="relative h-3 w-3">
+                <span className="absolute inline-flex h-full w-full rounded-full bg-accent opacity-75 animate-ping"></span>
+                <span className="relative inline-flex h-3 w-3 rounded-full bg-accent"></span>
+              </div>
+              <span className="text-sm font-semibold text-text-primary tracking-wide">
+                ALLDATA Agent — Live
+              </span>
+              {agentProgress?.jobId && (
+                <span className="text-[11px] font-mono text-text-secondary bg-background px-2 py-0.5 rounded border border-border">
+                  {agentProgress.jobId}
+                </span>
+              )}
+            </div>
+            <span className="text-xs uppercase tracking-wider text-text-secondary">
+              {agentProgress?.status || 'queued'}
+            </span>
+          </div>
+          <p className="text-sm text-text-secondary mb-3 min-h-[20px]">
+            {agentProgress?.progress || 'Submitting job to backend…'}
+          </p>
+          <div className="w-full h-2 bg-background rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-accent to-accent-dark transition-all duration-700 ease-out"
+              style={{ width: `${agentProgress?.progress_pct ?? 5}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Confidence + traceability badge once agent result lands */}
+      {confidenceScore && !isGenerating && (formData.laborItems.length > 0 || formData.partsItems.length > 0) && (
+        <div className="w-full max-w-4xl mx-auto mb-4 bg-surface border border-border rounded-xl p-5">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+            <div className="flex items-center gap-2">
+              <span className={`inline-block h-2.5 w-2.5 rounded-full ${
+                (confidenceScore.verification_confidence ?? 0) >= 0.9 ? 'bg-success' :
+                (confidenceScore.verification_confidence ?? 0) >= 0.7 ? 'bg-warning' : 'bg-danger'
+              }`}></span>
+              <span className="text-text-secondary">Confidence:</span>
+              <span className="font-semibold text-text-primary">
+                {confidenceScore.verification_confidence != null
+                  ? `${Math.round(confidenceScore.verification_confidence * 100)}%`
+                  : '—'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-text-secondary">Match:</span>
+              <span className={`font-semibold ${confidenceScore.verification_match ? 'text-success' : 'text-danger'}`}>
+                {confidenceScore.verification_match ? 'Yes' : 'No'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-text-secondary">Agent steps:</span>
+              <span className="font-semibold text-text-primary">{confidenceScore.agent_steps ?? '—'}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-text-secondary">Elapsed:</span>
+              <span className="font-semibold text-text-primary">
+                {confidenceScore.elapsed_sec != null ? `${confidenceScore.elapsed_sec.toFixed(1)}s` : '—'}
+              </span>
+            </div>
+          </div>
+          {confidenceScore.section_path && (
+            <p className="text-xs text-text-secondary mt-2 font-mono">
+              <span className="text-text-secondary/70">Source path: </span>{confidenceScore.section_path}
+            </p>
+          )}
+          {confidenceScore.verification_reason && (
+            <p className="text-xs text-text-secondary mt-1 italic">
+              Hermes: {confidenceScore.verification_reason}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Main Content Area */}
       <div className="flex-grow bg-surface border border-border rounded-xl p-6 md:p-8 shadow-2xl">

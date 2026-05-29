@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     # Scraper Microservice (Remote scraping via Windows RDP)
     SCRAPER_SERVICE_URL: str = "http://localhost:5000"
     SCRAPER_API_KEY: str = "estimaro_scraper_secret_2024"
+
+    # Auto-Generate Worker (off-Railway, runs on VPS with Chrome + Hermes + Gemini)
+    AGENT_WORKER_SECRET: str = "change-me-in-prod"
     
     class Config:
         env_file = ".env"

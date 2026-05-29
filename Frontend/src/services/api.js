@@ -239,6 +239,61 @@ export const autoGenerateEstimate = async (intakeData) => {
 };
 
 // ============================================================================
+// AGENT QUEUE — async auto-generate with progress polling
+// ============================================================================
+
+export const submitAutoGenJob = async (intake) => {
+  try {
+    const response = await api.post('/auto-generate/jobs', {
+      vin: intake.vin,
+      serviceRequest: intake.serviceRequest,
+      customerName: intake.customerName,
+      customerEmail: intake.customerEmail || null,
+      customerPhone: intake.customerPhone,
+      odometer: intake.odometer ? parseInt(intake.odometer) : null,
+      laborRate: intake.laborRate ? Number(intake.laborRate) : 150,
+      partsMarkup: intake.partsMarkup ? Number(intake.partsMarkup) : 30,
+      taxRate: intake.taxRate ? Number(intake.taxRate) : 0.0925,
+    });
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to submit job',
+    };
+  }
+};
+
+export const getAutoGenJob = async (jobId) => {
+  try {
+    const response = await api.get(`/auto-generate/jobs/${jobId}`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to fetch job',
+    };
+  }
+};
+
+/**
+ * Poll until job reaches a terminal state (success/failed).
+ * onProgress({status, progress, progress_pct}) is called after each poll.
+ */
+export const pollAutoGenJob = async (jobId, { intervalMs = 2500, timeoutMs = 600000, onProgress } = {}) => {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const r = await getAutoGenJob(jobId);
+    if (!r.success) return r;
+    const job = r.data;
+    if (onProgress) onProgress(job);
+    if (job.status === 'success' || job.status === 'failed') return { success: true, data: job };
+    await new Promise((res) => setTimeout(res, intervalMs));
+  }
+  return { success: false, error: 'Polling timed out' };
+};
+
+// ============================================================================
 // Tekmetric Integration
 // ============================================================================
 

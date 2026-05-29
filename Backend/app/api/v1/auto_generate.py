@@ -1,21 +1,35 @@
 """
 Auto-Generate Estimate API Routes
 
-Single endpoint that auto-generates complete estimate from intake information.
-Now includes: recall check, warranty check, vendor scoring, part conditions, cleaning kits.
+Two flows:
+  1. Legacy synchronous `/generate` — runs old scraper service inline.
+  2. NEW async queue `/jobs` — frontend submits, worker on VPS picks up,
+     runs the ALLDATA vision agent, posts result back. Frontend polls.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
-
+from fastapi import APIRouter, Depends, HTTPException, status, Header, Query
+from datetime import datetime
 from pydantic import BaseModel, Field, EmailStr
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from decimal import Decimal
 
-
+from app.core.config import settings
+from app.models.auto_gen_job import (
+    AutoGenJob, JobStatus, JobResult,
+    LaborLine, PartLine, VehicleInfo, Breakdown,
+)
 from app.services.auto_generate_service import auto_generate_service
 import traceback
 import os
 
 router = APIRouter()
+
+
+# ============================================================================
+# Worker auth helper
+# ============================================================================
+def _require_worker_secret(x_worker_secret: Optional[str]):
+    if not x_worker_secret or x_worker_secret != settings.AGENT_WORKER_SECRET:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Bad worker secret")
 
 
 class VendorWeightsRequest(BaseModel):
@@ -133,3 +147,214 @@ async def auto_generate_estimate(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Auto-generation failed: {str(e)}"
         )
+
+
+# ============================================================================
+# NEW: Async job queue (frontend → backend → worker → backend → frontend)
+# ============================================================================
+class JobSubmitRequest(BaseModel):
+    vin: str = Field(..., min_length=17, max_length=17)
+    serviceRequest: str = Field(..., min_length=1)
+    customerName: str = Field(..., min_length=1)
+    customerEmail: Optional[EmailStr] = None
+    customerPhone: str = Field(..., min_length=10)
+    odometer: Optional[int] = Field(None, ge=0)
+    laborRate: Optional[float] = 150.0
+    partsMarkup: Optional[float] = 30.0
+    taxRate: Optional[float] = 0.0925
+
+
+class JobSubmitResponse(BaseModel):
+    job_id: str
+    status: JobStatus
+    progress: str
+    progress_pct: int
+    created_at: datetime
+
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: JobStatus
+    progress: str
+    progress_pct: int
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    result: Optional[JobResult] = None
+    error: Optional[str] = None
+
+
+@router.post(
+    "/jobs",
+    response_model=JobSubmitResponse,
+    summary="Submit auto-generate job to the agent queue",
+    description="Frontend submits VIN+complaint+customer. Returns job_id. "
+                "Poll GET /jobs/{job_id} until status is 'success' or 'failed'.",
+)
+async def submit_job(req: JobSubmitRequest):
+    job = AutoGenJob(
+        vin=req.vin.strip().upper(),
+        serviceRequest=req.serviceRequest.strip(),
+        customerName=req.customerName.strip(),
+        customerEmail=req.customerEmail,
+        customerPhone=req.customerPhone.strip(),
+        odometer=req.odometer,
+        laborRate=req.laborRate or 150.0,
+        partsMarkup=req.partsMarkup or 30.0,
+        taxRate=req.taxRate or 0.0925,
+        progress="Queued — waiting for agent",
+        progress_pct=5,
+    )
+    await job.insert()
+    return JobSubmitResponse(
+        job_id=job.job_id,
+        status=job.status,
+        progress=job.progress,
+        progress_pct=job.progress_pct,
+        created_at=job.created_at,
+    )
+
+
+@router.get(
+    "/jobs/{job_id}",
+    response_model=JobStatusResponse,
+    summary="Get current state of an auto-generate job",
+)
+async def get_job(job_id: str):
+    job = await AutoGenJob.find_one(AutoGenJob.job_id == job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return JobStatusResponse(
+        job_id=job.job_id,
+        status=job.status,
+        progress=job.progress,
+        progress_pct=job.progress_pct,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+        result=job.result,
+        error=job.error,
+    )
+
+
+@router.get(
+    "/jobs",
+    response_model=List[JobStatusResponse],
+    summary="List recent jobs (last 50)",
+)
+async def list_jobs(status_filter: Optional[JobStatus] = Query(None)):
+    q = AutoGenJob.find()
+    if status_filter:
+        q = AutoGenJob.find(AutoGenJob.status == status_filter)
+    jobs = await q.sort("-created_at").limit(50).to_list()
+    return [
+        JobStatusResponse(
+            job_id=j.job_id, status=j.status, progress=j.progress, progress_pct=j.progress_pct,
+            created_at=j.created_at, started_at=j.started_at, completed_at=j.completed_at,
+            result=j.result, error=j.error,
+        ) for j in jobs
+    ]
+
+
+# ---------- worker-only endpoints ----------
+class WorkerProgressUpdate(BaseModel):
+    progress: str
+    progress_pct: int = 0
+
+
+class WorkerResultPayload(BaseModel):
+    result: JobResult
+
+
+class WorkerErrorPayload(BaseModel):
+    error: str
+
+
+@router.get(
+    "/jobs/pending/next",
+    response_model=Optional[JobStatusResponse],
+    summary="WORKER: claim the next queued job",
+)
+async def worker_claim_next(
+    worker_id: str = Query(..., min_length=1),
+    x_worker_secret: Optional[str] = Header(None, alias="X-Worker-Secret"),
+):
+    _require_worker_secret(x_worker_secret)
+    job = await AutoGenJob.find_one(AutoGenJob.status == JobStatus.QUEUED, sort=[("created_at", 1)])
+    if not job:
+        return None
+    job.status = JobStatus.RUNNING
+    job.worker_id = worker_id
+    job.attempts += 1
+    job.started_at = datetime.utcnow()
+    job.progress = "Worker picked up — decoding VIN"
+    job.progress_pct = 10
+    await job.save()
+    return JobStatusResponse(
+        job_id=job.job_id, status=job.status, progress=job.progress, progress_pct=job.progress_pct,
+        created_at=job.created_at, started_at=job.started_at, completed_at=job.completed_at,
+        result=job.result, error=job.error,
+    )
+
+
+@router.post(
+    "/jobs/{job_id}/progress",
+    summary="WORKER: update progress message",
+)
+async def worker_progress(
+    job_id: str,
+    payload: WorkerProgressUpdate,
+    x_worker_secret: Optional[str] = Header(None, alias="X-Worker-Secret"),
+):
+    _require_worker_secret(x_worker_secret)
+    job = await AutoGenJob.find_one(AutoGenJob.job_id == job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    job.progress = payload.progress
+    job.progress_pct = max(min(payload.progress_pct, 99), job.progress_pct)
+    await job.save()
+    return {"ok": True}
+
+
+@router.post(
+    "/jobs/{job_id}/result",
+    summary="WORKER: submit final result",
+)
+async def worker_result(
+    job_id: str,
+    payload: WorkerResultPayload,
+    x_worker_secret: Optional[str] = Header(None, alias="X-Worker-Secret"),
+):
+    _require_worker_secret(x_worker_secret)
+    job = await AutoGenJob.find_one(AutoGenJob.job_id == job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    job.result = payload.result
+    job.status = JobStatus.SUCCESS
+    job.progress = "Completed"
+    job.progress_pct = 100
+    job.completed_at = datetime.utcnow()
+    await job.save()
+    return {"ok": True}
+
+
+@router.post(
+    "/jobs/{job_id}/fail",
+    summary="WORKER: mark job as failed",
+)
+async def worker_fail(
+    job_id: str,
+    payload: WorkerErrorPayload,
+    x_worker_secret: Optional[str] = Header(None, alias="X-Worker-Secret"),
+):
+    _require_worker_secret(x_worker_secret)
+    job = await AutoGenJob.find_one(AutoGenJob.job_id == job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    job.error = payload.error
+    job.status = JobStatus.FAILED
+    job.progress = f"Failed: {payload.error[:80]}"
+    job.progress_pct = 100
+    job.completed_at = datetime.utcnow()
+    await job.save()
+    return {"ok": True}

@@ -1,0 +1,15 @@
+# Local helper scripts + working artifacts
+_*.py
+_screenshots/
+.claude/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local deliverables (regenerate from Excel script)
+Estimaro-Credentials-Master.xlsx
+
+# Solution docs are tracked separately
+# Estimaro-Solution-Proposal.pdf  (keep tracked)
