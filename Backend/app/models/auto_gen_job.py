@@ -105,8 +105,4 @@ class AutoGenJob(Document):
 
     class Settings:
         name = "auto_gen_jobs"
-        indexes = [
-            "job_id",
-            "status",
-            "created_at",
-        ]
+        use_state_management = True
