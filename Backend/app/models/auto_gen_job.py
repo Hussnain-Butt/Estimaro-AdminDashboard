@@ -1,8 +1,8 @@
 """Auto-Generate Job document — minimal Beanie shape."""
-from beanie import Document, Indexed
+from beanie import Document
 from pydantic import Field
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional
 import uuid
 
 
@@ -13,7 +13,7 @@ JOB_FAILED = "failed"
 
 
 class AutoGenJob(Document):
-    job_id: str = Indexed(unique=True, default_factory=lambda: f"job_{uuid.uuid4().hex[:12]}")
+    job_id: str = Field(default_factory=lambda: f"job_{uuid.uuid4().hex[:12]}")
 
     vin: str = ""
     serviceRequest: str = ""
@@ -32,8 +32,9 @@ class AutoGenJob(Document):
     worker_id: Optional[str] = None
     attempts: int = 0
 
-    result: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
+    # Stored as JSON-serialisable dict; default empty dict avoids Optional schema issues
+    result: dict = Field(default_factory=dict)
+    error: str = ""
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     started_at: Optional[datetime] = None
