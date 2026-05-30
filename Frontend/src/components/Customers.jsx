@@ -202,11 +202,11 @@ const CustomersPage = () => {
                         {customer.email || "-"}
                       </td>
                       <td className="px-6 py-4 text-gray-300 hidden sm:table-cell">
-                        -
+                        {customer.vehicles_count ?? 0}
                       </td>
-                      <td className="px-6 py-4 text-gray-300">-</td>
+                      <td className="px-6 py-4 text-gray-300">{customer.estimates_count ?? 0}</td>
                       <td className="px-6 py-4 text-gray-300 hidden md:table-cell">
-                        -
+                        {customer.last_visit ? new Date(customer.last_visit).toLocaleDateString() : '—'}
                       </td>
                     </tr>
                   ))}
@@ -241,17 +241,27 @@ const CustomersPage = () => {
                 <DetailItem
                   icon={<LucideCar className="w-5 h-5 text-gray-400" />}
                   label="Vehicles"
-                  value="-"
+                  value={
+                    selectedCustomer.vehicles_count
+                      ? `${selectedCustomer.vehicles_count}${
+                          selectedCustomer.primary_vehicle ? ` — ${selectedCustomer.primary_vehicle}` : ''
+                        }`
+                      : '0'
+                  }
                 />
                 <DetailItem
                   icon={<LucideFileText className="w-5 h-5 text-gray-400" />}
                   label="Estimates"
-                  value="-"
+                  value={selectedCustomer.estimates_count ?? 0}
                 />
                 <DetailItem
                   icon={<LucideCalendar className="w-5 h-5 text-gray-400" />}
                   label="Last Visit"
-                  value="-"
+                  value={
+                    selectedCustomer.last_visit
+                      ? new Date(selectedCustomer.last_visit).toLocaleDateString()
+                      : '—'
+                  }
                 />
               </>
             )}

@@ -8,6 +8,75 @@ import VendorCompareStep from './estimate-steps/VendorCompareStep'
 import { useToast } from './ui/Toast'
 
 // ===================================================================================
+//  HELPERS
+// ===================================================================================
+
+// Transform the backend's vendorQuotes + vendorComparison into the shape
+// VendorCompareStep expects. Backend returns one VendorQuote per offer
+// (vendor/brand/price/in_stock) grouped under `vendorComparison[requested_part]
+// = {best, all}`. The UI groups by requested part and ranks offers by price
+// with the best (cheapest in-stock) flagged.
+const transformVendorData = (vendorComparison, vendorQuotes = []) => {
+  if (!vendorComparison || Object.keys(vendorComparison).length === 0) return null
+
+  const parts = Object.entries(vendorComparison)
+    .map(([requestedPart, info]) => {
+      const all = (info && info.all) || []
+      const best = (info && info.best) || null
+      const priced = all.filter((q) => q && q.found && q.price != null)
+      if (priced.length === 0) return null
+
+      const cheapestPrice = Math.min(...priced.map((q) => parseFloat(q.price)))
+      const dearestPrice = Math.max(...priced.map((q) => parseFloat(q.price)))
+      const offers = priced
+        .map((q) => {
+          const isCheapest =
+            best && q.vendor === best.vendor && parseFloat(q.price) === parseFloat(best.price)
+          const brandLabel = (q.brand || '').toString()
+          const isOem = /genuine|oem/i.test(brandLabel)
+          const composite =
+            cheapestPrice && parseFloat(q.price)
+              ? Math.round((cheapestPrice / parseFloat(q.price)) * 100)
+              : 0
+          return {
+            vendor_name: q.vendor,
+            brand: brandLabel || '—',
+            brand_tier: isOem ? 'OEM' : 'Aftermarket',
+            price: q.price,
+            stock_status:
+              q.in_stock === true ? 'In Stock' : q.in_stock === false ? 'Out of Stock' : 'Unknown',
+            stock_quantity: q.availability || (q.in_stock ? 'Available' : ''),
+            distance_miles: '—',
+            scores: { composite },
+            is_cheapest: !!isCheapest,
+            selection: isCheapest ? 'Primary' : 'Backup',
+          }
+        })
+        .sort((a, b) => parseFloat(a.price) - parseFloat(b.price))
+
+      return {
+        description: best?.matched_part_name || requestedPart,
+        part_number: best?.oem_number || requestedPart,
+        offers,
+        savings: dearestPrice - cheapestPrice,
+      }
+    })
+    .filter(Boolean)
+
+  if (parts.length === 0) return null
+
+  const vendorsQueried = Array.from(new Set(vendorQuotes.map((q) => q.vendor).filter(Boolean)))
+  return {
+    parts,
+    weights: { brand: 40, price: 35, distance: 25 },
+    summary: {
+      vendors_queried: vendorsQueried,
+      note: `Live pricing across ${vendorsQueried.length || 0} vendor(s) — best price selected`,
+    },
+  }
+}
+
+// ===================================================================================
 //  STEP COMPONENTS
 // ===================================================================================
 
@@ -555,6 +624,11 @@ const NewEstimate = () => {
       agent_steps: r.agent_steps ?? null,
       elapsed_sec: r.elapsed_sec ?? null,
     })
+
+    // Hydrate the Vendor Compare step with the live Worldpac/SSF quotes the
+    // worker produced. Null means "no live quotes returned" and the step
+    // shows its placeholder instead of fake rows.
+    setVendorData(transformVendorData(r.vendorComparison, r.vendorQuotes || []))
 
     autoProgressSteps()
     await handleSaveDraft(true, mergedData)

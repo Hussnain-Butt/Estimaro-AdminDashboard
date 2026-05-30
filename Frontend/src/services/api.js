@@ -414,4 +414,88 @@ export const updateEstimate = async (estimateId, estimateData) => {
   }
 };
 
+// ============================================================================
+// Analytics (Dashboard / Vendors / Reports)
+// ============================================================================
+
+export const getDashboardAnalytics = async () => {
+  try {
+    const response = await api.get('/analytics/dashboard');
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to load dashboard',
+    };
+  }
+};
+
+export const getVendorAnalytics = async () => {
+  try {
+    const response = await api.get('/analytics/vendors');
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to load vendor stats',
+    };
+  }
+};
+
+export const getReportAnalytics = async (days = 7) => {
+  try {
+    const response = await api.get('/analytics/reports', { params: { days } });
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to load reports',
+    };
+  }
+};
+
+// ============================================================================
+// Shop Settings
+// ============================================================================
+
+export const getShopSettings = async () => {
+  try {
+    const response = await api.get('/settings/');
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to load settings',
+    };
+  }
+};
+
+export const updateShopSettings = async (payload) => {
+  try {
+    const response = await api.put('/settings/', payload);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to save settings',
+    };
+  }
+};
+
+// ============================================================================
+// Customers
+// ============================================================================
+
+export const getCustomers = async () => {
+  try {
+    const response = await api.get('/customers/');
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to load customers',
+    };
+  }
+};
+
 export default api;

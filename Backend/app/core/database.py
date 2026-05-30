@@ -32,6 +32,7 @@ async def init_db():
     from app.models.customer import Customer
     from app.models.vehicle import Vehicle
     from app.models.user import User
+    from app.models.shop_settings import ShopSettings
 
     try:
         from app.models.auto_gen_job import AutoGenJob
@@ -40,7 +41,7 @@ async def init_db():
         log.error(f"FAILED to import AutoGenJob: {e}\n{traceback.format_exc()}")
         AutoGenJob = None
 
-    models = [User, Customer, Vehicle, Estimate]
+    models = [User, Customer, Vehicle, Estimate, ShopSettings]
     if AutoGenJob is not None:
         models.append(AutoGenJob)
 
@@ -52,7 +53,7 @@ async def init_db():
         # Fallback: try without AutoGenJob so the rest of the app keeps working
         if AutoGenJob is not None:
             log.warning("Retrying init_beanie without AutoGenJob")
-            await init_beanie(database=client[db_name], document_models=[User, Customer, Vehicle, Estimate])
+            await init_beanie(database=client[db_name], document_models=[User, Customer, Vehicle, Estimate, ShopSettings])
         raise
 
 # Simplified dependency for backward compatibility during migration
