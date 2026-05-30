@@ -267,14 +267,18 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
             alldata_parts = (meta.get("parts") or [])
             if alldata_parts:
                 await _post_progress(client, job_id, "Pricing parts across vendors (Worldpac/SSF)", 75)
-                # Prioritise the parts that match the labor operation + complaint
-                # (e.g. a "front brake" job should price the front pads, not rear).
-                prefer_terms = list((labor.operation or "").split())
-                complaint_l = (job.get("serviceRequest") or "").lower()
-                for w in ("front", "rear", "left", "right", "pad", "rotor", "disc"):
-                    if w in complaint_l:
-                        prefer_terms.append(w)
-                vq = await gather_quotes(alldata_parts, prefer_terms=prefer_terms)
+                # Aftermarket distributors are searched by VEHICLE + part type, so
+                # derive the part type from the labor operation, and keep the best
+                # OEM number as a cross-reference hint.
+                part_type = (labor.operation or "").strip() or (job.get("serviceRequest") or "")[:40]
+                op_terms = [t for t in (labor.operation or "").lower().split() if t]
+                oem_hint = None
+                for p in alldata_parts:
+                    if p.get("oem_number") and any(t in (p.get("name") or "").lower() for t in op_terms):
+                        oem_hint = str(p["oem_number"]); break
+                if not oem_hint:
+                    oem_hint = str(alldata_parts[0].get("oem_number") or "") or None
+                vq = await gather_quotes(vehicle, part_type, oem_hint=oem_hint)
                 vendor_quotes_dicts = [q.model_dump() for q in vq]
                 vendor_comparison = summarise(vq)
                 logger.info(f"[{job_id}] vendor quotes: {len(vendor_quotes_dicts)} "

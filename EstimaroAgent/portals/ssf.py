@@ -17,34 +17,32 @@ PORTAL_NAME = "SSF"
 PORTAL_URL = "https://shop.ssfautoparts.com/Catalog"
 
 
-def _build_task(search_query: str, expected_part: Optional[str]) -> str:
-    expect = f'\n  Expected part (for matching): {expected_part}' if expected_part else ""
+def _build_task(vehicle, part_type: str, oem_hint: Optional[str]) -> str:
+    hint = f'\n  OEM number hint (for matching only): {oem_hint}' if oem_hint else ""
     return f"""
 You are inside the SSF (Eurolink) parts shop. The shop is already logged in.
 
-SEARCH FOR: "{search_query}"{expect}
+SSF is an AFTERMARKET distributor — set the VEHICLE first (it has a "Find by VIN"
+box), then browse the part category. Genuine OEM numbers are NOT reliable search
+keys here.
 
-There is a "Search Part Number" box near the top of the page. It takes an OEM /
-part number and returns matching parts with price and availability.
+VEHICLE:   {vehicle.year} {vehicle.make} {vehicle.model}
+  VIN:     {vehicle.vin}
+FIND PARTS: {part_type}{hint}
 
 NAVIGATION PLAN (use the numbered overlays in the screenshots):
-  1. Click the "Search Part Number" text box, type EXACTLY: {search_query}
-  2. Press Enter (or click the search/magnifier button next to it).
-  3. Wait for the results to load. Each result typically shows a BRAND / LINE,
-     a PART NUMBER, a DESCRIPTION, a PRICE, and an AVAILABILITY / stock column
-     (e.g. "In Stock", a quantity, or a branch/ETA).
-  4. OEM NUMBER FORMATS — if the exact number is "not found", try these
-     variations in the SAME search box before giving up (clear it each time):
-       - with an "A" prefix (genuine Mercedes/European parts are A<number>,
-         e.g. A{search_query})
-       - the number grouped with spaces (Mercedes style, e.g. A 000 420 14 04)
-       - the number with no spaces/dashes at all
-     Try up to 3 sensible variations. If still nothing, report not found (do not
-     invent data).
+  1. Find the "Find by VIN #" box, type the VIN {vehicle.vin}, submit it. (If a
+     recent/known vehicle for this VIN is already shown, select it instead.)
+  2. Wait for the vehicle to resolve to {vehicle.year} {vehicle.make} {vehicle.model}.
+  3. Navigate the catalogue to the part category matching "{part_type}"
+     (e.g. Brakes -> Brake Pads / Disc Brake Pads).
+  4. On the parts list, read each option: BRAND / LINE, PART NUMBER, DESCRIPTION,
+     PRICE, and AVAILABILITY / stock (e.g. "In Stock", a quantity, a branch/ETA).
 
 OUTPUT: action="extract" with value as a JSON STRING of EXACTLY this schema:
   {{
-    "search_term": "{search_query}",
+    "vehicle": "<vehicle text shown>",
+    "part_type": "{part_type}",
     "results": [
       {{
         "brand": "<brand / line>",
@@ -64,20 +62,21 @@ CRITICAL RULES:
   * in_stock = true if availability clearly indicates stock on hand, false if out
     of stock / special order, null if unclear.
   * Capture up to the first 6 result rows.
-  * If the search returns no products, confidence < 0.6 and action="ask_human"
-    with the exact message SSF showed.
+  * Only use action="ask_human" if you cannot resolve the vehicle or reach the
+    part category after genuinely trying.
 """
 
 
 async def lookup(
-    search_query: str,
+    vehicle,
+    part_type: str,
     *,
-    expected_part: Optional[str] = None,
-    max_steps: int = 18,
-    timeout: int = 240,
+    oem_hint: Optional[str] = None,
+    max_steps: int = 22,
+    timeout: int = 300,
 ) -> Tuple[list[VendorQuote], dict]:
-    """Search SSF by part number. Returns (quotes, meta) — one VendorQuote per row."""
-    task = _build_task(search_query, expected_part)
+    """Browse SSF by vehicle (Find by VIN) + part type. Returns (quotes, meta)."""
+    task = _build_task(vehicle, part_type, oem_hint)
     raw, meta = await run_portal_agent(PORTAL_URL, task, max_steps=max_steps,
                                        timeout=timeout, login_portal="ssf")
     if raw is None:
@@ -104,7 +103,7 @@ async def lookup(
             in_stock = in_stock.strip().lower() in ("true", "yes", "in stock", "instock")
         quotes.append(VendorQuote(
             vendor=PORTAL_NAME,
-            requested_part=str(expected_part or search_query),
+            requested_part=str(oem_hint or part_type),
             matched_part_name=r.get("description"),
             oem_number=r.get("part_number") or None,
             brand=r.get("brand") or None,
@@ -117,15 +116,16 @@ async def lookup(
             screenshot_path=screenshot,
         ))
 
-    logger.info(f"[{PORTAL_NAME}] '{search_query}' -> {len(quotes)} result row(s)")
+    logger.info(f"[{PORTAL_NAME}] {part_type!r} -> {len(quotes)} result row(s)")
     return quotes, meta
 
 
 if __name__ == "__main__":
     import asyncio
-    # On the VPS, run against the logged-in session with a real SSF/OEM number.
-    q = "0084201520"  # example Mercedes-style brake pad number; replace as needed
-    quotes, meta = asyncio.run(lookup(q))
+    from models.job_spec import VehicleFingerprint
+    veh = VehicleFingerprint(vin="W1KAF4GB3PR122770", year=2023,
+                             make="Mercedes-Benz", model="C-Class")
+    quotes, meta = asyncio.run(lookup(veh, "front brake pads", oem_hint="0004211202"))
     print("\n=== QUOTES ===")
     for x in quotes:
         print(x.model_dump_json(indent=2))

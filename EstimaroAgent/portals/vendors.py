@@ -25,42 +25,31 @@ MAX_PARTS = int(os.environ.get("VENDOR_MAX_PARTS", "1"))
 PER_LOOKUP_TIMEOUT = int(os.environ.get("VENDOR_LOOKUP_TIMEOUT", "180"))
 
 
-def _relevance(part: dict, prefer_terms: list[str]) -> int:
-    name = (part.get("name") or "").lower()
-    return sum(1 for t in prefer_terms if t and t.lower() in name)
-
-
-async def gather_quotes(alldata_parts: list[dict],
-                        prefer_terms: list[str] | None = None) -> list[VendorQuote]:
-    """For the top parts with an OEM number, query each vendor. Parts whose name
-    matches `prefer_terms` (e.g. the labor operation / complaint) are priced
-    first, so a 'front brake' job prices the front pads, not the rear. Failures
-    on one vendor never abort the others."""
+async def gather_quotes(vehicle, part_type: str,
+                        oem_hint: str | None = None) -> list[VendorQuote]:
+    """Price one part type across the aftermarket distributors by VEHICLE +
+    part type (the reliable path — they do not index by genuine OEM number).
+    One call per vendor; a failure on one never aborts the others."""
     quotes: list[VendorQuote] = []
-    priced = [p for p in (alldata_parts or []) if (p.get("oem_number") or "").strip()]
-    if prefer_terms:
-        priced.sort(key=lambda p: _relevance(p, prefer_terms), reverse=True)
-    for part in priced[:MAX_PARTS]:
-        num = str(part["oem_number"]).strip()
-        name = part.get("name")
-        for mod in VENDOR_MODULES:
-            try:
-                qs, meta = await mod.lookup(num, expected_part=name, timeout=PER_LOOKUP_TIMEOUT)
-                if qs:
-                    quotes.extend(qs)
-                else:
-                    # Record a 'not found' marker so the UI can show we checked.
-                    quotes.append(VendorQuote(
-                        vendor=mod.PORTAL_NAME, requested_part=num,
-                        matched_part_name=name, found=False,
-                        note=(meta or {}).get("error", "not found"),
-                    ))
-            except Exception as e:
-                logger.warning(f"[vendors] {mod.PORTAL_NAME} lookup failed for {num}: {e}")
+    key = oem_hint or part_type
+    for mod in VENDOR_MODULES:
+        try:
+            qs, meta = await mod.lookup(vehicle, part_type, oem_hint=oem_hint,
+                                        timeout=PER_LOOKUP_TIMEOUT)
+            if qs:
+                quotes.extend(qs)
+            else:
                 quotes.append(VendorQuote(
-                    vendor=mod.PORTAL_NAME, requested_part=num,
-                    matched_part_name=name, found=False, note=f"error: {str(e)[:120]}",
+                    vendor=mod.PORTAL_NAME, requested_part=key,
+                    matched_part_name=part_type, found=False,
+                    note=(meta or {}).get("error", "not found"),
                 ))
+        except Exception as e:
+            logger.warning(f"[vendors] {mod.PORTAL_NAME} lookup failed for {part_type!r}: {e}")
+            quotes.append(VendorQuote(
+                vendor=mod.PORTAL_NAME, requested_part=key,
+                matched_part_name=part_type, found=False, note=f"error: {str(e)[:120]}",
+            ))
     return quotes
 
 

@@ -17,41 +17,40 @@ PORTAL_NAME = "Worldpac"
 PORTAL_URL = "https://speeddial.worldpac.com/#/"
 
 
-def _build_task(search_query: str, expected_part: Optional[str]) -> str:
-    expect = f'\n  Expected part (for matching): {expected_part}' if expected_part else ""
+def _build_task(vehicle, part_type: str, oem_hint: Optional[str]) -> str:
+    hint = f'\n  OEM number hint (for matching only): {oem_hint}' if oem_hint else ""
     return f"""
 You are inside the Worldpac SpeedDial catalogue. The shop is already logged in.
 
-SEARCH FOR: "{search_query}"{expect}
+Worldpac is an AFTERMARKET distributor — it is searched by VEHICLE + part type,
+NOT by genuine OEM number. Set the vehicle first, then browse the part category.
 
-The main search box (placeholder "Year, Make, Model / Part Type / Part Number")
-accepts either an OEM/part number OR a "year make model + part type" phrase.
+VEHICLE:   {vehicle.year} {vehicle.make} {vehicle.model}
+  VIN:     {vehicle.vin}
+FIND PARTS: {part_type}{hint}
 
 NAVIGATION PLAN (use the numbered overlays in the screenshots):
-  1. Click the main search box, type EXACTLY: {search_query}
-  2. Press Enter (or click the search icon) to run the search.
-  3. Wait for the results grid to load. Each result row typically shows a BRAND,
-     a PART NUMBER, a DESCRIPTION, a PRICE, and an AVAILABILITY / stock column
-     (e.g. "In Stock", a quantity, or a warehouse/ETA).
-  4. OEM NUMBER FORMATS — if the exact number returns "No products were found",
-     try these variations in the SAME search box before giving up (clear the box
-     each time):
-       - with an "A" prefix (genuine Mercedes/European parts are A<number>,
-         e.g. A{search_query})
-       - the number grouped with spaces (Mercedes style, e.g. A 000 420 14 04)
-       - the number with no spaces/dashes at all
-     Try up to 3 sensible variations.
-  5. IMPORTANT — Worldpac's free-text search works for a PART NUMBER but NOT for a
-     "year make model + part type" phrase (that returns "No products were found").
-     If you searched a vehicle+part-type phrase and see "No products were found":
-       a. Click the "Select Vehicle" button (top-left of the search bar).
-       b. Enter / pick the Year, Make and Model.
-       c. Then search the PART TYPE (e.g. "brake pad") or open Catalog and browse
-          to the part category to reach the priced results grid.
+  1. Look at the TOP of the page. If it does NOT already show "{vehicle.year}
+     {vehicle.make} {vehicle.model}", click "Select Vehicle", type the VIN
+     {vehicle.vin} into the VIN field, and apply it.
+  2. VERY IMPORTANT: once the vehicle is shown at the top, DO NOT open the
+     "Select Vehicle" / vehicle box again. Do not retype the VIN. Move on.
+  3. Open the "Catalog" tab. In the left-hand catalog tree, expand "Parts" and
+     click the "Brake" category.
+  4. The "Selected Part Types" list on the right has CHECKBOXES (it may show
+     "X of 50 Parts Selected"). FIRST uncheck anything already selected that is
+     not what you want (e.g. uncheck "Brake Caliper"). Then CHECK ONLY the entry
+     for this job — for brake pads check "Brake Pad Set" (or "Brake Pad" / "Disc
+     Brake Pad"). Make sure ONLY that one is checked.
+  5. Now click the "PRICE" button. The priced grid then shows ONLY that part
+     type's options. Read each row: BRAND, PART NUMBER, DESCRIPTION, PRICE, and
+     AVAILABILITY / stock. Extract those. If the grid shows a different part type
+     than you wanted, go Back to Catalog and fix the checkbox selection.
 
 OUTPUT: action="extract" with value as a JSON STRING of EXACTLY this schema:
   {{
-    "search_term": "{search_query}",
+    "vehicle": "<vehicle text shown>",
+    "part_type": "{part_type}",
     "results": [
       {{
         "brand": "<brand>",
@@ -70,22 +69,23 @@ CRITICAL RULES:
   * price is the numeric buy/your-price if shown, else null.
   * in_stock = true if availability clearly indicates stock on hand, false if it
     says out of stock / special order, null if unclear.
-  * Capture up to the first 6 result rows (the most relevant brands).
-  * If the search returns nothing, confidence < 0.6 and action="ask_human" with
-    the exact message Worldpac showed.
+  * Capture up to the first 6 most relevant result rows.
+  * Only use action="ask_human" if you cannot set the vehicle or reach any parts
+    grid after genuinely trying both VIN and Year/Make/Model.
 """
 
 
 async def lookup(
-    search_query: str,
+    vehicle,
+    part_type: str,
     *,
-    expected_part: Optional[str] = None,
-    max_steps: int = 18,
-    timeout: int = 240,
+    oem_hint: Optional[str] = None,
+    max_steps: int = 22,
+    timeout: int = 300,
 ) -> Tuple[list[VendorQuote], dict]:
-    """Search Worldpac by `search_query` (OEM number or 'YMM + part type').
-    Returns (quotes, meta) — one VendorQuote per result row."""
-    task = _build_task(search_query, expected_part)
+    """Browse Worldpac by vehicle + part type. Returns (quotes, meta) — one
+    VendorQuote per aftermarket option found."""
+    task = _build_task(vehicle, part_type, oem_hint)
     raw, meta = await run_portal_agent(PORTAL_URL, task, max_steps=max_steps,
                                        timeout=timeout, login_portal="worldpac")
     if raw is None:
@@ -112,7 +112,7 @@ async def lookup(
             in_stock = in_stock.strip().lower() in ("true", "yes", "in stock", "instock")
         quotes.append(VendorQuote(
             vendor=PORTAL_NAME,
-            requested_part=str(expected_part or search_query),
+            requested_part=str(oem_hint or part_type),
             matched_part_name=r.get("description"),
             oem_number=r.get("part_number") or None,
             brand=r.get("brand") or None,
@@ -125,15 +125,16 @@ async def lookup(
             screenshot_path=screenshot,
         ))
 
-    logger.info(f"[{PORTAL_NAME}] '{search_query}' -> {len(quotes)} result row(s)")
+    logger.info(f"[{PORTAL_NAME}] {part_type!r} -> {len(quotes)} result row(s)")
     return quotes, meta
 
 
 if __name__ == "__main__":
     import asyncio
-    # On the VPS, run against the logged-in session with a realistic query.
-    q = "2015 Mercedes-Benz C300 front brake pads"
-    quotes, meta = asyncio.run(lookup(q))
+    from models.job_spec import VehicleFingerprint
+    veh = VehicleFingerprint(vin="W1KAF4GB3PR122770", year=2023,
+                             make="Mercedes-Benz", model="C-Class")
+    quotes, meta = asyncio.run(lookup(veh, "front brake pads", oem_hint="0004211202"))
     print("\n=== QUOTES ===")
     for x in quotes:
         print(x.model_dump_json(indent=2))
