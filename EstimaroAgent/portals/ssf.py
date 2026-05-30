@@ -31,11 +31,16 @@ VEHICLE:   {vehicle.year} {vehicle.make} {vehicle.model}
 FIND PARTS: {part_type}{hint}
 
 NAVIGATION PLAN (use the numbered overlays in the screenshots):
-  1. Find the "Find by VIN #" box, type the VIN {vehicle.vin}, submit it. (If a
-     recent/known vehicle for this VIN is already shown, select it instead.)
-  2. Wait for the vehicle to resolve to {vehicle.year} {vehicle.make} {vehicle.model}.
-  3. Navigate the catalogue to the part category matching "{part_type}"
-     (e.g. Brakes -> Brake Pads / Disc Brake Pads).
+  1. Set the vehicle. Easiest: open the "Recent Vehicles" / "Quick Vehicle"
+     dropdown and pick the entry for VIN {vehicle.vin} ({vehicle.year}
+     {vehicle.make} {vehicle.model}). Otherwise type the VIN into the
+     "Find by VIN #" box AND click the submit/magnifier button right next to it.
+  2. WAIT for the page to change from the home/sponsor page to the vehicle's
+     parts catalogue (it will show parts categories or an assembly tree). If you
+     are still on the home page, the VIN was not submitted — submit it again.
+  3. In the catalogue, go to the brakes group, then the brake-pad category. If a
+     category like "Brakes" or "Brake Pads" is not visible, use action="find"
+     with that text to bring it into view, then click it.
   4. On the parts list, read each option: BRAND / LINE, PART NUMBER, DESCRIPTION,
      PRICE, and AVAILABILITY / stock (e.g. "In Stock", a quantity, a branch/ETA).
 
