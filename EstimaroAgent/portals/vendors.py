@@ -60,12 +60,23 @@ async def gather_quotes(vehicle, part_type: str,
                                     f"keyword variant {kw!r} (original {part_type!r})")
                     break
                 last_err = (meta or {}).get("error", "not found")
+                # Retries help when the vendor's vocabulary rejected the
+                # keyword (no_part_type / no_extraction); they DO NOT help
+                # when the agent ran out of time exploring the UI, where
+                # a different keyword just burns another full timeout.
+                if any(tag in last_err.lower() for tag in
+                       ("timeout", "agent_crash", "login_failed", "session_expired")):
+                    logger.info(f"[vendors] {mod.PORTAL_NAME} {kw!r} hit "
+                                f"non-keyword failure ({last_err}); not retrying variants")
+                    break
                 logger.info(f"[vendors] {mod.PORTAL_NAME} no results for "
                             f"{kw!r} ({last_err}); trying next variant")
             except Exception as e:
                 last_err = f"error: {str(e)[:120]}"
                 logger.warning(f"[vendors] {mod.PORTAL_NAME} lookup failed for "
                                f"{kw!r}: {e}")
+                # Hard exceptions are also not keyword-fixable — stop.
+                break
         if per_vendor_quotes:
             quotes.extend(per_vendor_quotes)
         else:
