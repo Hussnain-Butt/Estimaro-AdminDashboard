@@ -204,9 +204,20 @@ const LaborStep = ({ data }) => {
 }
 
 const PartsStep = ({ data }) => {
+  // The parts breakdown is built from ALLDATA's OEM list (per labor article).
+  // Real vendor prices live in the Vendor Compare step. The label below
+  // honours that — saying "PartsLink24" here was a leftover lie since PL24
+  // isn't even wired in for every job.
+  const allFromAlldata = (data.partsItems || []).every(
+    (p) => !p.vendor || /alldata/i.test(p.vendor),
+  )
+  const sourceLabel = allFromAlldata ? 'ALLDATA OEM list' : 'OEM list + vendor matches'
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-text-primary">Parts (PartsLink24)</h2>
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-2xl font-bold text-text-primary">Parts</h2>
+        <span className="text-xs text-text-secondary">Source: {sourceLabel}</span>
+      </div>
 
       {data.partsItems.length === 0 ? (
         <div className="bg-background p-8 rounded-lg border border-border text-center">
@@ -1137,49 +1148,31 @@ const NewEstimate = () => {
         </div>
       )}
 
-      {/* Confidence + traceability badge once agent result lands */}
+      {/* Tiny verification chip — operator-only signal that the agent's
+          extraction matched the customer complaint. Verbose source-path
+          and Hermes reasoning live behind a hover for a clean canvas. */}
       {confidenceScore && !isGenerating && (formData.laborItems.length > 0 || formData.partsItems.length > 0) && (
-        <div className="w-full max-w-4xl mx-auto mb-4 bg-surface border border-border rounded-xl p-5">
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-            <div className="flex items-center gap-2">
-              <span className={`inline-block h-2.5 w-2.5 rounded-full ${
-                (confidenceScore.verification_confidence ?? 0) >= 0.9 ? 'bg-success' :
-                (confidenceScore.verification_confidence ?? 0) >= 0.7 ? 'bg-warning' : 'bg-danger'
-              }`}></span>
-              <span className="text-text-secondary">Confidence:</span>
-              <span className="font-semibold text-text-primary">
-                {confidenceScore.verification_confidence != null
-                  ? `${Math.round(confidenceScore.verification_confidence * 100)}%`
-                  : '—'}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-text-secondary">Match:</span>
-              <span className={`font-semibold ${confidenceScore.verification_match ? 'text-success' : 'text-danger'}`}>
-                {confidenceScore.verification_match ? 'Yes' : 'No'}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-text-secondary">Agent steps:</span>
-              <span className="font-semibold text-text-primary">{confidenceScore.agent_steps ?? '—'}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-text-secondary">Elapsed:</span>
-              <span className="font-semibold text-text-primary">
-                {confidenceScore.elapsed_sec != null ? `${confidenceScore.elapsed_sec.toFixed(1)}s` : '—'}
-              </span>
-            </div>
+        <div className="w-full max-w-4xl mx-auto mb-4 flex justify-end">
+          <div
+            className="group relative inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface border border-border text-xs text-text-secondary cursor-help"
+            title={[
+              confidenceScore.section_path ? `Source: ${confidenceScore.section_path}` : null,
+              confidenceScore.verification_reason ? `Hermes: ${confidenceScore.verification_reason}` : null,
+              confidenceScore.agent_steps != null ? `${confidenceScore.agent_steps} agent steps` : null,
+              confidenceScore.elapsed_sec != null ? `${confidenceScore.elapsed_sec.toFixed(1)}s elapsed` : null,
+            ].filter(Boolean).join(' · ')}
+          >
+            <span className={`inline-block h-2 w-2 rounded-full ${
+              (confidenceScore.verification_confidence ?? 0) >= 0.9 ? 'bg-success' :
+              (confidenceScore.verification_confidence ?? 0) >= 0.7 ? 'bg-warning' : 'bg-danger'
+            }`} />
+            <span>
+              {confidenceScore.verification_match ? 'Verified' : 'Unverified'}
+              {confidenceScore.verification_confidence != null
+                ? ` · ${Math.round(confidenceScore.verification_confidence * 100)}%`
+                : ''}
+            </span>
           </div>
-          {confidenceScore.section_path && (
-            <p className="text-xs text-text-secondary mt-2 font-mono">
-              <span className="text-text-secondary/70">Source path: </span>{confidenceScore.section_path}
-            </p>
-          )}
-          {confidenceScore.verification_reason && (
-            <p className="text-xs text-text-secondary mt-1 italic">
-              Hermes: {confidenceScore.verification_reason}
-            </p>
-          )}
         </div>
       )}
 

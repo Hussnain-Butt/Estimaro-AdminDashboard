@@ -13,12 +13,15 @@ from typing import Optional
 from loguru import logger
 
 from models.job_spec import VendorQuote
-from portals import worldpac, ssf
+from portals import worldpac, ssf, partslink24
 from portals.keyword_variants import variants as keyword_variants
 
 
-# Each entry: (module, enabled). Add PartsLink24 here later if desired.
-VENDOR_MODULES = [worldpac, ssf]
+# Order matters — the first vendor a part matches against wins the
+# "matched on keyword variant X" log. PartsLink24 is genuine-OEM; Worldpac
+# and SSF are aftermarket; the UI ranks by price within each part anyway.
+# PartsLink24 is auto-skipped for makes it doesn't cover (see SUPPORTED_MAKES).
+VENDOR_MODULES = [partslink24, worldpac, ssf]
 
 # How many ALLDATA parts to price (the most relevant ones). Keep small so a job
 # stays within its time budget; raise via env when proven.
@@ -59,13 +62,22 @@ async def gather_quotes(vehicle, part_type: str,
                         logger.info(f"[vendors] {mod.PORTAL_NAME} matched on "
                                     f"keyword variant {kw!r} (original {part_type!r})")
                     break
+                # Vendor returned an unconditional "doesn't apply" signal
+                # (e.g. PartsLink24 on a non-European VIN, missing brand slug).
+                # No retry will ever change that — move on to the next vendor.
+                if (meta or {}).get("skipped"):
+                    logger.info(f"[vendors] {mod.PORTAL_NAME} skipped: "
+                                f"{meta['skipped']}")
+                    last_err = f"skipped :: {meta['skipped']}"
+                    break
                 last_err = (meta or {}).get("error", "not found")
                 # Retries help when the vendor's vocabulary rejected the
                 # keyword (no_part_type / no_extraction); they DO NOT help
                 # when the agent ran out of time exploring the UI, where
                 # a different keyword just burns another full timeout.
                 if any(tag in last_err.lower() for tag in
-                       ("timeout", "agent_crash", "login_failed", "session_expired")):
+                       ("timeout", "agent_crash", "login_failed", "session_expired",
+                        "no_brand_app", "direct_entry_missing", "prep_failed")):
                     logger.info(f"[vendors] {mod.PORTAL_NAME} {kw!r} hit "
                                 f"non-keyword failure ({last_err}); not retrying variants")
                     break

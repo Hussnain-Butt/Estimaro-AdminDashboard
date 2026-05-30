@@ -200,6 +200,39 @@ async def _prep_vehicle(vehicle: VehicleFingerprint) -> tuple[Optional[str], dic
 
 
 async def lookup(
+    vehicle: VehicleFingerprint,
+    part_type: Optional[str] = None,
+    *,
+    oem_hint: Optional[str] = None,
+    timeout: int = 300,
+    max_steps: int = 25,
+    job: Optional[JobSpec] = None,
+    target_parts: Optional[list[dict]] = None,
+) -> Tuple[list[VendorQuote], dict]:
+    """Vendor-pipeline compatible entry — same shape as worldpac/ssf.lookup().
+
+    `vendors.gather_quotes` calls this with `(vehicle, part_type, oem_hint=...,
+    timeout=...)`. The PL24 prompt was originally written around a `JobSpec`
+    + target-parts list, so when those aren't supplied we synthesise a minimal
+    JobSpec from `part_type` and a single-row target_parts list keyed by
+    `oem_hint`. Standalone callers can still pass `job` + `target_parts`
+    explicitly via kwargs.
+    """
+    if job is None:
+        job = JobSpec(
+            system="other",
+            subsystem=part_type or "",
+            symptom=part_type or "",
+            severity="medium",
+            keywords=[part_type] if part_type else [],
+        )
+    if target_parts is None:
+        target_parts = [{"name": part_type or "Part", "oem_number": oem_hint}]
+    return await _lookup_impl(job, vehicle, target_parts,
+                              max_steps=max_steps, timeout=timeout)
+
+
+async def _lookup_impl(
     job: JobSpec,
     vehicle: VehicleFingerprint,
     target_parts: list[dict],
@@ -207,7 +240,9 @@ async def lookup(
     max_steps: int = 25,
     timeout: int = 300,
 ) -> Tuple[list[VendorQuote], dict]:
-    """Returns (quotes, meta). One VendorQuote per part the agent located."""
+    """Underlying agent run. Use `lookup()` for the canonical vendor-pipeline
+    entry; this signature is kept so the standalone __main__ smoke test (and
+    any future job-aware caller) can pass a full JobSpec + target list."""
     if not supports(vehicle):
         return [], {"skipped": f"{vehicle.make} not covered by PartsLink24"}
 
@@ -284,7 +319,9 @@ if __name__ == "__main__":
         vin="WAUEFAFL1DA000000", year=2013, make="Audi", model="A4",
     )
     target = [{"name": "Front Pads", "oem_number": None}]
-    quotes, meta = asyncio.run(lookup(sample_job, sample_vehicle, target))
+    quotes, meta = asyncio.run(
+        lookup(sample_vehicle, job=sample_job, target_parts=target)
+    )
     print("\n=== QUOTES ===")
     for q in quotes:
         print(q.model_dump_json(indent=2))
