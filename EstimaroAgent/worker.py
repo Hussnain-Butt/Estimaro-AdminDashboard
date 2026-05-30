@@ -205,7 +205,17 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
             await _post_failure(client, job_id, err)
             return
 
-        # 3. Reset Chrome to vehicle selector
+        # 3. Ensure the ALLDATA session is alive (transparent auto-relogin)
+        from portals.auth import ensure_logged_in
+        login_status = await ensure_logged_in("alldata")
+        if not login_status.get("ok"):
+            err = ("ALLDATA session is logged out and auto-relogin failed — "
+                   "check ALLDATA credentials in .env or re-login via noVNC.")
+            logger.error(f"[{job_id}] {err}")
+            await _post_failure(client, job_id, err)
+            return
+
+        # 4. Reset Chrome to vehicle selector
         await _post_progress(client, job_id, f"Opening ALLDATA for {vehicle.year} {vehicle.make} {vehicle.model}", 35)
         await _reset_to_vehicle_selector()
 
@@ -274,6 +284,8 @@ async def main_loop():
         except Exception as e:
             logger.warning(f"backend health check failed: {e}")
 
+        last_keepalive = 0.0
+        keepalive_interval = int(os.environ.get("SESSION_KEEPALIVE_SEC", "1800"))  # 30 min
         while True:
             job = await _claim_next(client)
             if job:
@@ -281,6 +293,23 @@ async def main_loop():
                 # Brief pause to let ALLDATA settle
                 await asyncio.sleep(2)
             else:
+                # Idle: opportunistically keep portal sessions warm. Safe here
+                # because no job is running, so we never fight the agent for the
+                # shared Chrome tabs.
+                now = time.time()
+                if now - last_keepalive >= keepalive_interval:
+                    last_keepalive = now
+                    try:
+                        from portals.auth import relogin_all
+                        results = await relogin_all()
+                        relogged = [r["portal"] for r in results if r.get("action") == "relogin"]
+                        failed = [r["portal"] for r in results if not r.get("ok")]
+                        if relogged:
+                            logger.info(f"[keepalive] re-logged in: {relogged}")
+                        if failed:
+                            logger.warning(f"[keepalive] login failed: {failed}")
+                    except Exception as e:
+                        logger.warning(f"[keepalive] error: {e}")
                 await asyncio.sleep(POLL_INTERVAL)
 
 
