@@ -134,7 +134,7 @@ const VendorCompareStep = ({ vendorData }) => {
 
       {/* Summary */}
       <div className="bg-background p-4 rounded-lg border border-border">
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-center gap-3 flex-wrap">
           <p className="text-sm text-text-secondary">
             <span className="font-bold text-text-primary">Vendors Queried:</span>{' '}
             {vendorData.summary?.vendors_queried?.join(', ') || 'Worldpac, SSF'}
@@ -143,6 +143,27 @@ const VendorCompareStep = ({ vendorData }) => {
             {vendorData.summary?.note || 'Live vendor integration'}
           </p>
         </div>
+
+        {/* Failed-vendor transparency chips. Without these the advisor sees a
+            vendor in "Queried" yet missing from the price grid and has no
+            idea whether it had no stock, a session error, or just no match —
+            making "did we really get the best price?" hard to answer. */}
+        {Array.isArray(vendorData.summary?.failures) && vendorData.summary.failures.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-border/40 flex flex-wrap gap-2 items-center">
+            <span className="text-xs text-text-secondary">Vendors with no quote this run:</span>
+            {vendorData.summary.failures.map((f, i) => (
+              <span
+                key={i}
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-warning/10 border border-warning/30 text-xs text-warning"
+                title={f.note}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-warning" />
+                <span className="font-semibold">{f.vendor}</span>
+                <span className="text-warning/80">— {f.reason || f.short_reason}</span>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

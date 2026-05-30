@@ -65,15 +65,52 @@ const transformVendorData = (vendorComparison, vendorQuotes = []) => {
 
   if (parts.length === 0) return null
 
+  // Collect vendors that were called but didn't return a priced row, with the
+  // operator-readable note the worker attached. Without this the UI silently
+  // drops failed vendors and the advisor wonders why "Vendors Queried" lists
+  // three names but only one shows up in the price race.
   const vendorsQueried = Array.from(new Set(vendorQuotes.map((q) => q.vendor).filter(Boolean)))
+  const failures = []
+  const seenFailureVendors = new Set()
+  for (const q of vendorQuotes) {
+    if (!q || q.found || !q.vendor) continue
+    if (seenFailureVendors.has(q.vendor)) continue
+    seenFailureVendors.add(q.vendor)
+    failures.push({
+      vendor: q.vendor,
+      note: q.note || 'no quote returned',
+      reason: describeVendorFailure(q.note),
+    })
+  }
+  const successfulVendors = vendorsQueried.filter((v) => !seenFailureVendors.has(v))
+
   return {
     parts,
     weights: { brand: 40, price: 35, distance: 25 },
     summary: {
       vendors_queried: vendorsQueried,
-      note: `Live pricing across ${vendorsQueried.length || 0} vendor(s) — best price selected`,
+      successful_vendors: successfulVendors,
+      failures,
+      note: failures.length
+        ? `${successfulVendors.length} vendor(s) returned prices; ${failures.length} unavailable this run`
+        : `Live pricing across ${vendorsQueried.length || 0} vendor(s) — best price selected`,
     },
   }
+}
+
+// Short, advisor-readable summary of why a vendor returned no quote — keeps
+// the surfacing useful without dumping a stack trace into the UI.
+const describeVendorFailure = (note) => {
+  if (!note) return 'No quote returned'
+  const low = String(note).toLowerCase()
+  if (low.includes('session_expired') || low.includes('login_failed') || low.includes('login_required'))
+    return 'Session expired — please log in via VPS console'
+  if (low.includes('timeout')) return 'Timed out — vendor site was slow'
+  if (low.includes('prep_failed')) return 'Vendor page did not load correctly'
+  if (low.includes('row_not_found') || low.includes('unmapped_part_type'))
+    return 'No matching catalog row for this part type'
+  if (low.includes('no_brand_app')) return 'Vendor does not cover this make'
+  return String(note).slice(0, 120)
 }
 
 // ===================================================================================
@@ -279,7 +316,9 @@ const PartsStep = ({ data }) => {
 
 
 
-const PreviewStep = ({ data, calculatedTotals, onPushToTekmetric, onSendApproval, isPushing, isSending }) => {
+// Push-to-Tekmetric lives on the Actions step now; PreviewStep keeps
+// `onSendApproval` only.
+const PreviewStep = ({ data, calculatedTotals, onSendApproval, isSending }) => {
   const PreviewRow = ({ label, value, isTotal = false }) => (
     <div
       className={`flex justify-between items-center py-4 ${isTotal ? '' : 'border-b border-border/50'
@@ -336,21 +375,15 @@ const PreviewStep = ({ data, calculatedTotals, onPushToTekmetric, onSendApproval
         </div>
       </div>
 
+      {/* Preview is read-only on purpose. The "Push to Tekmetric" CTA used
+          to live here too, which led advisors to push and *then* discover
+          they hadn't reviewed the Vendor Compare or Actions tabs yet, with
+          some pushing twice. The canonical push button is now on the
+          Actions step alongside the rest of the finish-and-send controls.
+          We keep "Send Approval Link" here because customer approval is a
+          distinct intent that benefits from being one click away after the
+          advisor has eyeballed the totals on this page. */}
       <div className="flex flex-col sm:flex-row items-center gap-4">
-        <button
-          onClick={onPushToTekmetric}
-          disabled={isPushing}
-          className="bg-accent hover:bg-accent-dark text-background font-bold py-3 px-6 rounded-lg transition-all shadow-lg shadow-accent/20 flex items-center justify-center gap-2 w-full sm:w-auto"
-        >
-          {isPushing ? (
-            <>
-              <div className="animate-spin h-5 w-5 border-2 border-background border-t-transparent rounded-full"></div>
-              Pushing...
-            </>
-          ) : (
-            'Push to Tekmetric'
-          )}
-        </button>
         <button
           onClick={onSendApproval}
           disabled={isSending}
@@ -368,6 +401,9 @@ const PreviewStep = ({ data, calculatedTotals, onPushToTekmetric, onSendApproval
             </>
           )}
         </button>
+        <p className="text-xs text-text-secondary">
+          Tip: review Vendor Compare next, then push to Tekmetric from the Actions tab.
+        </p>
       </div>
     </div>
   )
@@ -1080,9 +1116,7 @@ const NewEstimate = () => {
         return <PreviewStep
           data={formData}
           calculatedTotals={calculatedTotals}
-          onPushToTekmetric={handlePushToTekmetric}
           onSendApproval={handleSendApproval}
-          isPushing={isPushing}
           isSending={isSending}
         />
       case 5:

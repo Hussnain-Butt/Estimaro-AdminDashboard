@@ -140,15 +140,39 @@ NAVIGATION PLAN (use the numbered overlays in the screenshots):
           use action="find" with value "Odometer" or value "Save" — that
           scrolls the requested element into view inside the modal.
 
-  5. LABOR LINES — for EACH labor line above, click "+ Add Labor" (or the
-     labor section's add button), fill the description, hours and rate
-     exactly as listed, then save the line. After each save, verify the row
-     appears in the RO. Use action="find" for the add-button if it is not
-     currently visible.
+  5. LABOR LINES — for EACH labor line listed above:
 
-  6. PARTS LINES — for EACH parts line, click "+ Add Part", fill the
-     description, part number, quantity and cost, save the line. Verify each
-     row appears.
+       a. Locate the "+ Add Labor" / "Add Labor" button. On the Tekmetric
+          estimate / RO page it sits inside the "Jobs" or "Labor" section,
+          NEAR THE TOP of that section header (NOT in a per-job menu, NOT
+          in the global header). If the section is collapsed you'll see a
+          chevron next to "Jobs" or "Labor"; click that first to expand.
+       b. If "+ Add Labor" is not visible after expanding, use
+          action="find" with value "Add Labor" (case-insensitive) — that
+          will scroll the matching button into view.
+       c. NEVER click any of the following — they look similar but do the
+          wrong thing:
+            - "+ Add Job" creates a new top-level job container, not a
+              labor line. Only click it if there is no existing job yet.
+            - "+ Add Part" / "+ Add Inspection" / "+ Add Note" / "+ Add
+              Recommendation" — these are siblings of "+ Add Labor" with
+              the same visual shape; the verb must literally be "Labor".
+            - "Leave Without Saving" / "Discard Changes" / "Cancel" —
+              these abandon the RO and lose all progress. The browser may
+              fire a dialog on navigation; if so, click "Stay" / "Keep
+              Editing", NEVER "Leave".
+       d. A side panel or inline form opens with Description, Hours, Rate
+          and (optionally) Skill fields. Fill description, hours and rate
+          EXACTLY as listed in the labor block above. Click "Save" /
+          "Add" inside that panel — NOT the form-level cancel/close.
+       e. Verify the labor row appears in the RO's job list. If not,
+          repeat from (a) once; if still not, action="ask_human".
+
+  6. PARTS LINES — for EACH parts line, find the "+ Add Part" button
+     (same section layout as Add Labor but for parts), fill description,
+     part number, quantity and cost, click "Save" / "Add". Same rules as
+     step 5c apply — never click Add Job / Add Inspection / Leave Without
+     Saving / Cancel. Verify each row appears before moving to the next.
 
   7. SAVE AS DRAFT — find the RO header status / save button. Save the RO
      in DRAFT or "Estimate" status. Do NOT mark it sent, approved, invoiced
