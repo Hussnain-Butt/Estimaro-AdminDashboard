@@ -1,5 +1,6 @@
 # Local helper scripts + working artifacts
 _*.py
+!**/__init__.py
 _screenshots/
 .claude/
 *.log
