@@ -133,6 +133,12 @@ NAVIGATION PLAN (use the numbered overlays in the screenshots):
           field is missing, fill it manually. Set odometer to
           "{odometer if odometer is not None else ''}" (leave blank if
           unknown). Save the new vehicle.
+       c. SCROLL NOTE — Tekmetric's "Add Vehicle" form opens in a MODAL
+          DIALOG that scrolls internally, NOT the underlying page. If the
+          Odometer field or "Save" button is not visible, do NOT use
+          action="scroll" (that scrolls the page behind the modal). Instead,
+          use action="find" with value "Odometer" or value "Save" — that
+          scrolls the requested element into view inside the modal.
 
   5. LABOR LINES — for EACH labor line above, click "+ Add Labor" (or the
      labor section's add button), fill the description, hours and rate

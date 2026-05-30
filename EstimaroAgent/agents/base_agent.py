@@ -230,6 +230,21 @@ class VisionAgent:
             try:
                 await locator.click(timeout=6000)
             except Exception as e1:
+                # MUI popovers/backdrops sit on top of the page and intercept
+                # clicks to underlying buttons. If the intercept message names
+                # a Popover/Backdrop, press Escape to dismiss it then retry —
+                # otherwise fall through to the JS/mouse fallbacks below.
+                if "MuiBackdrop" in str(e1) or "MuiPopover" in str(e1):
+                    logger.warning("  click intercepted by popover/backdrop; pressing Escape to dismiss")
+                    try:
+                        await page.keyboard.press("Escape")
+                        await asyncio.sleep(0.4)
+                        await locator.click(timeout=4000)
+                        await asyncio.sleep(0.6)
+                        if page.url != url_before or await self._page_signature(page) != html_sig_before:
+                            return
+                    except Exception:
+                        pass
                 logger.warning(f"  std click failed: {e1}, trying JS click")
                 try:
                     await locator.evaluate("el => el.click()")
@@ -261,9 +276,62 @@ class VisionAgent:
                 await locator.scroll_into_view_if_needed(timeout=3000)
             except Exception:
                 pass
-            await locator.click(timeout=5000)
-            await locator.fill("")
-            await locator.fill(str(value))
+            try:
+                await locator.click(timeout=5000)
+            except Exception:
+                pass
+            try:
+                await locator.fill("")
+                await locator.fill(str(value))
+            except Exception as fill_err:
+                # Material-UI, Select2 and similar wrappers tag the labelled
+                # element to a SPAN/DIV that visually IS the input but is not a
+                # real <input> / <textarea> / [contenteditable]. Drill into the
+                # wrapper for the nearest real text field and fill it via JS,
+                # dispatching `input` + `change` so React/Angular pick it up.
+                if "Element is not an <input>" in str(fill_err) or "contenteditable" in str(fill_err):
+                    logger.warning(f"  fill rejected wrapper element ({fill_err.__class__.__name__}); "
+                                   f"drilling for nested input")
+                    filled = await locator.evaluate(
+                        """(root, v) => {
+                            const find = (r) => {
+                                if (!r) return null;
+                                if (r.matches && r.matches('input, textarea, [contenteditable]')) return r;
+                                if (r.querySelector) {
+                                    const sel = r.querySelector('input:not([type=hidden]), textarea, [contenteditable]');
+                                    if (sel) return sel;
+                                }
+                                // Also peek at next siblings — MUI sometimes renders
+                                // the visible chip and the real input as siblings.
+                                let p = r.parentElement;
+                                while (p) {
+                                    const sib = p.querySelector('input:not([type=hidden]), textarea, [contenteditable]');
+                                    if (sib) return sib;
+                                    p = p.parentElement;
+                                    if (p && p.matches && p.matches('body,html')) break;
+                                }
+                                return null;
+                            };
+                            const el = find(root);
+                            if (!el) return false;
+                            el.focus();
+                            // Use the native setter so React's controlled inputs see it.
+                            const proto = el.tagName === 'TEXTAREA'
+                                ? window.HTMLTextAreaElement.prototype
+                                : window.HTMLInputElement.prototype;
+                            const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                            if (setter && el.tagName !== 'DIV') setter.call(el, v);
+                            else el.value = v;
+                            el.dispatchEvent(new Event('input', {bubbles: true}));
+                            el.dispatchEvent(new Event('change', {bubbles: true}));
+                            return true;
+                        }""",
+                        str(value),
+                    )
+                    if not filled:
+                        raise
+                else:
+                    raise
             # Trigger react/angular onChange via blur
             try:
                 await locator.press("Tab")
