@@ -42,13 +42,26 @@ async def run_portal_agent(
     *,
     max_steps: int = 25,
     timeout: int = 300,
+    login_portal: Optional[str] = None,
 ) -> Tuple[Optional[dict], dict]:
     """Drive a vision agent for one portal.
+
+    If `login_portal` is given, the session is checked and transparently
+    restored (auto-relogin) before the agent runs, so an expired session never
+    causes a spurious failure.
 
     Returns (raw_extracted_dict | None, meta). `meta` always carries
     `history`, `steps_taken`, `run_dir`; on failure it carries `error`
     (categorised); on success it carries `confidence` and `best_step`.
     """
+    if login_portal:
+        # Imported lazily to avoid any import cycle at module load.
+        from portals.auth import ensure_logged_in
+        status = await ensure_logged_in(login_portal)
+        if not status.get("ok"):
+            return None, {"error": f"login_failed :: {status.get('error') or status.get('action')}",
+                          "history": [], "steps_taken": 0, "login_status": status}
+
     agent = VisionAgent(portal_url=portal_url, task=task, max_steps=max_steps)
     try:
         async with ChromeDebugBrowser() as browser:

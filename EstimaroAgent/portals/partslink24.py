@@ -110,7 +110,8 @@ async def lookup(
         return [], {"skipped": f"{vehicle.make} not covered by PartsLink24"}
 
     task = _build_task(job, vehicle, target_parts)
-    raw, meta = await run_portal_agent(PORTAL_URL, task, max_steps=max_steps, timeout=timeout)
+    raw, meta = await run_portal_agent(PORTAL_URL, task, max_steps=max_steps,
+                                       timeout=timeout, login_portal="partslink24")
     if raw is None:
         return [], meta
 

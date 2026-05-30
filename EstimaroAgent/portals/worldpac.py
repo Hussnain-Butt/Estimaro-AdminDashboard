@@ -78,7 +78,8 @@ async def lookup(
     """Search Worldpac by `search_query` (OEM number or 'YMM + part type').
     Returns (quotes, meta) — one VendorQuote per result row."""
     task = _build_task(search_query, expected_part)
-    raw, meta = await run_portal_agent(PORTAL_URL, task, max_steps=max_steps, timeout=timeout)
+    raw, meta = await run_portal_agent(PORTAL_URL, task, max_steps=max_steps,
+                                       timeout=timeout, login_portal="worldpac")
     if raw is None:
         return [], meta
 

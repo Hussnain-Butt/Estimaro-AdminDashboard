@@ -18,6 +18,22 @@ class Settings(BaseSettings):
     TEKMETRIC_API_KEY: str = ""
     TEKMETRIC_SHOP_ID: str = ""
 
+    # ----- Portal login credentials (auto-login agent) -------------------
+    # Real values live ONLY in .env on the VPS (gitignored). Never commit them.
+    # Passwords are filled directly into the page by Playwright and are NEVER
+    # sent to the LLM.
+    ALLDATA_USERNAME: str = ""
+    ALLDATA_PASSWORD: str = ""
+    PARTSLINK24_USERNAME: str = ""
+    PARTSLINK24_PASSWORD: str = ""
+    PARTSLINK24_COMPANY_ID: str = ""
+    SSF_USERNAME: str = ""
+    SSF_PASSWORD: str = ""
+    WORLDPAC_USERNAME: str = ""
+    WORLDPAC_PASSWORD: str = ""
+    TEKMETRIC_USERNAME: str = ""
+    TEKMETRIC_PASSWORD: str = ""
+
     LOG_LEVEL: str = "INFO"
     SCREENSHOT_DIR: str = "./screenshots"
     MAX_AGENT_STEPS: int = 25
