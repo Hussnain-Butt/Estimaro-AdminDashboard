@@ -28,7 +28,23 @@ import re
 from typing import Iterable, List, Optional
 
 
-MAX_VARIANTS = 4
+MAX_VARIANTS = 5
+
+# Part names that are "axle ambiguous" — the same words describe both a front
+# and a rear part. When the customer writes one of these without a front/rear
+# qualifier, the variant chain auto-adds the qualified forms so vendors that
+# index by axle position still get a hit. Front is tried first because front
+# brakes / suspension wear measurably faster than rear in normal driving.
+_AXLE_AMBIGUOUS_PHRASES = {
+    "brake pad", "brake pads", "brake pad set",
+    "brake rotor", "brake rotors", "brake disc", "brake discs",
+    "brake caliper", "brake calipers",
+    "control arm", "control arms",
+    "shock absorber", "shock absorbers", "shocks",
+    "strut", "struts", "strut assembly",
+    "wheel bearing", "wheel bearings",
+    "pads", "rotors", "calipers",  # very-bare forms — likely typed in haste
+}
 
 # Position / side qualifiers that vendor catalogues usually drop from part
 # names. Stripped only as a retry — the original phrasing is tried first.
@@ -105,6 +121,29 @@ def _apply_synonyms(part_type: str) -> Optional[str]:
     return None
 
 
+def _is_axle_ambiguous(part_type: str) -> bool:
+    """True when `part_type` is a known axle-ambiguous phrase AND no
+    position qualifier (front/rear/left/right) is already present."""
+    toks = _tokens(part_type)
+    if any(t in _POSITION_QUALIFIERS for t in toks):
+        return False
+    phrase = " ".join(toks).strip()
+    return phrase in _AXLE_AMBIGUOUS_PHRASES
+
+
+def _axle_hint_from_complaint(complaint: Optional[str]) -> Optional[str]:
+    """If the customer complaint already names an axle, honour it. Returns
+    "Front" / "Rear" or None when ambiguous."""
+    if not complaint:
+        return None
+    c = complaint.lower()
+    if "front" in c or "fwd" in c:
+        return "Front"
+    if "rear" in c or "back brake" in c:
+        return "Rear"
+    return None
+
+
 def _dedupe_preserve_order(items: Iterable[str]) -> list[str]:
     seen = set()
     out = []
@@ -143,6 +182,22 @@ def variants(part_type: str, *, complaint: Optional[str] = None) -> List[str]:
         canon = _apply_synonyms(base) if base else None
         if canon:
             candidates.append(canon)
+
+    # 3b. Axle-ambiguous expansion. The customer wrote a phrase that maps to
+    #     two physically different parts (e.g. brake pads → Front Pads vs
+    #     Rear Pads). Honour an explicit hint from the complaint; otherwise
+    #     try Front first (faster wear, more common service) and Rear as a
+    #     last resort.
+    base_for_expansion = stripped or original
+    if base_for_expansion and _is_axle_ambiguous(base_for_expansion):
+        hint = _axle_hint_from_complaint(complaint) or _axle_hint_from_complaint(original)
+        canon = _apply_synonyms(base_for_expansion) or base_for_expansion
+        if hint:
+            candidates.insert(0, f"{hint} {canon}")
+        else:
+            # Insert Front near the top, Rear at the end of the chain.
+            candidates.insert(min(1, len(candidates)), f"Front {canon}")
+            candidates.append(f"Rear {canon}")
 
     # 4. Complaint-derived: same transforms applied to the complaint text. The
     #    complaint often names the part more colloquially than the labour line.
