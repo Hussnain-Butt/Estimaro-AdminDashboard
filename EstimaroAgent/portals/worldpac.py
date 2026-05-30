@@ -33,7 +33,15 @@ NAVIGATION PLAN (use the numbered overlays in the screenshots):
   3. Wait for the results grid to load. Each result row typically shows a BRAND,
      a PART NUMBER, a DESCRIPTION, a PRICE, and an AVAILABILITY / stock column
      (e.g. "In Stock", a quantity, or a warehouse/ETA).
-  4. IMPORTANT — Worldpac's free-text search works for a PART NUMBER but NOT for a
+  4. OEM NUMBER FORMATS — if the exact number returns "No products were found",
+     try these variations in the SAME search box before giving up (clear the box
+     each time):
+       - with an "A" prefix (genuine Mercedes/European parts are A<number>,
+         e.g. A{search_query})
+       - the number grouped with spaces (Mercedes style, e.g. A 000 420 14 04)
+       - the number with no spaces/dashes at all
+     Try up to 3 sensible variations.
+  5. IMPORTANT — Worldpac's free-text search works for a PART NUMBER but NOT for a
      "year make model + part type" phrase (that returns "No products were found").
      If you searched a vehicle+part-type phrase and see "No products were found":
        a. Click the "Select Vehicle" button (top-left of the search bar).

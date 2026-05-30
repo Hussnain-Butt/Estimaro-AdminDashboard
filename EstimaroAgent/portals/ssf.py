@@ -33,8 +33,14 @@ NAVIGATION PLAN (use the numbered overlays in the screenshots):
   3. Wait for the results to load. Each result typically shows a BRAND / LINE,
      a PART NUMBER, a DESCRIPTION, a PRICE, and an AVAILABILITY / stock column
      (e.g. "In Stock", a quantity, or a branch/ETA).
-  4. If the part number is not a valid SSF number and nothing is found, that is
-     an acceptable result — report it (do not invent data).
+  4. OEM NUMBER FORMATS — if the exact number is "not found", try these
+     variations in the SAME search box before giving up (clear it each time):
+       - with an "A" prefix (genuine Mercedes/European parts are A<number>,
+         e.g. A{search_query})
+       - the number grouped with spaces (Mercedes style, e.g. A 000 420 14 04)
+       - the number with no spaces/dashes at all
+     Try up to 3 sensible variations. If still nothing, report not found (do not
+     invent data).
 
 OUTPUT: action="extract" with value as a JSON STRING of EXACTLY this schema:
   {{

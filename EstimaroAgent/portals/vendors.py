@@ -25,11 +25,21 @@ MAX_PARTS = int(os.environ.get("VENDOR_MAX_PARTS", "1"))
 PER_LOOKUP_TIMEOUT = int(os.environ.get("VENDOR_LOOKUP_TIMEOUT", "180"))
 
 
-async def gather_quotes(alldata_parts: list[dict]) -> list[VendorQuote]:
-    """For the top parts with an OEM number, query each vendor. Failures on one
-    vendor never abort the others."""
+def _relevance(part: dict, prefer_terms: list[str]) -> int:
+    name = (part.get("name") or "").lower()
+    return sum(1 for t in prefer_terms if t and t.lower() in name)
+
+
+async def gather_quotes(alldata_parts: list[dict],
+                        prefer_terms: list[str] | None = None) -> list[VendorQuote]:
+    """For the top parts with an OEM number, query each vendor. Parts whose name
+    matches `prefer_terms` (e.g. the labor operation / complaint) are priced
+    first, so a 'front brake' job prices the front pads, not the rear. Failures
+    on one vendor never abort the others."""
     quotes: list[VendorQuote] = []
     priced = [p for p in (alldata_parts or []) if (p.get("oem_number") or "").strip()]
+    if prefer_terms:
+        priced.sort(key=lambda p: _relevance(p, prefer_terms), reverse=True)
     for part in priced[:MAX_PARTS]:
         num = str(part["oem_number"]).strip()
         name = part.get("name")

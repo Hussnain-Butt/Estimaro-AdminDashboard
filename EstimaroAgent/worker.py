@@ -267,7 +267,14 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
             alldata_parts = (meta.get("parts") or [])
             if alldata_parts:
                 await _post_progress(client, job_id, "Pricing parts across vendors (Worldpac/SSF)", 75)
-                vq = await gather_quotes(alldata_parts)
+                # Prioritise the parts that match the labor operation + complaint
+                # (e.g. a "front brake" job should price the front pads, not rear).
+                prefer_terms = list((labor.operation or "").split())
+                complaint_l = (job.get("serviceRequest") or "").lower()
+                for w in ("front", "rear", "left", "right", "pad", "rotor", "disc"):
+                    if w in complaint_l:
+                        prefer_terms.append(w)
+                vq = await gather_quotes(alldata_parts, prefer_terms=prefer_terms)
                 vendor_quotes_dicts = [q.model_dump() for q in vq]
                 vendor_comparison = summarise(vq)
                 logger.info(f"[{job_id}] vendor quotes: {len(vendor_quotes_dicts)} "
