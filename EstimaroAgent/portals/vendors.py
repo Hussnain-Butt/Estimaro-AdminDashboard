@@ -14,6 +14,7 @@ from loguru import logger
 
 from models.job_spec import VendorQuote
 from portals import worldpac, ssf
+from portals.keyword_variants import variants as keyword_variants
 
 
 # Each entry: (module, enabled). Add PartsLink24 here later if desired.
@@ -26,30 +27,55 @@ PER_LOOKUP_TIMEOUT = int(os.environ.get("VENDOR_LOOKUP_TIMEOUT", "180"))
 
 
 async def gather_quotes(vehicle, part_type: str,
-                        oem_hint: str | None = None) -> list[VendorQuote]:
+                        oem_hint: str | None = None,
+                        complaint: str | None = None) -> list[VendorQuote]:
     """Price one part type across the aftermarket distributors by VEHICLE +
     part type (the reliable path — they do not index by genuine OEM number).
-    One call per vendor; a failure on one never aborts the others."""
+    One call per vendor; a failure on one never aborts the others.
+
+    If the first keyword phrasing yields no results, retries with related
+    variants from `keyword_variants` (always grounded in the customer's
+    complaint so the search never drifts to an unrelated part)."""
     quotes: list[VendorQuote] = []
     key = oem_hint or part_type
+    candidates = keyword_variants(part_type, complaint=complaint)
+    if not candidates:
+        candidates = [part_type]
+
     for mod in VENDOR_MODULES:
-        try:
-            qs, meta = await mod.lookup(vehicle, part_type, oem_hint=oem_hint,
-                                        timeout=PER_LOOKUP_TIMEOUT)
-            if qs:
-                quotes.extend(qs)
-            else:
-                quotes.append(VendorQuote(
-                    vendor=mod.PORTAL_NAME, requested_part=key,
-                    matched_part_name=part_type, found=False,
-                    note=(meta or {}).get("error", "not found"),
-                ))
-        except Exception as e:
-            logger.warning(f"[vendors] {mod.PORTAL_NAME} lookup failed for {part_type!r}: {e}")
+        last_meta: dict = {}
+        last_err: str | None = None
+        chosen_keyword: str | None = None
+        per_vendor_quotes: list[VendorQuote] = []
+        for kw in candidates:
+            try:
+                qs, meta = await mod.lookup(vehicle, kw, oem_hint=oem_hint,
+                                            timeout=PER_LOOKUP_TIMEOUT)
+                last_meta = meta or {}
+                if qs:
+                    per_vendor_quotes = qs
+                    chosen_keyword = kw
+                    if kw != part_type:
+                        logger.info(f"[vendors] {mod.PORTAL_NAME} matched on "
+                                    f"keyword variant {kw!r} (original {part_type!r})")
+                    break
+                last_err = (meta or {}).get("error", "not found")
+                logger.info(f"[vendors] {mod.PORTAL_NAME} no results for "
+                            f"{kw!r} ({last_err}); trying next variant")
+            except Exception as e:
+                last_err = f"error: {str(e)[:120]}"
+                logger.warning(f"[vendors] {mod.PORTAL_NAME} lookup failed for "
+                               f"{kw!r}: {e}")
+        if per_vendor_quotes:
+            quotes.extend(per_vendor_quotes)
+        else:
             quotes.append(VendorQuote(
                 vendor=mod.PORTAL_NAME, requested_part=key,
-                matched_part_name=part_type, found=False, note=f"error: {str(e)[:120]}",
+                matched_part_name=part_type, found=False,
+                note=f"{last_err or 'not found'} (tried: {', '.join(repr(c) for c in candidates)})",
             ))
+        _ = chosen_keyword  # available for future telemetry; intentionally unused
+        _ = last_meta
     return quotes
 
 

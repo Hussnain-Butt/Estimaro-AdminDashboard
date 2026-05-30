@@ -278,7 +278,9 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
                         oem_hint = str(p["oem_number"]); break
                 if not oem_hint:
                     oem_hint = str(alldata_parts[0].get("oem_number") or "") or None
-                vq = await gather_quotes(vehicle, part_type, oem_hint=oem_hint)
+                complaint_text = (job.get("serviceRequest") or "").strip() or None
+                vq = await gather_quotes(vehicle, part_type, oem_hint=oem_hint,
+                                         complaint=complaint_text)
                 vendor_quotes_dicts = [q.model_dump() for q in vq]
                 vendor_comparison = summarise(vq)
                 logger.info(f"[{job_id}] vendor quotes: {len(vendor_quotes_dicts)} "
