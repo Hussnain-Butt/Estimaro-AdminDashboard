@@ -49,7 +49,10 @@ PORTALS: dict[str, dict] = {
         "user": "WORLDPAC_USERNAME", "passwd": "WORLDPAC_PASSWORD",
     },
     "tekmetric": {
-        "url": "https://shop.tekmetric.com/",
+        # Hit the admin shell so the login redirect fires when the session is
+        # only "shallow"-valid (cookie present but the per-shop scope has
+        # expired). The dashboard URL is what every real action lives behind.
+        "url": "https://shop.tekmetric.com/admin/dashboard",
         "match": "tekmetric.com",
         "user": "TEKMETRIC_USERNAME", "passwd": "TEKMETRIC_PASSWORD",
     },
