@@ -297,19 +297,54 @@ export const pollAutoGenJob = async (jobId, { intervalMs = 2500, timeoutMs = 600
 // Tekmetric Integration
 // ============================================================================
 
+// Tekmetric push is queue-based: backend enqueues a write-back job that the
+// VPS vision agent runs (it drives the actual Chrome session that is logged
+// into Tekmetric). The endpoint returns a `job_id`; the caller then polls
+// /tekmetric/jobs/{id} until status is 'success' or 'failed'. The result
+// payload carries the real RO# the agent captured plus the ro_url to link to.
 export const pushToTekmetric = async (estimateData) => {
   try {
     const response = await api.post('/tekmetric/push', estimateData);
-    return {
-      success: true,
-      data: response.data,
-    };
+    return { success: true, data: response.data };
   } catch (error) {
     return {
       success: false,
-      error: error.response?.data?.detail || 'Failed to push to Tekmetric',
+      error: error.response?.data?.detail || 'Failed to enqueue Tekmetric push',
     };
   }
+};
+
+export const getTekmetricJob = async (jobId) => {
+  try {
+    const response = await api.get(`/tekmetric/jobs/${jobId}`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to fetch Tekmetric job',
+    };
+  }
+};
+
+/**
+ * Poll a Tekmetric push job until it terminates. Same shape as
+ * pollAutoGenJob — onProgress fires after every poll, the returned promise
+ * resolves with {success, data: job} when status is success/failed.
+ */
+export const pollTekmetricJob = async (
+  jobId,
+  { intervalMs = 2500, timeoutMs = 600000, onProgress } = {},
+) => {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const r = await getTekmetricJob(jobId);
+    if (!r.success) return r;
+    const job = r.data;
+    if (onProgress) onProgress(job);
+    if (job.status === 'success' || job.status === 'failed') return { success: true, data: job };
+    await new Promise((res) => setTimeout(res, intervalMs));
+  }
+  return { success: false, error: 'Tekmetric push polling timed out' };
 };
 
 // ============================================================================

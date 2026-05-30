@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { gsap } from 'gsap'
 import { ExclamationCircleIcon, TrashIcon, PlusIcon, SparklesIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline'
-import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, pushToTekmetric, generateApprovalLink, createDraftEstimate, updateEstimate } from '../services/api'
+import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, pushToTekmetric, pollTekmetricJob, generateApprovalLink, createDraftEstimate, updateEstimate } from '../services/api'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import VendorCompareStep from './estimate-steps/VendorCompareStep'
@@ -348,13 +348,78 @@ const PreviewStep = ({ data, calculatedTotals, onPushToTekmetric, onSendApproval
   )
 }
 
-const ActionsStep = ({ data, calculatedTotals, onDownloadPDF, onSaveDraft, onPushToTekmetric, isPushing }) => {
+const ActionsStep = ({ data, calculatedTotals, onDownloadPDF, onSaveDraft, onPushToTekmetric, isPushing, tekmetricProgress, tekmetricResult }) => {
   const hasData = data.laborItems.length > 0 || data.partsItems.length > 0
   const isReady = hasData
 
   return (
     <div className="space-y-6 max-w-2xl mx-auto text-center">
       <h2 className="text-2xl font-bold text-text-primary">Actions & Validation</h2>
+
+      {/* Live Tekmetric push progress — appears as soon as a job is enqueued
+          and disappears when the agent reports a final RO (or a failure). */}
+      {tekmetricProgress && (
+        <div className="bg-surface p-5 rounded-lg border border-primary/40 text-left">
+          <div className="flex justify-between items-center mb-2">
+            <div className="flex items-center gap-2">
+              <div className="h-2.5 w-2.5 rounded-full bg-accent animate-pulse" />
+              <span className="font-bold text-text-primary">Tekmetric Agent — Live</span>
+              {tekmetricProgress.jobId && (
+                <code className="text-xs bg-background px-2 py-0.5 rounded text-text-secondary">
+                  {tekmetricProgress.jobId}
+                </code>
+              )}
+            </div>
+            <span className="text-xs uppercase tracking-wider text-text-secondary">
+              {tekmetricProgress.status}
+            </span>
+          </div>
+          <p className="text-sm text-text-secondary mb-3">{tekmetricProgress.progress}</p>
+          <div className="h-2 bg-background rounded-full overflow-hidden">
+            <div
+              className="h-full bg-accent transition-all duration-500"
+              style={{ width: `${tekmetricProgress.progress_pct || 0}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Final RO# card — appears after a successful push. Acts as the
+          handoff: advisor clicks the link to finish in Tekmetric. */}
+      {tekmetricResult?.ro_number && (
+        <div className="bg-success/10 p-5 rounded-lg border border-success/30 text-left">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm text-success font-semibold mb-1">
+                ✓ Pushed to Tekmetric
+              </p>
+              <p className="text-2xl font-bold text-text-primary font-mono">
+                RO #{tekmetricResult.ro_number}
+              </p>
+              <p className="text-xs text-text-secondary mt-2">
+                Customer: {tekmetricResult.customer_action === 'created_new' ? 'created new' : 'matched existing'}
+                {' · '}
+                Vehicle: {tekmetricResult.vehicle_action === 'created_new' ? 'created new' : 'matched existing'}
+                {' · '}
+                {(tekmetricResult.labor_lines_added ?? '?')} labor / {(tekmetricResult.parts_lines_added ?? '?')} parts lines
+              </p>
+              {tekmetricResult.note && (
+                <p className="text-xs text-warning mt-2">{tekmetricResult.note}</p>
+              )}
+            </div>
+            {tekmetricResult.ro_url && (
+              <a
+                href={tekmetricResult.ro_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-4 py-2 bg-accent text-background font-bold rounded-lg hover:bg-accent/80 transition-colors whitespace-nowrap"
+              >
+                Open in Tekmetric →
+              </a>
+            )}
+          </div>
+        </div>
+      )}
 
       {!isReady ? (
         <div className="bg-background p-8 rounded-lg border border-border">
@@ -492,6 +557,12 @@ const NewEstimate = () => {
   // Live agent progress state (new queue-based flow)
   const [agentProgress, setAgentProgress] = useState(null)
   // shape: { jobId, status, progress, progress_pct }
+
+  // Tekmetric write-back progress + final RO link
+  const [tekmetricProgress, setTekmetricProgress] = useState(null)
+  const [tekmetricResult, setTekmetricResult] = useState(null)
+  // tekmetricResult shape: { ro_number, ro_url, customer_action, vehicle_action,
+  //                          labor_lines_added, parts_lines_added, note }
 
   // Auto-Generate Handler — NEW queue-based flow (frontend → backend → VPS agent)
   const handleAutoGenerate = async () => {
@@ -693,28 +764,95 @@ const NewEstimate = () => {
     }
   }
 
-  // Push to Tekmetric
+  // Push to Tekmetric — queue-based via the VPS vision agent.
+  //
+  // Why this changed: the old code POSTed once and trusted the response.
+  // When the backend's REST stub had no API key it returned a mocked
+  // "success" with a fabricated RO number, so the UI confirmed a push that
+  // never actually happened. The new flow enqueues a job that the worker
+  // runs in the shop's logged-in Tekmetric tab, then polls for the real
+  // RO# the agent captured.
   const handlePushToTekmetric = async () => {
+    if (!formData.laborItems?.length && !formData.partsItems?.length) {
+      toast.error('Add labor or parts before pushing to Tekmetric', 'Nothing to push')
+      return
+    }
     setIsPushing(true)
-    const result = await pushToTekmetric({
+    setTekmetricProgress({ jobId: null, status: 'queued', progress: 'Submitting…', progress_pct: 2 })
+
+    const submit = await pushToTekmetric({
       customer: {
         name: formData.customerName,
         phone: formData.customerPhone,
-        email: formData.customerEmail
+        email: formData.customerEmail,
       },
       vehicleInfo: formData.vehicleInfo,
       laborItems: formData.laborItems,
       partsItems: formData.partsItems,
       breakdown: calculatedTotals,
-      odometer: formData.odometer ? parseInt(formData.odometer) : null
+      odometer: formData.odometer ? parseInt(formData.odometer) : null,
+      estimateId: formData.estimateId || undefined,
     })
 
-    if (result.success) {
-      alert(`Successfully pushed to Tekmetric!\nRO #: ${result.data.tekmetric.ro_number}`)
-    } else {
-      alert(`Failed to push: ${result.error}`)
+    if (!submit.success) {
+      toast.error(submit.error || 'Failed to enqueue Tekmetric push', 'Push failed')
+      setIsPushing(false)
+      setTekmetricProgress(null)
+      return
     }
+
+    const jobId = submit.data.job_id
+    setTekmetricProgress({
+      jobId,
+      status: submit.data.status,
+      progress: submit.data.progress,
+      progress_pct: submit.data.progress_pct,
+    })
+
+    const poll = await pollTekmetricJob(jobId, {
+      intervalMs: 2500,
+      timeoutMs: 600000,
+      onProgress: (job) =>
+        setTekmetricProgress({
+          jobId: job.job_id,
+          status: job.status,
+          progress: job.progress,
+          progress_pct: job.progress_pct,
+        }),
+    })
+
     setIsPushing(false)
+
+    if (!poll.success) {
+      toast.error(poll.error || 'Polling failed', 'Push failed')
+      setTekmetricProgress(null)
+      return
+    }
+
+    const job = poll.data
+    if (job.status === 'failed') {
+      toast.error(job.error || 'Tekmetric agent could not complete the push', 'Push failed')
+      setTekmetricProgress({ ...job, error: job.error })
+      return
+    }
+
+    const ro = job.result || {}
+    setTekmetricResult({
+      ro_number: ro.ro_number,
+      ro_url: ro.ro_url,
+      customer_action: ro.customer_action,
+      vehicle_action: ro.vehicle_action,
+      labor_lines_added: ro.labor_lines_added,
+      parts_lines_added: ro.parts_lines_added,
+      note: ro.note,
+    })
+    setTekmetricProgress(null)
+    toast.success(
+      `Created RO #${ro.ro_number} in Tekmetric` +
+        (ro.customer_action === 'created_new' ? ' (new customer)' : '') +
+        (ro.vehicle_action === 'created_new' ? ' (new vehicle)' : ''),
+      'Pushed',
+    )
   }
 
   // Send Approval Link
@@ -926,6 +1064,8 @@ const NewEstimate = () => {
           onSaveDraft={() => handleSaveDraft(false)}
           onPushToTekmetric={handlePushToTekmetric}
           isPushing={isPushing}
+          tekmetricProgress={tekmetricProgress}
+          tekmetricResult={tekmetricResult}
         />
       default:
         return <IntakeStep data={formData} updateData={updateData} />

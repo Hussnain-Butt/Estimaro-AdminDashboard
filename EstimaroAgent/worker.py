@@ -309,6 +309,98 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
         await _post_failure(client, job_id, f"{type(e).__name__}: {str(e)[:300]}")
 
 
+async def _claim_next_tekmetric(client: httpx.AsyncClient) -> Optional[dict]:
+    """Try to claim a Tekmetric write-back job. Same shape as the auto-gen
+    claim — returns None when the queue is empty so the main loop just
+    falls through to the next polling tick."""
+    try:
+        r = await client.get(
+            f"{BACKEND_URL}/api/v1/tekmetric/jobs/pending/next",
+            params={"worker_id": WORKER_ID},
+            headers=_headers(),
+            timeout=20,
+        )
+        if r.status_code == 200 and r.text and r.text != "null":
+            return r.json()
+        if r.status_code in (200, 204):
+            return None
+    except Exception as e:
+        logger.warning(f"tekmetric claim error: {e}")
+    return None
+
+
+async def _process_tekmetric_job(client: httpx.AsyncClient, job: dict) -> None:
+    """Drive the Tekmetric vision agent for one push job."""
+    from portals import tekmetric as tek_portal
+
+    job_id = job.get("job_id")
+    estimate = job.get("estimate") or {}
+    customer = (estimate.get("customer") or {}).get("name", "—")
+    veh = (estimate.get("vehicleInfo") or {}).get("vin", "—")
+    logger.info(f"[{job_id}] Tekmetric push | customer={customer!r} VIN={veh}")
+
+    async def _progress(msg: str, pct: int):
+        try:
+            await client.post(
+                f"{BACKEND_URL}/api/v1/tekmetric/jobs/{job_id}/progress",
+                headers=_headers(),
+                json={"progress": msg, "progress_pct": pct},
+                timeout=15,
+            )
+        except Exception as e:
+            logger.warning(f"[{job_id}] tek progress post failed: {e}")
+
+    async def _fail(err: str):
+        try:
+            await client.post(
+                f"{BACKEND_URL}/api/v1/tekmetric/jobs/{job_id}/fail",
+                headers=_headers(),
+                json={"error": err},
+                timeout=15,
+            )
+        except Exception as e:
+            logger.warning(f"[{job_id}] tek fail post failed: {e}")
+
+    await _progress("Opening Tekmetric in Chrome", 20)
+    try:
+        ok, result = await asyncio.wait_for(
+            tek_portal.push_estimate(estimate), timeout=JOB_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        await _fail(f"Tekmetric push timed out after {JOB_TIMEOUT}s")
+        return
+    except Exception as e:
+        import traceback
+        logger.error(f"[{job_id}] Tekmetric push EXCEPTION: {e}\n{traceback.format_exc()}")
+        await _fail(f"{type(e).__name__}: {str(e)[:300]}")
+        return
+
+    if not ok:
+        await _fail(result.get("error") or "Tekmetric agent did not produce an RO number")
+        return
+
+    try:
+        payload = {
+            "ok": True,
+            "ro_number": str(result.get("ro_number") or ""),
+            "ro_url": result.get("ro_url"),
+            "customer_action": result.get("customer_action"),
+            "vehicle_action": result.get("vehicle_action"),
+            "labor_lines_added": result.get("labor_lines_added"),
+            "parts_lines_added": result.get("parts_lines_added"),
+            "note": result.get("note"),
+        }
+        await client.post(
+            f"{BACKEND_URL}/api/v1/tekmetric/jobs/{job_id}/result",
+            headers=_headers(),
+            json=payload,
+            timeout=20,
+        )
+        logger.info(f"[{job_id}] Tekmetric DONE  RO#{payload['ro_number']}")
+    except Exception as e:
+        logger.warning(f"[{job_id}] tek result post failed: {e}")
+
+
 async def main_loop():
     logger.info(f"Estimaro Worker starting | worker_id={WORKER_ID} | backend={BACKEND_URL}")
     hermes = HermesClient()
@@ -323,6 +415,15 @@ async def main_loop():
         last_keepalive = 0.0
         keepalive_interval = int(os.environ.get("SESSION_KEEPALIVE_SEC", "1800"))  # 30 min
         while True:
+            # Priority order: drain the (cheap, short) Tekmetric push queue
+            # before reaching for the next auto-generate run. A push needs
+            # human-prompt-snappy response; an auto-gen run can wait its turn.
+            tek_job = await _claim_next_tekmetric(client)
+            if tek_job:
+                await _process_tekmetric_job(client, tek_job)
+                await asyncio.sleep(1)
+                continue
+
             job = await _claim_next(client)
             if job:
                 await _process_job(client, hermes, job)
