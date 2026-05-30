@@ -41,11 +41,11 @@ def _build_task(job: JobSpec, vehicle: VehicleFingerprint, target_parts: list[di
     return f"""
 You are inside the PartsLink24 OEM parts catalogue. The shop is already logged in.
 
-VEHICLE:
-  Year:  {vehicle.year}
-  Make:  {vehicle.make}
-  Model: {vehicle.model}
-  VIN:   {vehicle.vin}
+THE VEHICLE IS IDENTIFIED BY ITS VIN — PartsLink24 will resolve the exact year,
+model and chassis from the VIN itself. Do NOT rely on any pre-known year/model
+and do NOT abort over a year mismatch; trust whatever PartsLink24 resolves.
+  VIN:           {vehicle.vin}
+  Likely brand:  {vehicle.make or 'unknown (read it from the VIN result)'}
 
 CUSTOMER JOB:
   System:    {job.system}
@@ -55,38 +55,45 @@ CUSTOMER JOB:
 PARTS WE WANT PRICES FOR (from ALLDATA):
 {wanted}
 
-GOAL: Find these OEM parts in the PartsLink24 catalogue for THIS vehicle and read
-their genuine OEM part number and list price.
+GOAL: Resolve the vehicle from the VIN, navigate to the assembly group matching
+the symptom, and read each genuine OEM part number + list price.
 
 NAVIGATION PLAN (use the numbered overlays in the screenshots):
-  1. Find the "Search VIN" text box, type the VIN exactly, then click GO.
-  2. If a brand must be chosen, pick the brand that matches {vehicle.make}.
-  3. Wait for the vehicle to resolve (year/make/model should appear).
-  4. Open the parts catalogue tree and navigate to the assembly group matching
-     the symptom:
+  1. On the brand menu: type the VIN into the "Search VIN" box, click GO.
+  2. Pick the brand. Use the plain marque (e.g. "Mercedes-Benz", "Audi", "BMW")
+     for normal vehicles. ONLY if the catalogue says the vehicle is not found,
+     go back and try the "<Brand> Classic" entry (older/classic chassis live there).
+  3. The brand catalogue app opens. If no specific vehicle/model is selected yet
+     (model grid is empty), find the "Direct entry" search box at the TOP of the
+     brand app, type the VIN there, and press the search (magnifier) icon. This
+     resolves the exact vehicle inside the catalogue.
+  4. Once the vehicle is resolved, open the assembly-group tree and navigate to
+     the subsystem matching the symptom:
        - brakes / pads / rotors -> Brake system -> Front (or Rear) brake / Disc brake
        - oil / lubrication      -> Engine -> Lubrication / Oil filter
        - suspension / steering  -> Front axle / Suspension
        - ignition / spark plug  -> Engine -> Ignition
   5. On the parts illustration / list page you will see rows with a PART NUMBER,
-     a DESCRIPTION and (where shown) a PRICE.
-  6. Match the rows to the wanted parts above by description/number.
+     a DESCRIPTION and (where shown) a PRICE. Match them to the wanted parts.
 
 OUTPUT: action="extract" with value as a JSON STRING of EXACTLY this schema:
   {{
-    "matched_vehicle": "<year make model shown on screen>",
+    "matched_vehicle": "<the vehicle text PartsLink24 shows>",
     "section": "<catalogue path you took>",
     "parts": [
-      {{"name": "<row description>", "oem_number": "<part number>", "price": <number or null>, "brand": "{vehicle.make}"}}
+      {{"name": "<row description>", "oem_number": "<part number>", "price": <number or null>, "brand": "{vehicle.make or 'OEM'}"}}
     ]
   }}
 Then action="done".
 
 CRITICAL RULES:
+  * The VIN is the source of truth. Never abort because a year/model differs from
+    any expectation — there is no expectation, only what PartsLink24 shows.
   * Only report parts visible on the SAME catalogue page for THIS vehicle.
-  * If a price is not shown, use null (do NOT invent one).
-  * If the VIN does not resolve or the catalogue cannot be reached, confidence < 0.6
-    and action="ask_human" describing exactly what blocked you.
+  * If a price is not shown, use null (do NOT invent one). Many catalogues show
+    part numbers without prices — that is fine, still extract the numbers.
+  * Only use action="ask_human" if you truly cannot resolve the VIN after trying
+    both the brand menu VIN box AND the in-catalogue "Direct entry" box.
 """
 
 
