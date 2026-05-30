@@ -104,10 +104,81 @@ async def _reset_to_vehicle_selector():
         logger.warning(f"reset_to_vehicle_selector outer error: {e}")
 
 
+def _normalize_oem(s) -> str:
+    """OEM numbers come back from each portal with different formatting
+    (`0074209220` vs `007 420 92 20` vs `OEM-0074209220`). Strip whitespace,
+    punctuation and case so equivalent numbers compare equal."""
+    if not s:
+        return ""
+    import re as _re
+    return _re.sub(r"[\s\-_./,]+", "", str(s)).upper()
+
+
+def _find_cheapest_vendor_match(part: dict, vendor_comparison: dict | None) -> dict | None:
+    """Return the cheapest in-stock vendor quote that matches `part`, or None.
+
+    Matching rules (most specific first):
+      1. Vendor quote's `oem_number` equals ALLDATA part's `oem_number`
+         (after normalisation). This is the safest match — the shop is
+         pricing the same OEM SKU across multiple suppliers.
+      2. The OEM hint the worker passed to `gather_quotes` (stored as
+         the vendor-comparison group key) equals the part's OEM number.
+         This catches the common case where the worker only asked vendors
+         about the primary OEM but ALLDATA listed several interchangeable
+         numbers for the same part type.
+
+    Preferred quote within a match set: in-stock beats out-of-stock; among
+    quotes of equal stock status, the lowest price wins.
+    """
+    if not vendor_comparison:
+        return None
+    target_oem = _normalize_oem(part.get("oem_number"))
+    best = None
+    for requested_part, group in (vendor_comparison or {}).items():
+        if not isinstance(group, dict):
+            continue
+        group_key = _normalize_oem(requested_part)
+        for q in (group.get("all") or []):
+            if not q or not q.get("found"):
+                continue
+            try:
+                price = float(q.get("price"))
+            except (TypeError, ValueError):
+                continue
+            q_oem = _normalize_oem(q.get("oem_number"))
+            # Allow either side-of-match: vendor's OEM matches our part, OR
+            # the group's request key matches our part (the gather_quotes
+            # caller's hint, which is by definition this part's OEM).
+            if not (target_oem and (q_oem == target_oem or group_key == target_oem)):
+                continue
+            if best is None:
+                best = (q, price); continue
+            best_quote, best_price = best
+            # Stock preference > price preference (a $5 OOS row beats a $5
+            # in-stock row would be wrong — the shop can't order OOS today).
+            cur_in = bool(q.get("in_stock"))
+            best_in = bool(best_quote.get("in_stock"))
+            if cur_in and not best_in:
+                best = (q, price)
+            elif cur_in == best_in and price < best_price:
+                best = (q, price)
+    return best[0] if best else None
+
+
 def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
                           vendor_quotes: list | None = None,
                           vendor_comparison: dict | None = None) -> dict:
-    """Shape the agent output to match the Backend's JobResult schema."""
+    """Shape the agent output to match the Backend's JobResult schema.
+
+    Part-pricing policy: for each part ALLDATA found, look up the cheapest
+    in-stock vendor quote with a matching OEM number and use that as the
+    line cost. This makes the estimate's parts total reflect what the
+    shop will actually pay rather than ALLDATA's MSRP-style list price,
+    matching the "Using in Estimate: X from Vendor" claim VendorCompare
+    shows in the UI. When no vendor match exists (no quotes, no matching
+    OEM, or all out-of-stock without a price), the ALLDATA list cost is
+    kept as a safe fallback so totals never go missing.
+    """
     labor_rate = float(job.get("laborRate") or 150.0)
     parts_markup_pct = float(job.get("partsMarkup") or 30.0)
     tax_rate = float(job.get("taxRate") or 0.0925)
@@ -129,20 +200,51 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
     parts_lines = []
     parts_total = 0.0
     for p in (meta.get("parts") or []):
-        cost = float(p.get("price") or 0.0)
+        alldata_cost = float(p.get("price") or 0.0)
+        vendor_match = _find_cheapest_vendor_match(p, vendor_comparison)
+
+        if vendor_match is not None:
+            try:
+                vendor_price = float(vendor_match.get("price"))
+            except (TypeError, ValueError):
+                vendor_price = None
+        else:
+            vendor_price = None
+
+        # Use the vendor price whenever we have a real quote — it represents
+        # the shop's actual cost. ALLDATA's "price" is reference/MSRP and
+        # over-states what the shop pays for aftermarket-equivalent parts.
+        if vendor_price is not None:
+            cost = vendor_price
+            vendor_label = vendor_match.get("vendor") or "ALLDATA"
+            brand = (vendor_match.get("brand") or "").strip()
+            if brand:
+                vendor_label = f"{vendor_label} · {brand}"
+        else:
+            cost = alldata_cost
+            vendor_label = (p.get("vendor") or "ALLDATA").strip() or "ALLDATA"
+
         markup_dollars = round(cost * parts_markup_pct / 100.0, 2)
         qty = int(p.get("qty") or p.get("quantity") or 1)
         line_total = round((cost + markup_dollars) * qty, 2)
         parts_total += line_total
-        parts_lines.append({
+
+        line = {
             "description": p.get("name") or "",
             "partNumber": p.get("oem_number"),
             "quantity": qty,
             "cost": cost,
             "markup": parts_markup_pct,
             "total": line_total,
-            "vendor": p.get("vendor") or "ALLDATA",
-        })
+            "vendor": vendor_label,
+        }
+        # When we did substitute a vendor price, surface the savings vs the
+        # ALLDATA list so the UI / advisor can see why this row is below
+        # MSRP. Cheap to compute, doesn't bloat the payload when irrelevant.
+        if vendor_price is not None and alldata_cost > 0 and vendor_price < alldata_cost:
+            line["list_price"] = round(alldata_cost, 2)
+            line["savings_vs_list"] = round(alldata_cost - vendor_price, 2)
+        parts_lines.append(line)
 
     subtotal = round(labor_total + parts_total, 2)
     tax_amount = round(subtotal * tax_rate, 2)

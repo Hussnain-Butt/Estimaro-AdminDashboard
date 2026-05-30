@@ -225,38 +225,52 @@ const PartsStep = ({ data }) => {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {data.partsItems.map((part, index) => (
-            <div
-              key={index}
-              className="bg-background p-4 rounded-lg border border-border"
-            >
-              <div>
-                <p className="font-semibold text-text-primary">{part.description}</p>
-                <p className="text-xs text-text-secondary mt-1">
-                  {part.partNumber || 'N/A'} • Vendor: {part.vendor || 'Unknown'}
-                </p>
-                {part.isOEM && (
-                  <span className="inline-block mt-1 mr-2 px-2 py-0.5 bg-accent/20 text-accent text-xs rounded">
-                    OEM
-                  </span>
-                )}
-                {part.reasonBadge && (
-                  <span className="inline-block mt-1 px-2 py-0.5 bg-info/20 text-info text-xs rounded border border-info/30 flex items-center gap-1 w-fit">
-                    <SparklesIcon className="h-3 w-3" />
-                    {part.reasonBadge}
-                  </span>
-                )}
-                <div className="mt-2 flex items-center gap-2 text-sm">
-                  <span className="text-text-secondary">Qty: {part.quantity}</span>
-                  <span className="text-text-secondary">×</span>
-                  <span className="text-text-secondary">${part.cost}</span>
-                  <span className="text-text-secondary">+{part.markup}%</span>
-                  <span className="text-text-secondary">=</span>
-                  <span className="text-accent font-bold">${part.total}</span>
+          {data.partsItems.map((part, index) => {
+            const hasSavings = part.savings_vs_list != null && part.savings_vs_list > 0
+            const cost = typeof part.cost === 'number' ? part.cost : parseFloat(part.cost) || 0
+            return (
+              <div
+                key={index}
+                className="bg-background p-4 rounded-lg border border-border"
+              >
+                <div>
+                  <p className="font-semibold text-text-primary">{part.description}</p>
+                  <p className="text-xs text-text-secondary mt-1">
+                    {part.partNumber || 'N/A'} • Vendor: {part.vendor || 'Unknown'}
+                  </p>
+                  {part.isOEM && (
+                    <span className="inline-block mt-1 mr-2 px-2 py-0.5 bg-accent/20 text-accent text-xs rounded">
+                      OEM
+                    </span>
+                  )}
+                  {hasSavings && (
+                    <span className="inline-block mt-1 px-2 py-0.5 bg-success/15 text-success text-xs rounded border border-success/30">
+                      Saved ${part.savings_vs_list.toFixed(2)} vs MSRP
+                      {part.list_price != null && (
+                        <span className="text-text-secondary ml-1">
+                          (was ${part.list_price.toFixed(2)})
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  {part.reasonBadge && (
+                    <span className="inline-block mt-1 px-2 py-0.5 bg-info/20 text-info text-xs rounded border border-info/30 flex items-center gap-1 w-fit">
+                      <SparklesIcon className="h-3 w-3" />
+                      {part.reasonBadge}
+                    </span>
+                  )}
+                  <div className="mt-2 flex items-center gap-2 text-sm">
+                    <span className="text-text-secondary">Qty: {part.quantity}</span>
+                    <span className="text-text-secondary">×</span>
+                    <span className="text-text-secondary">${cost.toFixed(2)}</span>
+                    <span className="text-text-secondary">+{part.markup}%</span>
+                    <span className="text-text-secondary">=</span>
+                    <span className="text-accent font-bold">${part.total}</span>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>
@@ -666,6 +680,10 @@ const NewEstimate = () => {
       markup: item.markup,
       total: parseFloat(item.total).toFixed(2),
       vendor: item.vendor || 'ALLDATA',
+      // Passed through when the worker substituted a vendor quote for
+      // ALLDATA's MSRP — PartsStep renders a "Saved $X vs MSRP" badge.
+      list_price: item.list_price ?? null,
+      savings_vs_list: item.savings_vs_list ?? null,
     }))
 
     const mergedData = {

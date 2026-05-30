@@ -21,6 +21,12 @@ class PartLine(BaseModel):
     markup: float = 0.0
     total: float = 0.0
     vendor: str = "ALLDATA"
+    # When the worker substituted a cheaper vendor quote for ALLDATA's MSRP,
+    # the original list price + savings amount come along for the UI to show
+    # "Saved $X vs MSRP" beside the line. Both fields are optional — omitted
+    # when no substitution happened.
+    list_price: Optional[float] = None
+    savings_vs_list: Optional[float] = None
 
 
 class VehicleInfo(BaseModel):
