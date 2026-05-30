@@ -29,25 +29,55 @@ PORTAL_NAME = "Worldpac"
 PORTAL_URL = "https://speeddial.worldpac.com/#/"
 CATALOG_URL = "https://speeddial.worldpac.com/#/catalog"
 
+# Vehicle picker selectors (verified 2026-05-30 on a paid Worldpac account):
+#   * The visible current-vehicle chip on the catalog header is a BUTTON
+#     containing a DIV.vehicle-description with text like "2015 Mercedes-Benz
+#     SLK250". Clicking it expands an in-page picker on the left panel.
+#   * Inside the picker the catalog tree gives way to a 3-tab drill — Year
+#     (#year-tab), Make (#make-tab), Model (#model-tab). The tabs render a
+#     grid of clickable LI/BUTTON cells with the year/make/model text.
+#   * "Vehicle History" on the right of the picker is a list of recent picks
+#     (DIV.MuiListItem-root containing text like "2023 Mercedes-Benz C300
+#     Base 2.0 L4"). When the target vehicle has been used before the picker
+#     is a one-click select; otherwise the Y/M/M drill is the cold path.
+#   * Worldpac doesn't offer a free-form VIN input here — only plate + state,
+#     Year/Make/Model, and history. We rely on the NHTSA-decoded vehicle's
+#     year/make/model to drive the drill.
+SEL_VEHICLE_PILL = "button:has(.vehicle-description)"
+SEL_VEHICLE_DESC = ".vehicle-description"
+SEL_YEAR_TAB = "#year-tab"
+SEL_MAKE_TAB = "#make-tab"
+SEL_MODEL_TAB = "#model-tab"
+
 # Customer-complaint vocabulary → the canonical part-type label Worldpac's
 # catalog lists in its right-side "Part Type" panel. Keys are matched
 # loosely (substring, case-insensitive) so "Front Pads", "Brake Pad Set
 # (Front)", "brake pads" all reach the same Worldpac row.
+# Each entry: (regex to match the user request, Worldpac catalog label for the
+# part-type checkbox, Worldpac sub-category that owns it in the left tree).
+# Clicking the sub-category triggers Worldpac to populate the right-side
+# "Selected Part Types" panel — without that step the checkbox row simply
+# doesn't render after a fresh vehicle switch.
+# Each entry: (regex matching the user request, Worldpac part-type label on
+# the checkbox row, sub-category that contains it in the left tree, parent
+# group that may need expanding first). After a fresh vehicle switch most
+# parent groups are collapsed, so we click the parent group → wait → click
+# the sub-category → wait → look for the checkbox row.
 _LABEL_MAP = [
-    (r"brake\s*pad", "Brake Pad Set"),
-    (r"\bpads?\b", "Brake Pad Set"),
-    (r"brake\s*(disc|rotor)", "Brake Disc"),
-    (r"\brotors?\b", "Brake Disc"),
-    (r"brake\s*caliper", "Brake Caliper"),
-    (r"\bcalipers?\b", "Brake Caliper"),
-    (r"oil\s*filter", "Oil Filter"),
-    (r"air\s*filter", "Air Filter"),
-    (r"cabin\s*filter|cabin\s*air", "Cabin Air Filter"),
-    (r"spark\s*plug", "Spark Plug"),
-    (r"control\s*arm", "Control Arm"),
-    (r"shock", "Shock Absorber"),
-    (r"strut", "Strut Assembly"),
-    (r"wheel\s*bearing", "Wheel Bearing"),
+    (r"brake\s*pad",                 "Brake Pad Set",     "Brake Disc",   "Brake"),
+    (r"\bpads?\b",                   "Brake Pad Set",     "Brake Disc",   "Brake"),
+    (r"brake\s*(disc|rotor)",        "Brake Disc",        "Brake Disc",   "Brake"),
+    (r"\brotors?\b",                 "Brake Disc",        "Brake Disc",   "Brake"),
+    (r"brake\s*caliper",             "Brake Caliper",     "Brake Hydraulic", "Brake"),
+    (r"\bcalipers?\b",               "Brake Caliper",     "Brake Hydraulic", "Brake"),
+    (r"oil\s*filter",                "Oil Filter",        "Lubrication",  "Engine"),
+    (r"air\s*filter",                "Air Filter",        "Air Intake",   "Engine"),
+    (r"cabin\s*filter|cabin\s*air",  "Cabin Air Filter",  "Climate Control", "Climate Control"),
+    (r"spark\s*plug",                "Spark Plug",        "Ignition",     "Engine"),
+    (r"control\s*arm",               "Control Arm",       "Suspension",   "Suspension"),
+    (r"shock",                       "Shock Absorber",    "Suspension",   "Suspension"),
+    (r"strut",                       "Strut Assembly",    "Suspension",   "Suspension"),
+    (r"wheel\s*bearing",             "Wheel Bearing",     "Suspension",   "Suspension"),
 ]
 
 
@@ -56,10 +86,46 @@ def _worldpac_label(part_type: str) -> Optional[str]:
     if not part_type:
         return None
     t = part_type.lower()
-    for pattern, label in _LABEL_MAP:
-        if re.search(pattern, t):
-            return label
+    for entry in _LABEL_MAP:
+        if re.search(entry[0], t):
+            return entry[1]
     return None
+
+
+def _worldpac_category(part_type: str) -> tuple[Optional[str], Optional[str]]:
+    """Return (sub_category, parent_group) for the part_type. After a fresh
+    vehicle switch the parent group is usually collapsed and we need to
+    expand it before the sub-category becomes clickable."""
+    if not part_type:
+        return None, None
+    t = part_type.lower()
+    for entry in _LABEL_MAP:
+        if re.search(entry[0], t):
+            return entry[2], entry[3]
+    return None, None
+
+
+async def _click_category(page, category: str, timeout_ms: int = 6000) -> bool:
+    """Click a Worldpac top-level category tree node.
+
+    We scope the selector to `.sd-category-node-level-1` so the parent
+    group is unambiguous (only one level-1 LI named "Brake"; sub-categories
+    like "Brake Booster" / "Brake Disc" carry level-2 and don't match).
+    A Playwright `.click()` is used rather than a JS `el.click()` because
+    Worldpac's React onClick handler needs the synthetic event a real
+    Playwright click dispatches — a bare DOM click was a no-op in testing.
+    """
+    try:
+        loc = page.locator(
+            f".sd-category-node-level-1:has-text({category!r})"
+        ).first
+        if await loc.count() == 0:
+            return False
+        await loc.scroll_into_view_if_needed(timeout=2000)
+        await loc.click(timeout=timeout_ms)
+        return True
+    except Exception:
+        return False
 
 
 def _build_task(vehicle, part_type: str, label: str, oem_hint: Optional[str]) -> str:
@@ -110,6 +176,207 @@ CRITICAL RULES:
 """
 
 
+def _normalize_make(make: Optional[str]) -> str:
+    """Worldpac shows makes in mixed forms (e.g. "Mercedes-Benz" with a hard
+    hyphen, sometimes "Mercedes Benz" or all-uppercase). Strip non-alphanum
+    so a substring compare against vehicle.make is forgiving."""
+    if not make:
+        return ""
+    import re as _re
+    return _re.sub(r"[^a-z0-9]", "", make.lower())
+
+
+async def _read_current_vehicle(page) -> Optional[str]:
+    """Return the plain-text label Worldpac shows in its current-vehicle pill,
+    or None if no vehicle is currently selected."""
+    try:
+        loc = page.locator(SEL_VEHICLE_DESC).first
+        if await loc.count() == 0:
+            return None
+        return (await loc.inner_text(timeout=3000)).strip()
+    except Exception:
+        return None
+
+
+def _model_fragments(vehicle) -> list[str]:
+    """Token-level alphanumeric chunks (3+ chars) derived from the model
+    AND trim. NHTSA model values like "C-Class" / "SLK-Class" are split on
+    hyphens, and the trim ("C300", "SLK250") is mixed in so a Worldpac
+    label rendered as "2015 Mercedes-Benz SLK250" still matches against
+    NHTSA's "SLK-Class" model — via the "slk" fragment or the trim itself."""
+    import re as _re
+    seen: set[str] = set()
+    out: list[str] = []
+    for text in (getattr(vehicle, "model", None), getattr(vehicle, "trim", None)):
+        if not text:
+            continue
+        for chunk in _re.split(r"[\s\-/]+", str(text).lower()):
+            chunk = chunk.strip()
+            if len(chunk) >= 3 and chunk not in seen:
+                seen.add(chunk)
+                out.append(chunk)
+    return out
+
+
+def _vehicle_matches(current: Optional[str], vehicle) -> bool:
+    """Loose match — Worldpac's label and our NHTSA decode rarely line up
+    exactly on trim/engine. We require the year AND a substring of the
+    make AND any model/trim fragment to all be present."""
+    if not current or not vehicle.year or not vehicle.make:
+        return False
+    cur_norm = _normalize_make(current)
+    if str(vehicle.year) not in current:
+        return False
+    if _normalize_make(vehicle.make) not in cur_norm:
+        return False
+    fragments = _model_fragments(vehicle)
+    if fragments:
+        current_lower = current.lower()
+        if not any(f in current_lower or f in cur_norm for f in fragments):
+            return False
+    return True
+
+
+async def _click_history_match(page, vehicle) -> bool:
+    """If the target year+make appears in the picker's "Vehicle History" panel,
+    click the matching row. Returns True on success."""
+    needle_year = str(vehicle.year)
+    needle_make = _normalize_make(vehicle.make)
+    fragments = _model_fragments(vehicle)
+    try:
+        items = page.locator(".MuiListItem-root")
+        n = await items.count()
+        for i in range(min(n, 25)):
+            txt = (await items.nth(i).inner_text()).strip()
+            txt_lower = txt.lower()
+            txt_norm = _normalize_make(txt)
+            if needle_year not in txt:
+                continue
+            if needle_make not in txt_norm:
+                continue
+            # Worldpac's history rows are formatted like
+            # "2023 Mercedes-Benz C300 Base 2.0 L4", so the NHTSA model
+            # ("C-Class") doesn't appear verbatim. Match via the same
+            # alphanumeric fragments we use to compare the active vehicle.
+            if fragments and not any(f in txt_lower or f in txt_norm for f in fragments):
+                continue
+            await items.nth(i).click(timeout=4000)
+            return True
+    except Exception as e:
+        logger.warning(f"[{PORTAL_NAME}] history scan failed: {e}")
+    return False
+
+
+async def _drill_ymm(page, vehicle) -> Optional[str]:
+    """Cold-path: pick the vehicle via the Year → Make → Model tabs.
+    Returns None on success, error string on failure."""
+    if not (vehicle.year and vehicle.make and vehicle.model):
+        return "ymm_missing :: NHTSA decode lacks year+make+model"
+
+    # Year tab is usually the default after opening the picker; click it
+    # anyway to be safe.
+    try:
+        await page.click(SEL_YEAR_TAB, timeout=4000)
+        await asyncio.sleep(0.4)
+    except Exception:
+        pass
+    try:
+        await page.locator(
+            f":is(button, li, a, div):text-is('{vehicle.year}')"
+        ).first.click(timeout=5000)
+    except Exception as e:
+        return f"year_pick_failed :: {type(e).__name__}: {str(e)[:120]}"
+    await asyncio.sleep(0.8)
+
+    # Worldpac typically auto-advances to the Make tab after a year click,
+    # but the manual click is harmless if it's already there.
+    try:
+        await page.click(SEL_MAKE_TAB, timeout=2500)
+        await asyncio.sleep(0.4)
+    except Exception:
+        pass
+    make_chunks = [c for c in _normalize_make(vehicle.make).split() if c]
+    try:
+        # Try exact text first (handles "Mercedes-Benz" with hyphen), then
+        # a contains-text fallback for spacing/case differences.
+        try:
+            await page.locator(
+                f":is(button, li, a, div):text-is('{vehicle.make}')"
+            ).first.click(timeout=4000)
+        except Exception:
+            await page.locator(
+                f":is(button, li, a, div):has-text('{vehicle.make}')"
+            ).first.click(timeout=4000)
+    except Exception as e:
+        return f"make_pick_failed :: {type(e).__name__}: {str(e)[:120]}"
+    await asyncio.sleep(0.8)
+
+    try:
+        await page.click(SEL_MODEL_TAB, timeout=2500)
+        await asyncio.sleep(0.4)
+    except Exception:
+        pass
+    # vehicle.model is often "C-Class" / "SLK-Class" while Worldpac lists trims
+    # like "C300" / "SLK250". Prefer the first matching by inner_text containing
+    # any 3+ char chunk of model OR trim.
+    chunks = _model_fragments(vehicle) or [str(vehicle.model or "").strip()]
+    last_err: Optional[Exception] = None
+    for chunk in chunks:
+        try:
+            await page.locator(
+                f":is(button, li, a, div):has-text('{chunk}')"
+            ).first.click(timeout=4000)
+            await asyncio.sleep(2)
+            return None
+        except Exception as e:
+            last_err = e
+            continue
+    return f"model_pick_failed :: {type(last_err).__name__ if last_err else 'NoMatch'}"
+
+
+async def _ensure_vehicle(page, vehicle) -> Optional[str]:
+    """Make sure Worldpac's current vehicle matches `vehicle`. Returns None
+    on success or a categorised error string."""
+    current = await _read_current_vehicle(page)
+    if _vehicle_matches(current, vehicle):
+        return None
+    logger.info(
+        f"[{PORTAL_NAME}] current vehicle {current!r} doesn't match target "
+        f"{vehicle.year} {vehicle.make} {vehicle.model} — switching"
+    )
+    # A fresh reload clears any half-open picker state a previous failed run
+    # may have left behind. Without this the vehicle pill click sometimes
+    # toggles a stale popover shut instead of opening the picker, and the
+    # history list ends up empty.
+    try:
+        await page.reload(wait_until="domcontentloaded")
+        await asyncio.sleep(2)
+    except Exception:
+        pass
+    try:
+        await page.locator(SEL_VEHICLE_PILL).first.click(timeout=5000)
+    except Exception as e:
+        return f"picker_open_failed :: {type(e).__name__}: {str(e)[:120]}"
+    await asyncio.sleep(2)
+
+    if await _click_history_match(page, vehicle):
+        await asyncio.sleep(3)
+        new = await _read_current_vehicle(page)
+        if _vehicle_matches(new, vehicle):
+            logger.info(f"[{PORTAL_NAME}] vehicle switched via history → {new!r}")
+            return None
+        # History click landed somewhere else — fall through to Y/M/M.
+
+    err = await _drill_ymm(page, vehicle)
+    if err:
+        return err
+    new = await _read_current_vehicle(page)
+    if not _vehicle_matches(new, vehicle):
+        return f"ymm_post_check_failed :: ended on {new!r}"
+    logger.info(f"[{PORTAL_NAME}] vehicle switched via Y/M/M → {new!r}")
+    return None
+
+
 async def _prep_search(vehicle, part_type: str) -> tuple[Optional[str], Optional[str]]:
     """Open the catalog, tick the matching part-type row, click PRICE.
 
@@ -128,6 +395,36 @@ async def _prep_search(vehicle, part_type: str) -> tuple[Optional[str], Optional
             if "/catalog" not in page.url:
                 await page.goto(CATALOG_URL, wait_until="domcontentloaded")
                 await asyncio.sleep(2)
+
+            # Make sure the catalog's current vehicle is the one we want —
+            # otherwise the part-type checkboxes don't render for our VIN
+            # and `row_not_found` would fire below for the wrong reason.
+            veh_err = await _ensure_vehicle(page, vehicle)
+            if veh_err:
+                return f"vehicle_set_failed :: {veh_err}", label
+            # The picker collapses back to the category tree after a vehicle
+            # change; give the catalog a moment to render the new part-type
+            # list before we look for our row.
+            await asyncio.sleep(2)
+
+            # The right-side "Selected Part Types" panel is empty after a
+            # fresh vehicle switch and the parent group in the left tree is
+            # usually collapsed. Clicking the parent group (e.g. "Brake")
+            # both expands its sub-categories AND populates the right panel
+            # with every part-type in the group — which includes our row.
+            # The narrower sub-category (e.g. "Brake Disc") is a UX filter
+            # but isn't required for the row to render, so we keep this
+            # one-click and let the scroll-into-view in the row selector
+            # below pick the right entry out of the alphabetical list.
+            _sub_cat, parent_grp = _worldpac_category(part_type)
+            if parent_grp:
+                clicked = await _click_category(page, parent_grp)
+                if not clicked:
+                    logger.info(
+                        f"[{PORTAL_NAME}] parent group {parent_grp!r} not "
+                        f"clickable; relying on whatever panel state exists"
+                    )
+                await asyncio.sleep(2.5)
 
             row_sel = (
                 f".sd-part-node:has(.sd-part-node-desc-text:text-is({label!r}))"
