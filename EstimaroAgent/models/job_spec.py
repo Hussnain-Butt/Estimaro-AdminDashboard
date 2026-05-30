@@ -74,6 +74,24 @@ class PartResult(BaseModel):
     screenshot_path: Optional[str] = None
 
 
+class VendorQuote(BaseModel):
+    """One vendor's offer for a single part, produced by a parts-portal agent
+    (PartsLink24 / SSF / Worldpac). Uniform shape so vendor-compare is portal
+    agnostic."""
+    vendor: str                       # "PartsLink24" | "SSF" | "Worldpac"
+    requested_part: str               # the OEM number / name we searched for
+    matched_part_name: Optional[str] = None
+    oem_number: Optional[str] = None
+    brand: Optional[str] = None       # OEM / aftermarket brand shown
+    price: Optional[float] = None     # buy price (None = not found / no price)
+    list_price: Optional[float] = None
+    in_stock: Optional[bool] = None
+    availability: Optional[str] = None   # raw text e.g. "12 in stock @ LA"
+    found: bool = False               # did the agent locate the part at all
+    note: Optional[str] = None        # agent note / why not found
+    screenshot_path: Optional[str] = None
+
+
 class VerificationResult(BaseModel):
     match: bool
     confidence: float
