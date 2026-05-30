@@ -56,9 +56,9 @@ VISIBLE INTERACTIVE ELEMENTS (#id <tag attrs> text):
 Decide the SINGLE next action. Reply with ONLY JSON (no markdown):
 
 {{
-  "action":     "click" | "type" | "select_option" | "scroll" | "navigate" | "wait" | "extract" | "done" | "ask_human",
-  "element_id": <integer id from the list, or null if action is navigate/wait/scroll/done/ask_human>,
-  "value":      "<text to type, URL to navigate, option label to select, or extracted JSON>",
+  "action":     "click" | "type" | "select_option" | "scroll" | "find" | "navigate" | "wait" | "extract" | "done" | "ask_human",
+  "element_id": <integer id from the list, or null if action is navigate/wait/scroll/find/done/ask_human>,
+  "value":      "<text to type, URL to navigate, option label to select, text to find, or extracted JSON>",
   "reason":     "<one short sentence>",
   "confidence": 0.0
 }}
@@ -69,6 +69,11 @@ RULES:
 3. To select from a dropdown <select>, use action="select_option" with element_id of the <select>
    and value as the visible option text.
 4. To scroll, use action="scroll" with value="up"|"down"|"to_element:<id>".
+4b. If an item you need (e.g. a specific row/label/option like "Brake Pad Set") is
+    NOT in the visible elements list because it is further down a long list, use
+    action="find" with value set to that item's exact visible text. This jumps it
+    into view so it appears in the next list with an id — then click it. Prefer
+    "find" over scrolling blindly multiple times.
 5. To extract data, use action="extract" with value as a JSON string of fields found.
 6. action="done" only when the full task is complete.
 7. action="ask_human" if blocked by captcha, login, error, or the page is wrong.

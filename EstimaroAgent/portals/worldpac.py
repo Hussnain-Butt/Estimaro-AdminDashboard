@@ -37,15 +37,14 @@ NAVIGATION PLAN (use the numbered overlays in the screenshots):
      "Select Vehicle" / vehicle box again. Do not retype the VIN. Move on.
   3. Open the "Catalog" tab. In the left-hand catalog tree, expand "Parts" and
      click the "Brake" category.
-  4. The "Selected Part Types" list on the right has CHECKBOXES (it may show
-     "X of 50 Parts Selected"). FIRST uncheck anything already selected that is
-     not what you want (e.g. uncheck "Brake Caliper"). Then CHECK ONLY the entry
-     for this job — for brake pads check "Brake Pad Set" (or "Brake Pad" / "Disc
-     Brake Pad"). Make sure ONLY that one is checked.
-  5. Now click the "PRICE" button. The priced grid then shows ONLY that part
-     type's options. Read each row: BRAND, PART NUMBER, DESCRIPTION, PRICE, and
-     AVAILABILITY / stock. Extract those. If the grid shows a different part type
-     than you wanted, go Back to Catalog and fix the checkbox selection.
+  4. The "Selected Part Types" list on the right has CHECKBOXES. If "Brake Pad
+     Set" is not in the visible elements, use action="find" with value
+     "Brake Pad Set" to bring it into view, then CHECK it (click its checkbox).
+     IMPORTANT: you do NOT need to uncheck any other type — do not loop trying to
+     uncheck things. Just make sure "Brake Pad Set" is checked.
+  5. Click the "PRICE" button. A priced grid appears. Read the brake-pad rows:
+     BRAND, PART NUMBER, DESCRIPTION, PRICE, AVAILABILITY / stock. If several
+     part types are shown, just extract the brake pad rows and ignore the rest.
 
 OUTPUT: action="extract" with value as a JSON STRING of EXACTLY this schema:
   {{

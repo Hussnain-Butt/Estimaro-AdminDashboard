@@ -169,6 +169,35 @@ class VisionAgent:
             await asyncio.sleep(2.0)
             return
 
+        if action == "find":
+            # Scroll the best-matching (shortest) element whose text contains
+            # `value` into view, so the next annotation gives it an id to click.
+            needle = str(value or "").strip()
+            if not needle:
+                raise ValueError("find requires text in value")
+            found = await page.evaluate(
+                """(needle) => {
+                    const lc = needle.toLowerCase();
+                    const els = Array.from(document.querySelectorAll(
+                        'a,button,li,tr,td,th,div,span,label,option,[role]'));
+                    let best = null, bestLen = 1e9;
+                    for (const el of els) {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        if (!t) continue;
+                        if (t.toLowerCase().includes(lc) && t.length < bestLen) {
+                            best = el; bestLen = t.length;
+                        }
+                    }
+                    if (best) { best.scrollIntoView({block: 'center', inline: 'center'}); return true; }
+                    return false;
+                }""",
+                needle,
+            )
+            if not found:
+                raise ValueError(f"find: no element containing {needle!r}")
+            await asyncio.sleep(0.6)
+            return
+
         if action == "scroll":
             v = str(value or "down").lower()
             if v.startswith("to_element:"):
