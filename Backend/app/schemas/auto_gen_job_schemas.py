@@ -51,6 +51,9 @@ class JobResult(BaseModel):
     verification_reason: Optional[str] = None
     agent_steps: int = 0
     elapsed_sec: float = 0.0
+    # Vendor pricing (Worldpac/SSF) for the OEM parts, + best-pick comparison
+    vendorQuotes: List[Dict[str, Any]] = Field(default_factory=list)
+    vendorComparison: Dict[str, Any] = Field(default_factory=dict)
 
 
 class JobSubmitRequest(BaseModel):

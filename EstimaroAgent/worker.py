@@ -104,7 +104,9 @@ async def _reset_to_vehicle_selector():
         logger.warning(f"reset_to_vehicle_selector outer error: {e}")
 
 
-def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float) -> dict:
+def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
+                          vendor_quotes: list | None = None,
+                          vendor_comparison: dict | None = None) -> dict:
     """Shape the agent output to match the Backend's JobResult schema."""
     labor_rate = float(job.get("laborRate") or 150.0)
     parts_markup_pct = float(job.get("partsMarkup") or 30.0)
@@ -173,6 +175,8 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float) -> di
         "verification_reason": verification.get("reason"),
         "agent_steps": int(agent_run.get("steps_taken") or 0),
         "elapsed_sec": round(elapsed, 1),
+        "vendorQuotes": vendor_quotes or [],
+        "vendorComparison": vendor_comparison or {},
     }
 
 
@@ -254,10 +258,29 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
             await _post_failure(client, job_id, err)
             return
 
+        # 4b. Vendor pricing — look up ALLDATA's OEM part numbers on the
+        # distributor portals (Worldpac/SSF) for real buy price + availability.
+        vendor_quotes_dicts: list = []
+        vendor_comparison: dict = {}
+        try:
+            from portals.vendors import gather_quotes, summarise
+            alldata_parts = (meta.get("parts") or [])
+            if alldata_parts:
+                await _post_progress(client, job_id, "Pricing parts across vendors (Worldpac/SSF)", 75)
+                vq = await gather_quotes(alldata_parts)
+                vendor_quotes_dicts = [q.model_dump() for q in vq]
+                vendor_comparison = summarise(vq)
+                logger.info(f"[{job_id}] vendor quotes: {len(vendor_quotes_dicts)} "
+                            f"across {len(vendor_comparison)} part(s)")
+        except Exception as e:
+            logger.warning(f"[{job_id}] vendor pricing skipped: {e}")
+
         # 5. Build payload & post
         await _post_progress(client, job_id, "Verifying with Hermes + finalising", 90)
         elapsed = time.time() - t0
-        result = _build_result_payload(job, vehicle, labor, meta, elapsed)
+        result = _build_result_payload(job, vehicle, labor, meta, elapsed,
+                                       vendor_quotes=vendor_quotes_dicts,
+                                       vendor_comparison=vendor_comparison)
 
         await _post_result(client, job_id, result)
         logger.info(
