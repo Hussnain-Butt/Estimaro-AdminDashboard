@@ -232,8 +232,11 @@ async def lookup(
         return [], {"error": prep_err, "history": [], "steps_taken": 0}
 
     task = _build_task(vehicle, part_type, oem_hint)
+    # login_portal="ssf" arms the mid-flight session watchdog in the agent;
+    # initial_check=False because we already ran ensure_logged_in above.
     raw, meta = await run_portal_agent(PORTAL_URL, task, max_steps=max_steps,
-                                       timeout=timeout, login_portal=None)
+                                       timeout=timeout, login_portal="ssf",
+                                       initial_check=False)
     if raw is None:
         return [], meta
 

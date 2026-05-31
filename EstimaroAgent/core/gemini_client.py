@@ -29,9 +29,13 @@ class GeminiClient:
         elements_text: numbered list of visible interactive elements (from core.dom)
         Returns: {action, element_id?, value?, reason, confidence}
         """
+        # When an action errored, the full reason is now stored in `result`
+        # (e.g. "error:ValueError: find: no element containing 'X'"). Keep
+        # enough of it so the model can adapt rather than retry the same
+        # broken action.
         history_text = "\n".join([
             f"  step {h.get('step','?')}: {h.get('action','?')} id={h.get('element_id','?')} "
-            f"value={str(h.get('value',''))[:40]!r} -> {h.get('result','?')}"
+            f"value={str(h.get('value',''))[:40]!r} -> {str(h.get('result','?'))[:180]}"
             for h in history[-6:]
         ]) or "  (none)"
 
@@ -78,6 +82,14 @@ RULES:
 6. action="done" only when the full task is complete.
 7. action="ask_human" if blocked by captcha, login, error, or the page is wrong.
 8. If you tried the same action 2+ times already, CHANGE STRATEGY (different element, scroll, navigate).
+8b. If a prior step's result begins with "error:", READ the error message — repeating the
+    exact same action will fail the exact same way. In particular:
+      - "find: no element containing X" means the text isn't on this page. Do NOT
+        retry find with the same text. Either scroll, navigate to a different
+        page that should contain X, or pick a different target.
+      - "Timeout" / "intercepts pointer events" means another element was on top.
+        Try scrolling the target into view first, or clicking the intercepting
+        element first to dismiss it.
 9. Confidence should reflect uncertainty in vehicle/operation match (0.0-1.0).
 """
 

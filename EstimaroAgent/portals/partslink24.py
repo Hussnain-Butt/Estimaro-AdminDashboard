@@ -263,8 +263,12 @@ async def _lookup_impl(
         logger.warning(f"[{PORTAL_NAME}] running on demo subscription (no prices)")
 
     task = _build_task(job, vehicle, target_parts)
+    # login_portal="partslink24" arms the mid-flight session watchdog inside
+    # the vision agent. We've already validated the session above via
+    # ensure_logged_in, so skip the redundant pre-flight check.
     raw, meta = await run_portal_agent(PORTAL_URL, task, max_steps=max_steps,
-                                       timeout=timeout, login_portal=None)
+                                       timeout=timeout, login_portal="partslink24",
+                                       initial_check=False)
     if raw is None:
         return [], meta
 

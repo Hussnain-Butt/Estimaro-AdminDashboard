@@ -43,18 +43,23 @@ async def run_portal_agent(
     max_steps: int = 25,
     timeout: int = 300,
     login_portal: Optional[str] = None,
+    initial_check: bool = True,
 ) -> Tuple[Optional[dict], dict]:
     """Drive a vision agent for one portal.
 
-    If `login_portal` is given, the session is checked and transparently
-    restored (auto-relogin) before the agent runs, so an expired session never
-    causes a spurious failure.
+    `login_portal` serves two roles:
+      * pre-flight session check (gated by `initial_check`) — set
+        initial_check=False when the caller's lookup() has already run
+        ensure_logged_in (saves a ~2s CDP round-trip per call).
+      * arms the mid-flight session watchdog inside the vision agent so a
+        cookie drop during navigation auto-restores the session instead of
+        wedging the agent on the login form.
 
     Returns (raw_extracted_dict | None, meta). `meta` always carries
     `history`, `steps_taken`, `run_dir`; on failure it carries `error`
     (categorised); on success it carries `confidence` and `best_step`.
     """
-    if login_portal:
+    if login_portal and initial_check:
         # Imported lazily to avoid any import cycle at module load.
         from portals.auth import ensure_logged_in
         status = await ensure_logged_in(login_portal)
@@ -62,7 +67,12 @@ async def run_portal_agent(
             return None, {"error": f"login_failed :: {status.get('error') or status.get('action')}",
                           "history": [], "steps_taken": 0, "login_status": status}
 
-    agent = VisionAgent(portal_url=portal_url, task=task, max_steps=max_steps)
+    # Pass the portal key so the agent can auto-restore the session if it
+    # drops mid-flight (same deterministic Playwright login the keepalive
+    # uses). When `login_portal` is None this is a no-op — the agent just
+    # behaves as before with no session watchdog.
+    agent = VisionAgent(portal_url=portal_url, task=task, max_steps=max_steps,
+                        login_portal=login_portal)
     try:
         async with ChromeDebugBrowser() as browser:
             result = await asyncio.wait_for(agent.run(browser), timeout=timeout)

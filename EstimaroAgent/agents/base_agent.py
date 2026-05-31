@@ -38,10 +38,17 @@ def _action_signature(decision: dict, url: str = "") -> str:
 class VisionAgent:
     """Loop: annotate-DOM -> screenshot -> Gemini picks id -> execute -> repeat."""
 
-    def __init__(self, portal_url: str, task: str, max_steps: Optional[int] = None):
+    def __init__(self, portal_url: str, task: str, max_steps: Optional[int] = None,
+                 login_portal: Optional[str] = None):
         self.portal_url = portal_url
         self.task = task
         self.max_steps = max_steps or settings.MAX_AGENT_STEPS
+        # When set, the run loop watches for mid-flight session expiry on the
+        # portal's page and transparently re-logs in via deterministic
+        # Playwright (same path the keepalive uses) instead of letting the
+        # agent get stuck staring at a login form. The auth helper looks up
+        # this key in PORTALS, so it must match a key in portals.auth.PORTALS.
+        self.login_portal = login_portal
         self.gemini = GeminiClient()
         self.history: list[dict] = []
         self.extracted: list[dict] = []
@@ -50,6 +57,11 @@ class VisionAgent:
         self._shot_dir.mkdir(parents=True, exist_ok=True)
         self._run_label = datetime.now().strftime("run_%Y%m%d_%H%M%S")
         (self._shot_dir / self._run_label).mkdir(parents=True, exist_ok=True)
+        # Cap mid-flight relogin attempts so a portal that keeps logging us
+        # out after re-login (broken account, IP block, captcha) doesn't make
+        # the agent loop forever — it surfaces as ask_human after this many.
+        self._mid_flight_relogin_attempts = 0
+        self._mid_flight_relogin_limit = 2
 
     # ------------------------------------------------------------------ run
 
@@ -60,6 +72,57 @@ class VisionAgent:
 
         for step in range(self.max_steps):
             logger.info(f"[step {step + 1}/{self.max_steps}]  url={page.url[:90]}")
+
+            # 0. Mid-flight session detector — the portal can drop the cookie
+            #    between agent steps (idle timeouts on ALLDATA are short).
+            #    Without this guard, Gemini would see the login form, get
+            #    confused, and burn 4 steps before loop_giveup fired. With it,
+            #    we restore the session deterministically on the SAME page and
+            #    let the agent retry from a clean state.
+            if self.login_portal:
+                try:
+                    from portals.auth import is_logged_out, restore_session_on_page
+                    if await is_logged_out(page):
+                        self._mid_flight_relogin_attempts += 1
+                        if self._mid_flight_relogin_attempts > self._mid_flight_relogin_limit:
+                            logger.error(f"  mid-flight relogin limit "
+                                         f"({self._mid_flight_relogin_limit}) reached — "
+                                         f"asking human")
+                            self.history.append({
+                                "step": step, "action": "ask_human", "element_id": None,
+                                "value": "", "confidence": 0.0,
+                                "reason": "session kept expiring after re-login attempts",
+                                "result": "human_required",
+                            })
+                            break
+                        logger.warning(f"  session expired mid-flight on "
+                                       f"{self.login_portal} (attempt "
+                                       f"{self._mid_flight_relogin_attempts}/"
+                                       f"{self._mid_flight_relogin_limit}); restoring")
+                        ok = await restore_session_on_page(page, self.login_portal)
+                        if ok:
+                            logger.info(f"  mid-flight relogin succeeded; "
+                                        f"returning to {self.portal_url}")
+                            try:
+                                await page.goto(self.portal_url,
+                                                wait_until="domcontentloaded",
+                                                timeout=30000)
+                                await asyncio.sleep(2)
+                            except Exception as e:
+                                logger.warning(f"  post-relogin nav failed: {e}")
+                            # Re-run the same step from the restored state.
+                            continue
+                        else:
+                            logger.error(f"  mid-flight relogin failed; asking human")
+                            self.history.append({
+                                "step": step, "action": "ask_human", "element_id": None,
+                                "value": "", "confidence": 0.0,
+                                "reason": f"mid-flight relogin failed on {self.login_portal}",
+                                "result": "human_required",
+                            })
+                            break
+                except Exception as e:
+                    logger.warning(f"  session detector error (non-fatal): {e}")
 
             # 1. Annotate DOM + screenshot
             try:
@@ -136,8 +199,14 @@ class VisionAgent:
                 await self._execute(page, decision, elements)
                 decision["result"] = "ok"
             except Exception as e:
-                logger.error(f"  exec failed: {type(e).__name__}: {str(e)[:140]}")
-                decision["result"] = f"error:{type(e).__name__}"
+                # Capture the full error reason so the next Gemini prompt can
+                # see WHY the action failed (e.g. "find: no element containing
+                # 'Lubrication System'"). Without this, the model only saw the
+                # exception class and would happily retry the same broken
+                # action 4 times before loop_giveup fired.
+                err_text = f"{type(e).__name__}: {str(e)[:200]}"
+                logger.error(f"  exec failed: {err_text}")
+                decision["result"] = f"error:{err_text}"
 
             self.history.append(decision)
             await asyncio.sleep(1.2)

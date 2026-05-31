@@ -310,7 +310,9 @@ async def push_estimate(
     task = _build_task(estimate)
     raw, meta = await run_portal_agent(
         PORTAL_URL, task, max_steps=max_steps, timeout=timeout,
-        login_portal=None,  # already validated above
+        # Validated above already; key here arms the mid-flight session
+        # watchdog so a drop during the (longer) write-back flow auto-restores.
+        login_portal="tekmetric", initial_check=False,
     )
     if raw is None:
         return False, meta

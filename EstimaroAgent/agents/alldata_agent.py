@@ -87,7 +87,8 @@ async def lookup_labor_time(
     """Returns (labor, meta).  meta["parts"] holds the OEM parts list parsed
     from the same Parts and Labor page."""
     task = _build_task(job, vehicle)
-    agent = VisionAgent(portal_url=ALLDATA_HOME, task=task, max_steps=max_steps)
+    agent = VisionAgent(portal_url=ALLDATA_HOME, task=task, max_steps=max_steps,
+                        login_portal="alldata")
 
     async with ChromeDebugBrowser() as browser:
         result = await agent.run(browser)
