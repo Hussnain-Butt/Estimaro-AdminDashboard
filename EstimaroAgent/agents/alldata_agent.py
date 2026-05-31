@@ -43,14 +43,39 @@ NAVIGATION PLAN (use numbered overlays in screenshots):
   1. If you see REPAIR / ESTIMATOR tiles, click REPAIR.
   2. Pick the vehicle (Year/Make/Model/Engine) — VERIFY it matches the spec above.
   3. Navigate the category tree to the SPECIFIC subsystem matching the symptom.
+     ALLDATA's tree is two levels deep: a parent category (a header like
+     "Engine, Cooling and Exhaust") expands into several sibling cards
+     ("Engine", "Cooling System", "Exhaust System", "Lubrication System",
+     etc.). The subsystem you want is a DIRECT SIBLING of the obvious
+     "Engine" card, NOT a child of it — do NOT click "Engine" first if the
+     subsystem you actually want (e.g. Lubrication System) is already visible
+     as its own card on the same screen.
      - For brakes:    Brakes and Traction Control -> Disc Brake System -> Brake Pad (front pads complaint)
                                                                        -> Brake Rotor (rotor complaint)
-     - For engine oil: Engine, Cooling and Exhaust -> Lubrication System
-     - For transmission: Transmission and Drivetrain -> Automatic Transmission
-     - For suspension: Suspension and Steering
-     - For ignition/plugs: Engine -> Ignition System -> Spark Plug
-     - For battery/starter: Starting and Charging
-     - For cooling/coolant: Engine -> Cooling System
+     - For engine oil / oil change / oil filter:
+                       Engine, Cooling and Exhaust -> Lubrication System (sibling, NOT inside "Engine")
+                       (fallback: if Lubrication System isn't visible after expanding the parent,
+                        try "Engine" -> "Oil and Filter" or "Lubrication" inside it; if still
+                        nothing, use action="find" with value="Lubrication System" or "Oil Filter".)
+     - For transmission fluid / shift / clutch:
+                       Transmission and Drivetrain -> Automatic Transmission (auto) or Manual Transmission
+     - For suspension/shocks/struts/control arm:
+                       Suspension and Steering -> the specific component (Shock, Strut, Control Arm)
+     - For ignition / spark plug / coil:
+                       Engine, Cooling and Exhaust -> Engine -> Ignition System -> Spark Plug
+     - For battery / starter / alternator:
+                       Starting and Charging -> the specific component
+     - For cooling / coolant / radiator / thermostat:
+                       Engine, Cooling and Exhaust -> Cooling System (sibling, NOT inside "Engine")
+     - For belts / pulleys / tensioner:
+                       Engine, Cooling and Exhaust -> Belt Driven Accessories (or Drive Belts)
+     - For exhaust / muffler / catalytic converter:
+                       Engine, Cooling and Exhaust -> Exhaust System
+     If you clicked a wrong card and the expected sibling card is no longer
+     visible (the tree drilled one level too deep), use the breadcrumb at the
+     top of the page to navigate BACK one level — do NOT keep retrying find /
+     scroll on the wrong page. Returning to the parent and re-picking is far
+     cheaper than 4 failed find attempts.
   4. From the component page, click the "P" (Parts and Labor) cell, NOT "R" (Repair text).
   5. On the Parts and Labor article page you will see two tables:
        Parts table:  columns OEM PART #, PRICE, QUANTITY
@@ -99,6 +124,54 @@ async def lookup_labor_time(
 
     best = max(result["extracted"], key=lambda e: e.get("confidence", 0.0))
     raw = best["data"]
+    # Screenshot-vs-claim sanity check (cheap DOM grep). The model occasionally
+    # hallucinates an operation/hours combo that doesn't actually appear on
+    # the rendered page. We don't reject outright — vision is still our best
+    # signal — but we downgrade confidence so the verification + gating layers
+    # later in the pipeline see it as uncertain.
+    grounded_in_page = True
+    try:
+        page_text = (best.get("page_text") or "").lower()
+        if page_text:
+            preview = raw
+            if isinstance(preview, str):
+                try:
+                    preview = _json.loads(preview)
+                except Exception:
+                    preview = {}
+            claimed_op = str((preview or {}).get("operation") or "").strip().lower()
+            claimed_hours = (preview or {}).get("hours")
+            if claimed_op:
+                # Cheap substring check; ALLDATA's labor row text usually
+                # appears verbatim in the table. Word-by-word fallback handles
+                # minor reorderings like "Front Pads" vs "Pads, Front".
+                if claimed_op in page_text:
+                    pass
+                else:
+                    op_words = [w for w in claimed_op.split() if len(w) > 2]
+                    hits = sum(1 for w in op_words if w in page_text)
+                    if op_words and hits / len(op_words) < 0.7:
+                        grounded_in_page = False
+                        logger.warning(
+                            f"DOM-grep: claimed operation {claimed_op!r} not "
+                            f"grounded in page text (hits {hits}/{len(op_words)}) "
+                            f"— downgrading confidence")
+            if claimed_hours is not None:
+                # Hours like "1.2" should appear somewhere in the page.
+                hours_str = str(claimed_hours)
+                if hours_str not in page_text:
+                    grounded_in_page = False
+                    logger.warning(
+                        f"DOM-grep: claimed hours {hours_str!r} not in page text "
+                        f"— downgrading confidence")
+    except Exception as e:
+        logger.warning(f"DOM-grep verify error (non-fatal): {e}")
+    if not grounded_in_page:
+        # Cap to 0.6 so downstream gating cannot auto-finalize this.
+        best["confidence"] = min(float(best.get("confidence", 0.0)), 0.6)
+        best["grounded_in_page"] = False
+    else:
+        best["grounded_in_page"] = True
     try:
         if isinstance(raw, str):
             raw = _json.loads(raw)

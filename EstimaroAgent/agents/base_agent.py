@@ -185,7 +185,26 @@ class VisionAgent:
                 self.history.append(decision)
                 break
             if action == "extract":
-                self.extracted.append({"step": step, "data": value, "confidence": conf})
+                # Capture the page's visible text at extraction time so the
+                # caller can sanity-check the agent's claim against what was
+                # actually on screen (cheap defence against vision-model
+                # hallucinations — if the claimed "operation: Front Pads" is
+                # nowhere in the page text, the extract is suspect). Truncate
+                # to keep the run dict small; 8000 chars covers any realistic
+                # parts/labor article.
+                page_text = ""
+                try:
+                    page_text = await page.evaluate(
+                        "() => (document.body && document.body.innerText) || ''"
+                    )
+                    if isinstance(page_text, str) and len(page_text) > 8000:
+                        page_text = page_text[:8000]
+                except Exception as e:
+                    logger.warning(f"  page-text snapshot failed: {e}")
+                self.extracted.append({
+                    "step": step, "data": value, "confidence": conf,
+                    "page_text": page_text,
+                })
                 decision["result"] = "extracted"
                 self.history.append(decision)
                 # Auto-finalize if we got a high-confidence extraction
