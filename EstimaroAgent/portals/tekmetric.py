@@ -36,6 +36,31 @@ PORTAL_NAME = "Tekmetric"
 PORTAL_URL = "https://shop.tekmetric.com/"
 
 
+def _normalize_phone(raw: Optional[str]) -> tuple[str, str, str, str]:
+    """Split a raw phone number into Tekmetric-friendly pieces.
+
+    Tekmetric's customer modal uses separate fields for area code + local
+    number; passing the agent an 11-digit string like "19295942609" sends
+    it into a loop trying to type "1" into the area-code box and the rest
+    into the local box, then "discovering" the field is split and starting
+    over. Strip the leading US country code (if any), then expose the
+    canonical 10-digit value AND a pre-split area / prefix / line.
+
+    Returns (canonical_10digit, area_code, prefix, line). Any piece that
+    can't be derived is returned empty so the prompt can render "-" for it.
+    """
+    if not raw:
+        return "", "", "", ""
+    digits = "".join(ch for ch in str(raw) if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]  # strip US country code
+    if len(digits) != 10:
+        # Not a 10-digit US number — pass through whatever the operator typed;
+        # the agent's prompt also tells it to retry with the raw string.
+        return digits, "", "", ""
+    return digits, digits[:3], digits[3:6], digits[6:]
+
+
 def _lines_summary(items: list[dict], kind: str) -> str:
     """Render the labor / parts list as a compact bullet block for the prompt.
 
@@ -68,7 +93,8 @@ def _build_task(estimate: dict) -> str:
     breakdown = estimate.get("breakdown") or {}
 
     cust_name = customer.get("name") or ""
-    cust_phone = customer.get("phone") or ""
+    cust_phone_raw = customer.get("phone") or ""
+    cust_phone, ph_area, ph_prefix, ph_line = _normalize_phone(cust_phone_raw)
     cust_email = customer.get("email") or ""
     odometer = estimate.get("odometer")
     vin = vehicle.get("vin") or ""
@@ -86,7 +112,12 @@ listed below, save it as a DRAFT, then read back its RO number.
 
 CUSTOMER:
   Name:   {cust_name}
-  Phone:  {cust_phone}
+  Phone:  {cust_phone} (DO NOT prepend the US country code "1" — Tekmetric's
+          customer modal rejects 11-digit strings. The pre-split version is
+          area={ph_area or '-'} prefix={ph_prefix or '-'} line={ph_line or '-'}
+          for forms with three separate boxes; the combined 10-digit
+          version "{cust_phone}" goes into a single Phone box if that's
+          what the UI shows.)
   Email:  {cust_email or '(none)'}
 
 VEHICLE:
@@ -116,13 +147,33 @@ NAVIGATION PLAN (use the numbered overlays in the screenshots):
      near the top right. If a quick-create modal opens with customer / vehicle
      search fields, use those directly in step 3 and 4.
 
-  3. CUSTOMER — search by phone "{cust_phone}".
+  3. CUSTOMER — search by phone "{cust_phone}" (10 digits only).
        a. If a matching customer row appears, click it to select. Do NOT
           edit their existing contact info.
-       b. If no match, click "+ New Customer" or the "Create Customer" button
-          and fill: first name + last name (split "{cust_name}" on the first
-          space), phone "{cust_phone}", email "{cust_email or ''}" (leave
-          blank if none). Save the new customer.
+       b. If no match, click "+ New Customer" or the "Create Customer"
+          button and fill the form:
+             - First name = the first word of "{cust_name}"
+             - Last name  = everything after the first space in "{cust_name}"
+             - Phone:
+                 * If the modal shows ONE phone box, type the 10-digit
+                   "{cust_phone}" into it.
+                 * If the modal shows THREE boxes (area / prefix / line),
+                   type "{ph_area}" into area, "{ph_prefix}" into prefix,
+                   "{ph_line}" into line.
+                 * NEVER type "1{cust_phone}" — the leading 1 country code
+                   makes Tekmetric reject the save and re-render the form.
+             - Email = "{cust_email or ''}" (leave blank if "(none)").
+          Click Save / Add ONCE. If the modal closes the customer is
+          created. If the modal stays open after Save, look for a red
+          inline validation message under any field — fix THAT field
+          specifically; do NOT retype every field. If two consecutive Save
+          attempts fail with the modal still open, action="ask_human"
+          rather than looping.
+
+       c. The IDs Tekmetric assigns to inputs change every render. Do NOT
+          re-fill a field once you've successfully typed into it earlier
+          in the same modal session — assume the value is still there
+          unless a red validation message says otherwise.
 
   4. VEHICLE — once the RO is associated with the customer, search by VIN
      "{vin}".
