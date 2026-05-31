@@ -246,6 +246,44 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
             line["savings_vs_list"] = round(alldata_cost - vendor_price, 2)
         parts_lines.append(line)
 
+    # If ALLDATA listed no OEM parts at all but vendors did return quotes
+    # (typical of maintenance jobs: oil change, brake-fluid flush, tire
+    # rotation), synthesise one part line per requested-part group from the
+    # cheapest in-stock vendor quote. Without this step a routine
+    # maintenance estimate ships with $0 parts even though the shop will
+    # buy the oil filter / cabin filter / etc. from a vendor in stock today.
+    if not parts_lines and vendor_comparison:
+        for requested_part, group in (vendor_comparison or {}).items():
+            if not isinstance(group, dict):
+                continue
+            best = group.get("best") or None
+            if not best:
+                continue
+            try:
+                cost = float(best.get("price"))
+            except (TypeError, ValueError):
+                continue
+            if cost <= 0:
+                continue
+            vendor_label = best.get("vendor") or "Vendor"
+            brand = (best.get("brand") or "").strip()
+            if brand:
+                vendor_label = f"{vendor_label} · {brand}"
+            description = best.get("matched_part_name") or requested_part
+            markup_dollars = round(cost * parts_markup_pct / 100.0, 2)
+            qty = 1
+            line_total = round((cost + markup_dollars) * qty, 2)
+            parts_total += line_total
+            parts_lines.append({
+                "description": description,
+                "partNumber": best.get("oem_number"),
+                "quantity": qty,
+                "cost": cost,
+                "markup": parts_markup_pct,
+                "total": line_total,
+                "vendor": vendor_label,
+            })
+
     subtotal = round(labor_total + parts_total, 2)
     tax_amount = round(subtotal * tax_rate, 2)
     grand_total = round(subtotal + tax_amount, 2)
@@ -360,33 +398,58 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
             await _post_failure(client, job_id, err)
             return
 
-        # 4b. Vendor pricing — look up ALLDATA's OEM part numbers on the
-        # distributor portals (Worldpac/SSF) for real buy price + availability.
+        # 4b. Vendor pricing.
+        #
+        # ALLDATA's "parts and labor" article often DOESN'T list OEM parts for
+        # routine maintenance (oil change, brake-fluid flush, tire rotation),
+        # only labor times — the parts are commodity items. The previous code
+        # gated the entire vendor-pricing block on `alldata_parts` being
+        # non-empty, so an oil-change estimate came back with $0 parts and
+        # an empty Vendor Compare even though Worldpac/SSF would have happily
+        # quoted an oil filter for the same vehicle.
+        #
+        # We now always attempt vendor pricing whenever there's a usable
+        # part_type. When ALLDATA produced OEM parts we still derive the
+        # primary `oem_hint` from them; when it didn't, `oem_hint` is None
+        # and the vendor agents rely purely on the keyword path
+        # (gather_quotes' variants chain auto-expands "Oil Change"-style
+        # operations into the canonical catalog labels).
         vendor_quotes_dicts: list = []
         vendor_comparison: dict = {}
         try:
             from portals.vendors import gather_quotes, summarise
             alldata_parts = (meta.get("parts") or [])
-            if alldata_parts:
-                await _post_progress(client, job_id, "Pricing parts across vendors (Worldpac/SSF)", 75)
-                # Aftermarket distributors are searched by VEHICLE + part type, so
-                # derive the part type from the labor operation, and keep the best
-                # OEM number as a cross-reference hint.
-                part_type = (labor.operation or "").strip() or (job.get("serviceRequest") or "")[:40]
-                op_terms = [t for t in (labor.operation or "").lower().split() if t]
+            part_type = (labor.operation or "").strip() or (job.get("serviceRequest") or "")[:40]
+            if part_type:
+                if alldata_parts:
+                    progress_msg = "Pricing ALLDATA OEM parts across vendors (Worldpac/SSF)"
+                else:
+                    progress_msg = (
+                        "ALLDATA listed labor only — asking vendors for matching parts"
+                    )
+                await _post_progress(client, job_id, progress_msg, 75)
+
                 oem_hint = None
-                for p in alldata_parts:
-                    if p.get("oem_number") and any(t in (p.get("name") or "").lower() for t in op_terms):
-                        oem_hint = str(p["oem_number"]); break
-                if not oem_hint:
-                    oem_hint = str(alldata_parts[0].get("oem_number") or "") or None
+                if alldata_parts:
+                    # Aftermarket distributors are searched by VEHICLE + part
+                    # type; keep the best OEM number as a cross-reference hint
+                    # so the worker's vendor-match logic can substitute the
+                    # cheaper vendor quote into the parts breakdown.
+                    op_terms = [t for t in (labor.operation or "").lower().split() if t]
+                    for p in alldata_parts:
+                        if p.get("oem_number") and any(t in (p.get("name") or "").lower() for t in op_terms):
+                            oem_hint = str(p["oem_number"]); break
+                    if not oem_hint:
+                        oem_hint = str(alldata_parts[0].get("oem_number") or "") or None
+
                 complaint_text = (job.get("serviceRequest") or "").strip() or None
                 vq = await gather_quotes(vehicle, part_type, oem_hint=oem_hint,
                                          complaint=complaint_text)
                 vendor_quotes_dicts = [q.model_dump() for q in vq]
                 vendor_comparison = summarise(vq)
                 logger.info(f"[{job_id}] vendor quotes: {len(vendor_quotes_dicts)} "
-                            f"across {len(vendor_comparison)} part(s)")
+                            f"across {len(vendor_comparison)} part(s)"
+                            f"  (alldata_parts={len(alldata_parts)})")
         except Exception as e:
             logger.warning(f"[{job_id}] vendor pricing skipped: {e}")
 

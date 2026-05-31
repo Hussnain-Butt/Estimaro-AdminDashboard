@@ -81,6 +81,11 @@ _SYNONYM_RULES: list[tuple[tuple[str, ...], str]] = [
     # Filters
     (("oil", "filters"),      "Oil Filter"),
     (("oil", "filter"),       "Oil Filter"),
+    # ALLDATA labels routine oil-service jobs as just "Oil Change" with no
+    # itemised parts; the canonical thing the shop will actually source for
+    # that job is an oil filter, so map the maintenance verb to the part.
+    (("oil", "change"),       "Oil Filter"),
+    (("lube", "oil"),         "Oil Filter"),
     (("air", "filters"),      "Air Filter"),
     (("air", "filter"),       "Air Filter"),
     (("cabin", "filters"),    "Cabin Air Filter"),
