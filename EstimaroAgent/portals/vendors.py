@@ -6,7 +6,14 @@ Given the OEM parts ALLDATA produced, query the real distributor portals
 Bounded by design for stability: we look up only the top `max_parts` parts that
 carry an OEM number, across the enabled vendors, each with its own timeout. So
 the total time added to a job stays predictable.
+
+Vendor calls run in parallel up to `VENDOR_CONCURRENCY` (default 2). Each
+vendor opens its own CDP browser context, so parallelism trades a bit of
+Chrome RAM and CDP traffic for ~50-65% wall-clock reduction on the vendor
+phase of a job. Set VENDOR_CONCURRENCY=1 to fall back to serial execution if
+Chrome contention ever shows up in production.
 """
+import asyncio
 import os
 from typing import Optional
 
@@ -27,6 +34,69 @@ VENDOR_MODULES = [partslink24, worldpac, ssf]
 # stays within its time budget; raise via env when proven.
 MAX_PARTS = int(os.environ.get("VENDOR_MAX_PARTS", "1"))
 PER_LOOKUP_TIMEOUT = int(os.environ.get("VENDOR_LOOKUP_TIMEOUT", "180"))
+# Max simultaneous vendor lookups. 2 is a safe default — three would put six
+# CDP-attached tabs in play (each vendor opens prep + agent), plus Chrome's
+# own service workers, which we saw cause connect_over_cdp timeouts on this
+# VPS earlier. Promote to 3 only after observed stability under load.
+VENDOR_CONCURRENCY = int(os.environ.get("VENDOR_CONCURRENCY", "2"))
+
+
+async def _lookup_one_vendor(
+    mod, vehicle, part_type: str, candidates: list[str],
+    oem_hint: str | None, key: str,
+) -> list[VendorQuote]:
+    """Run one vendor's keyword-variant chain. Returns either real quotes
+    (when something matched) or a single not-found placeholder VendorQuote so
+    the UI's vendor-comparison block still has a row for every vendor we
+    attempted. Never raises — exceptions are caught and converted to a
+    not-found row, since `gather_quotes` runs vendors in parallel and we
+    don't want one vendor's bad day to drop the others' results."""
+    last_err: str | None = None
+    per_vendor_quotes: list[VendorQuote] = []
+    for kw in candidates:
+        try:
+            qs, meta = await mod.lookup(vehicle, kw, oem_hint=oem_hint,
+                                        timeout=PER_LOOKUP_TIMEOUT)
+            if qs:
+                per_vendor_quotes = qs
+                if kw != part_type:
+                    logger.info(f"[vendors] {mod.PORTAL_NAME} matched on "
+                                f"keyword variant {kw!r} (original {part_type!r})")
+                break
+            # Vendor returned an unconditional "doesn't apply" signal
+            # (e.g. PartsLink24 on a non-European VIN, missing brand slug).
+            # No retry will ever change that — stop the variant chain.
+            if (meta or {}).get("skipped"):
+                logger.info(f"[vendors] {mod.PORTAL_NAME} skipped: "
+                            f"{meta['skipped']}")
+                last_err = f"skipped :: {meta['skipped']}"
+                break
+            last_err = (meta or {}).get("error", "not found")
+            # Retries help when the vendor's vocabulary rejected the keyword
+            # (no_part_type / no_extraction); they DO NOT help when the agent
+            # ran out of time exploring the UI, where a different keyword
+            # just burns another full timeout.
+            if any(tag in last_err.lower() for tag in
+                   ("timeout", "agent_crash", "login_failed", "session_expired",
+                    "no_brand_app", "direct_entry_missing", "prep_failed")):
+                logger.info(f"[vendors] {mod.PORTAL_NAME} {kw!r} hit "
+                            f"non-keyword failure ({last_err}); not retrying variants")
+                break
+            logger.info(f"[vendors] {mod.PORTAL_NAME} no results for "
+                        f"{kw!r} ({last_err}); trying next variant")
+        except Exception as e:
+            last_err = f"error: {str(e)[:120]}"
+            logger.warning(f"[vendors] {mod.PORTAL_NAME} lookup failed for "
+                           f"{kw!r}: {e}")
+            # Hard exceptions are also not keyword-fixable — stop.
+            break
+    if per_vendor_quotes:
+        return per_vendor_quotes
+    return [VendorQuote(
+        vendor=mod.PORTAL_NAME, requested_part=key,
+        matched_part_name=part_type, found=False,
+        note=f"{last_err or 'not found'} (tried: {', '.join(repr(c) for c in candidates)})",
+    )]
 
 
 async def gather_quotes(vehicle, part_type: str,
@@ -34,71 +104,45 @@ async def gather_quotes(vehicle, part_type: str,
                         complaint: str | None = None) -> list[VendorQuote]:
     """Price one part type across the aftermarket distributors by VEHICLE +
     part type (the reliable path — they do not index by genuine OEM number).
-    One call per vendor; a failure on one never aborts the others.
+    Runs up to `VENDOR_CONCURRENCY` vendors in parallel; a failure on one
+    never aborts the others.
 
     If the first keyword phrasing yields no results, retries with related
     variants from `keyword_variants` (always grounded in the customer's
     complaint so the search never drifts to an unrelated part)."""
-    quotes: list[VendorQuote] = []
     key = oem_hint or part_type
     candidates = keyword_variants(part_type, complaint=complaint)
     if not candidates:
         candidates = [part_type]
 
-    for mod in VENDOR_MODULES:
-        last_meta: dict = {}
-        last_err: str | None = None
-        chosen_keyword: str | None = None
-        per_vendor_quotes: list[VendorQuote] = []
-        for kw in candidates:
-            try:
-                qs, meta = await mod.lookup(vehicle, kw, oem_hint=oem_hint,
-                                            timeout=PER_LOOKUP_TIMEOUT)
-                last_meta = meta or {}
-                if qs:
-                    per_vendor_quotes = qs
-                    chosen_keyword = kw
-                    if kw != part_type:
-                        logger.info(f"[vendors] {mod.PORTAL_NAME} matched on "
-                                    f"keyword variant {kw!r} (original {part_type!r})")
-                    break
-                # Vendor returned an unconditional "doesn't apply" signal
-                # (e.g. PartsLink24 on a non-European VIN, missing brand slug).
-                # No retry will ever change that — move on to the next vendor.
-                if (meta or {}).get("skipped"):
-                    logger.info(f"[vendors] {mod.PORTAL_NAME} skipped: "
-                                f"{meta['skipped']}")
-                    last_err = f"skipped :: {meta['skipped']}"
-                    break
-                last_err = (meta or {}).get("error", "not found")
-                # Retries help when the vendor's vocabulary rejected the
-                # keyword (no_part_type / no_extraction); they DO NOT help
-                # when the agent ran out of time exploring the UI, where
-                # a different keyword just burns another full timeout.
-                if any(tag in last_err.lower() for tag in
-                       ("timeout", "agent_crash", "login_failed", "session_expired",
-                        "no_brand_app", "direct_entry_missing", "prep_failed")):
-                    logger.info(f"[vendors] {mod.PORTAL_NAME} {kw!r} hit "
-                                f"non-keyword failure ({last_err}); not retrying variants")
-                    break
-                logger.info(f"[vendors] {mod.PORTAL_NAME} no results for "
-                            f"{kw!r} ({last_err}); trying next variant")
-            except Exception as e:
-                last_err = f"error: {str(e)[:120]}"
-                logger.warning(f"[vendors] {mod.PORTAL_NAME} lookup failed for "
-                               f"{kw!r}: {e}")
-                # Hard exceptions are also not keyword-fixable — stop.
-                break
-        if per_vendor_quotes:
-            quotes.extend(per_vendor_quotes)
-        else:
+    # Concurrency-1 keeps the original serial behaviour for safety / easy
+    # rollback via env var. Anything >1 fans out vendors over a semaphore.
+    sem = asyncio.Semaphore(max(1, VENDOR_CONCURRENCY))
+
+    async def _bounded(mod):
+        async with sem:
+            return await _lookup_one_vendor(mod, vehicle, part_type, candidates,
+                                            oem_hint, key)
+
+    # return_exceptions=True so a single vendor blowing up never tanks the
+    # whole gather — we synthesise a not-found row for the offender instead.
+    results = await asyncio.gather(
+        *[_bounded(mod) for mod in VENDOR_MODULES],
+        return_exceptions=True,
+    )
+
+    quotes: list[VendorQuote] = []
+    for mod, r in zip(VENDOR_MODULES, results):
+        if isinstance(r, Exception):
+            logger.error(f"[vendors] {mod.PORTAL_NAME} task raised unhandled "
+                         f"exception: {type(r).__name__}: {str(r)[:160]}")
             quotes.append(VendorQuote(
                 vendor=mod.PORTAL_NAME, requested_part=key,
                 matched_part_name=part_type, found=False,
-                note=f"{last_err or 'not found'} (tried: {', '.join(repr(c) for c in candidates)})",
+                note=f"task_exception :: {type(r).__name__}: {str(r)[:120]}",
             ))
-        _ = chosen_keyword  # available for future telemetry; intentionally unused
-        _ = last_meta
+            continue
+        quotes.extend(r)
     return quotes
 
 
