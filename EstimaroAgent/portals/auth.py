@@ -34,9 +34,26 @@ PORTALS: dict[str, dict] = {
         "url": "https://www.partslink24.com/partslink24/user/login.do",
         "match": "partslink24.com",
         "user": "PARTSLINK24_USERNAME", "passwd": "PARTSLINK24_PASSWORD",
-        # PartsLink24 also asks for a Company/Login ID on the login screen.
-        "extra": [{"hints": ["company", "login id", "customer", "userlogin"],
-                    "value_key": "PARTSLINK24_COMPANY_ID"}],
+        # PL24's login form has THREE fields whose names all contain "login":
+        #   accountLogin       -> Company ID
+        #   userLogin          -> Username
+        #   loginBean.password -> Password
+        # The generic _USER_SEL matches all three on `name*='login' i`, so the
+        # legacy auto-pick was scrambling Company ID with Username. Pin each
+        # role to its exact name. The visible submit is `#hidden-login` with
+        # class auto-submit and display:none, so we click it via JS rather
+        # than relying on :visible.
+        "fields": {
+            "user":   "input[name='userLogin']",
+            "passwd": "input[name='loginBean.password']",
+            "extras": [{"selector": "input[name='accountLogin']",
+                         "value_key": "PARTSLINK24_COMPANY_ID"}],
+        },
+        # Submit button is hidden; click it via JS rather than rely on :visible.
+        "submit_js": "() => { const b = document.querySelector('#hidden-login'); if (b) b.click(); }",
+        # After successful login PL24 redirects away from /user/login.do to the
+        # brand menu. Use URL as the success signal, not just \"password field gone\".
+        "logged_in_url_excludes": "/user/login.do",
     },
     "ssf": {
         "url": "https://shop.ssfautoparts.com/",
@@ -100,16 +117,30 @@ async def _do_login(page: Page, cfg: dict) -> bool:
     if pw_field is None:
         return True  # already logged in
 
-    # Username
+    fields = cfg.get("fields") or {}
+
+    # Username — prefer explicit per-portal selector, else fall back to generic.
     try:
-        ufield = page.locator(_USER_SEL).first
+        user_sel = fields.get("user") or _USER_SEL
+        ufield = page.locator(user_sel).first
         await ufield.fill("")
         await ufield.fill(user)
     except Exception as e:
         logger.warning(f"[auth] username fill issue: {e}")
 
-    # Extra fields (e.g. PartsLink24 Company ID) — best effort, before password.
-    for extra in cfg.get("extra", []):
+    # Extras — per-portal explicit (PL24 Company ID), then legacy hint-based.
+    for extra in fields.get("extras", []):
+        val = getattr(settings, extra["value_key"], "") or ""
+        if not val:
+            continue
+        try:
+            f = page.locator(extra["selector"]).first
+            if await f.count() > 0:
+                await f.fill("")
+                await f.fill(val)
+        except Exception as e:
+            logger.warning(f"[auth] extra fill ({extra['value_key']}) issue: {e}")
+    for extra in cfg.get("extra", []):  # legacy hint-based path (other portals)
         val = getattr(settings, extra["value_key"], "") or ""
         if not val:
             continue
@@ -125,33 +156,53 @@ async def _do_login(page: Page, cfg: dict) -> bool:
             except Exception:
                 continue
 
-    # Password (filled locally; never logged, never sent to the LLM)
+    # Password — explicit selector if provided (PL24 has multiple pw-ish fields
+    # over its lifetime; pinning the name avoids the wrong one).
     try:
-        await pw_field.fill(pw)
+        if fields.get("passwd"):
+            await page.locator(fields["passwd"]).first.fill(pw)
+        else:
+            await pw_field.fill(pw)
     except Exception as e:
         logger.error(f"[auth] password fill failed: {e}")
         return False
 
-    # Submit
-    try:
-        submit = page.locator(_SUBMIT_SEL).first
-        if await submit.count() > 0:
-            await submit.click()
-        else:
-            await pw_field.press("Enter")
-    except Exception as e:
-        logger.warning(f"[auth] submit issue: {e}; trying Enter")
+    # Submit — per-portal JS first (handles hidden submit buttons), then the
+    # generic visible-button path, then Enter on the password field.
+    submitted = False
+    if cfg.get("submit_js"):
+        try:
+            await page.evaluate(cfg["submit_js"])
+            submitted = True
+        except Exception as e:
+            logger.warning(f"[auth] submit_js failed: {e}")
+    if not submitted:
+        try:
+            submit = page.locator(_SUBMIT_SEL).first
+            if await submit.count() > 0:
+                await submit.click()
+                submitted = True
+        except Exception as e:
+            logger.warning(f"[auth] submit click issue: {e}")
+    if not submitted:
         try:
             await pw_field.press("Enter")
         except Exception:
             pass
 
-    # Wait for navigation / form to disappear
-    for _ in range(10):
+    # Success signal: prefer URL-based marker when the portal redirects on
+    # success (PL24), else fall back to the password field disappearing.
+    url_marker = cfg.get("logged_in_url_excludes")
+    for _ in range(12):
         await asyncio.sleep(1.5)
+        if url_marker and url_marker not in page.url:
+            return True
         if not await is_logged_out(page):
             return True
-    return not await is_logged_out(page)
+    # Final state — log the post-submit URL so an operator can see if the
+    # form was rejected (still on login.do) vs site error (somewhere else).
+    logger.warning(f"[auth] post-submit URL: {page.url}")
+    return False
 
 
 async def ensure_logged_in(portal_key: str) -> dict:
@@ -176,6 +227,32 @@ async def ensure_logged_in(portal_key: str) -> dict:
     except Exception as e:
         logger.error(f"[auth] {portal_key} ensure_logged_in error: {e}")
         return {"portal": portal_key, "ok": False, "error": str(e)[:160]}
+
+
+async def restore_session_on_page(page: Page, portal_key: str) -> bool:
+    """Re-login on an EXISTING page (no new browser context).
+
+    Use this from inside a running vision-agent when mid-flight session
+    expiry is detected — calling `ensure_logged_in` would open a separate
+    ChromeDebugBrowser context which fights the agent for tabs and adds
+    latency. With this helper we drive the login form on the same page the
+    agent is already holding, then the agent simply navigates back to its
+    portal_url and continues from there.
+
+    Returns True when, after the attempt, the page is no longer showing a
+    login form (or, for portals that use a URL marker, the URL no longer
+    matches the login route). Returns False if credentials are missing,
+    the portal_key is unknown, or the form remains visible after submit.
+    """
+    cfg = PORTALS.get(portal_key)
+    if not cfg:
+        logger.warning(f"[auth] restore_session_on_page: unknown portal {portal_key!r}")
+        return False
+    try:
+        return await _do_login(page, cfg)
+    except Exception as e:
+        logger.error(f"[auth] restore_session_on_page {portal_key} error: {e}")
+        return False
 
 
 async def relogin_all() -> list[dict]:
