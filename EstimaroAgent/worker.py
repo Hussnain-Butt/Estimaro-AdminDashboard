@@ -89,19 +89,37 @@ async def _post_failure(client: httpx.AsyncClient, job_id: str, err: str):
         logger.warning(f"failure post failed: {e}")
 
 
-async def _reset_to_vehicle_selector():
-    """Force the live ALLDATA tab back to the vehicle selector before each job."""
+async def _reset_to_vehicle_selector() -> bool:
+    """Force the live ALLDATA tab back to the vehicle selector before each job.
+
+    Returns True when the page actually landed on `/select-vehicle` after
+    navigation. Returns False if ALLDATA redirected somewhere unexpected
+    (e.g. session expired -> login page, account error page) — the caller
+    can use this to fail fast instead of running the agent against the
+    wrong starting state and burning 25 steps on a doomed run.
+    """
+    target = "https://my.alldata.com/repair/#/select-vehicle"
     try:
         async with ChromeDebugBrowser() as browser:
-            page = await browser.open_or_focus("https://my.alldata.com/repair/#/select-vehicle")
+            page = await browser.open_or_focus(target)
             try:
-                await page.goto("https://my.alldata.com/repair/#/select-vehicle",
-                                wait_until="domcontentloaded", timeout=30000)
+                await page.goto(target, wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(2)
             except Exception as e:
                 logger.warning(f"reset navigation failed: {e}")
+                return False
+            # Verify we actually landed on the vehicle selector. ALLDATA will
+            # redirect to login if the session dropped between the auth check
+            # and now, and to an account/error page if the subscription has
+            # lapsed; in both cases the agent's vehicle-pick prompt cannot
+            # succeed and we should surface the real reason.
+            if "select-vehicle" not in page.url:
+                logger.warning(f"reset landed on unexpected URL: {page.url}")
+                return False
+            return True
     except Exception as e:
         logger.warning(f"reset_to_vehicle_selector outer error: {e}")
+        return False
 
 
 def _normalize_oem(s) -> str:
@@ -359,9 +377,18 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
             await _post_failure(client, job_id, err)
             return
 
-        # 4. Reset Chrome to vehicle selector
+        # 4. Reset Chrome to vehicle selector. If we can't land on the
+        # selector, fail fast — running the vision agent against a login or
+        # error page just burns 25 steps before reporting the same root cause.
         await _post_progress(client, job_id, f"Opening ALLDATA for {vehicle.year} {vehicle.make} {vehicle.model}", 35)
-        await _reset_to_vehicle_selector()
+        reset_ok = await _reset_to_vehicle_selector()
+        if not reset_ok:
+            err = ("Could not reach the ALLDATA vehicle selector — page redirected "
+                   "(session may have just dropped, or ALLDATA returned an error page). "
+                   "Re-check ALLDATA login via noVNC.")
+            logger.error(f"[{job_id}] {err}")
+            await _post_failure(client, job_id, err)
+            return
 
         # 4. Run the vision agent (hard timeout so a hang can't wedge the worker)
         await _post_progress(client, job_id, "Running ALLDATA vision agent (Gemini)", 50)
@@ -577,7 +604,16 @@ async def main_loop():
         except Exception as e:
             logger.warning(f"backend health check failed: {e}")
 
-        last_keepalive = 0.0
+        # IMPORTANT: seed last_keepalive to NOW (not 0.0). Initialising to 0.0
+        # made the `now - last_keepalive >= interval` check fire on the very
+        # first idle tick after every restart, kicking off relogin_all() for
+        # all five portals in rapid succession — that, combined with the fact
+        # that each ensure_logged_in opens its own CDP connection, was
+        # observed to cause `BrowserType.connect_over_cdp: Timeout 30000ms`
+        # storms after deploys. With this seed the first keepalive fires
+        # exactly one `keepalive_interval` after start, which matches the
+        # intended cadence.
+        last_keepalive = time.time()
         keepalive_interval = int(os.environ.get("SESSION_KEEPALIVE_SEC", "1800"))  # 30 min
         while True:
             # Priority order: drain the (cheap, short) Tekmetric push queue
