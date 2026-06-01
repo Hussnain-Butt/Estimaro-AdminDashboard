@@ -93,33 +93,61 @@ async def _reset_to_vehicle_selector() -> bool:
     """Force the live ALLDATA tab back to the vehicle selector before each job.
 
     Returns True when the page actually landed on `/select-vehicle` after
-    navigation. Returns False if ALLDATA redirected somewhere unexpected
-    (e.g. session expired -> login page, account error page) — the caller
-    can use this to fail fast instead of running the agent against the
-    wrong starting state and burning 25 steps on a doomed run.
+    navigation. Returns False if, after a one-shot relogin recovery attempt,
+    ALLDATA still redirects somewhere else (subscription lapsed, account
+    locked, login broken) — the caller can use this to fail fast instead of
+    running the agent against the wrong starting state.
+
+    Recovery rationale: the keepalive runs every 30 min, but a job that
+    arrives 29 min into that window can race the session expiry. If the
+    nav lands on bare /alldata.com/ or the login form, calling
+    ensure_logged_in restores the session in-place; we then retry the
+    same navigation ONCE before giving up. This fixes the silent
+    'session dropped between keepalive and job arrival' failure mode.
     """
     target = "https://my.alldata.com/repair/#/select-vehicle"
+
+    async def _try_once() -> tuple[bool, str]:
+        try:
+            async with ChromeDebugBrowser() as browser:
+                page = await browser.open_or_focus(target)
+                try:
+                    await page.goto(target, wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(2)
+                except Exception as e:
+                    return False, f"nav_failed: {e}"
+                if "select-vehicle" not in page.url:
+                    return False, f"unexpected_url: {page.url}"
+                return True, "ok"
+        except Exception as e:
+            return False, f"outer: {e}"
+
+    ok, why = await _try_once()
+    if ok:
+        return True
+
+    # First attempt failed. If we landed on a non-selector URL, the most
+    # likely cause is a dropped session. Try a relogin and retry once.
+    logger.warning(f"reset attempt 1 failed ({why}) — trying alldata relogin recovery")
     try:
-        async with ChromeDebugBrowser() as browser:
-            page = await browser.open_or_focus(target)
-            try:
-                await page.goto(target, wait_until="domcontentloaded", timeout=30000)
-                await asyncio.sleep(2)
-            except Exception as e:
-                logger.warning(f"reset navigation failed: {e}")
-                return False
-            # Verify we actually landed on the vehicle selector. ALLDATA will
-            # redirect to login if the session dropped between the auth check
-            # and now, and to an account/error page if the subscription has
-            # lapsed; in both cases the agent's vehicle-pick prompt cannot
-            # succeed and we should surface the real reason.
-            if "select-vehicle" not in page.url:
-                logger.warning(f"reset landed on unexpected URL: {page.url}")
-                return False
-            return True
+        from portals.auth import ensure_logged_in
+        status = await ensure_logged_in("alldata")
+        if not status.get("ok"):
+            logger.warning(
+                f"reset: relogin recovery failed "
+                f"(action={status.get('action')!r}, error={status.get('error')!r}) — "
+                f"giving up"
+            )
+            return False
+        logger.info(f"reset: relogin recovery succeeded ({status.get('action')!r}) — retrying nav")
     except Exception as e:
-        logger.warning(f"reset_to_vehicle_selector outer error: {e}")
+        logger.warning(f"reset: relogin recovery raised {e!r} — giving up")
         return False
+
+    ok2, why2 = await _try_once()
+    if not ok2:
+        logger.warning(f"reset attempt 2 (post-relogin) also failed: {why2}")
+    return ok2
 
 
 def _normalize_oem(s) -> str:
