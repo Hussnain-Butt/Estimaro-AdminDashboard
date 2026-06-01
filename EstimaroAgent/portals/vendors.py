@@ -50,7 +50,16 @@ async def _lookup_one_vendor(
     the UI's vendor-comparison block still has a row for every vendor we
     attempted. Never raises — exceptions are caught and converted to a
     not-found row, since `gather_quotes` runs vendors in parallel and we
-    don't want one vendor's bad day to drop the others' results."""
+    don't want one vendor's bad day to drop the others' results.
+
+    Timeout retry policy: if the first variant chain ends with a timeout
+    AND no quotes were produced, we wait briefly and retry the FIRST
+    candidate one more time. WorldPac in particular has been observed to
+    'time out — vendor site was slow' as a transient hiccup that succeeds
+    on a second attempt; a single targeted retry restores the multi-source
+    coverage that the consensus layer needs without doubling worst-case
+    wall-clock for the chronic-failure case (we only retry variant[0],
+    not the whole chain)."""
     last_err: str | None = None
     per_vendor_quotes: list[VendorQuote] = []
     for kw in candidates:
@@ -90,6 +99,35 @@ async def _lookup_one_vendor(
                            f"{kw!r}: {e}")
             # Hard exceptions are also not keyword-fixable — stop.
             break
+
+    # One-shot transient-timeout retry. Only fires when the first pass
+    # produced zero quotes AND the last error was a timeout — i.e. the
+    # vendor was reachable, the agent just ran out of clock. Sleeping
+    # briefly between attempts lets the vendor site recover and avoids
+    # hammering it; 20s is short enough to keep the overall job within
+    # budget when paired with VENDOR_CONCURRENCY > 1.
+    if (not per_vendor_quotes and last_err
+            and "timeout" in last_err.lower() and candidates):
+        logger.info(f"[vendors] {mod.PORTAL_NAME} timed out on first pass — "
+                    f"retrying {candidates[0]!r} once after 20s cool-off")
+        await asyncio.sleep(20)
+        try:
+            qs, meta = await mod.lookup(vehicle, candidates[0],
+                                        oem_hint=oem_hint,
+                                        timeout=PER_LOOKUP_TIMEOUT)
+            if qs:
+                per_vendor_quotes = qs
+                logger.info(f"[vendors] {mod.PORTAL_NAME} retry SUCCEEDED — "
+                            f"recovered {len(qs)} quote(s)")
+            else:
+                retry_err = (meta or {}).get("error") or "still no results"
+                logger.info(f"[vendors] {mod.PORTAL_NAME} retry failed: "
+                            f"{retry_err}")
+                last_err = f"{last_err} (retry: {retry_err})"
+        except Exception as e:
+            logger.warning(f"[vendors] {mod.PORTAL_NAME} retry raised: {e}")
+            last_err = f"{last_err} (retry_exception: {str(e)[:60]})"
+
     if per_vendor_quotes:
         return per_vendor_quotes
     return [VendorQuote(

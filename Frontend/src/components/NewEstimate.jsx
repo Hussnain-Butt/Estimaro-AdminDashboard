@@ -801,6 +801,13 @@ const NewEstimate = () => {
       section_path: r.section_path ?? null,
       agent_steps: r.agent_steps ?? null,
       elapsed_sec: r.elapsed_sec ?? null,
+      // Layer 6 — worker-computed tier + aggregate score. UI shows
+      // these directly; do NOT recompute from extraction/verification on
+      // the FE or the gating policy will drift across versions.
+      overall: r.confidence ?? null,
+      // Layer 5 — per-part vendor consensus. Used to drive the
+      // "Sources: X/Y vendors" sub-chip and any per-row outlier badges.
+      consensus: r.consensus ?? null,
     })
 
     // Hydrate the Vendor Compare step with the live Worldpac/SSF quotes the
@@ -1242,33 +1249,87 @@ const NewEstimate = () => {
         </div>
       )}
 
-      {/* Tiny verification chip — operator-only signal that the agent's
-          extraction matched the customer complaint. Verbose source-path
-          and Hermes reasoning live behind a hover for a clean canvas. */}
-      {confidenceScore && !isGenerating && (formData.laborItems.length > 0 || formData.partsItems.length > 0) && (
-        <div className="w-full max-w-4xl mx-auto mb-4 flex justify-end">
-          <div
-            className="group relative inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface border border-border text-xs text-text-secondary cursor-help"
-            title={[
-              confidenceScore.section_path ? `Source: ${confidenceScore.section_path}` : null,
-              confidenceScore.verification_reason ? `Hermes: ${confidenceScore.verification_reason}` : null,
-              confidenceScore.agent_steps != null ? `${confidenceScore.agent_steps} agent steps` : null,
-              confidenceScore.elapsed_sec != null ? `${confidenceScore.elapsed_sec.toFixed(1)}s elapsed` : null,
-            ].filter(Boolean).join(' · ')}
-          >
-            <span className={`inline-block h-2 w-2 rounded-full ${
-              (confidenceScore.verification_confidence ?? 0) >= 0.9 ? 'bg-success' :
-              (confidenceScore.verification_confidence ?? 0) >= 0.7 ? 'bg-warning' : 'bg-danger'
-            }`} />
-            <span>
-              {confidenceScore.verification_match ? 'Verified' : 'Unverified'}
-              {confidenceScore.verification_confidence != null
-                ? ` · ${Math.round(confidenceScore.verification_confidence * 100)}%`
-                : ''}
-            </span>
+      {/* Confidence chip — Layer 6 of the proposal. Worker decides tier
+          (auto / advisor_review / manual_review); we just render. Hover
+          surfaces the breakdown so the advisor can see which sub-score
+          dragged the verdict down (extraction vs verification vs sourcing). */}
+      {confidenceScore && !isGenerating && (formData.laborItems.length > 0 || formData.partsItems.length > 0) && (() => {
+        const overall = confidenceScore.overall
+        const tier = overall?.tier
+        const score = overall?.score
+        // Tier → visual style + human label. Mapping mirrors the proposal:
+        // ≥0.90 auto, 0.70-0.89 spot-check, <0.70 manual.
+        const tierStyle = tier === 'auto'
+          ? { dot: 'bg-success', label: 'Auto-approve', ring: 'border-success/40' }
+          : tier === 'advisor_review'
+          ? { dot: 'bg-warning', label: 'Advisor review', ring: 'border-warning/40' }
+          : tier === 'manual_review'
+          ? { dot: 'bg-danger', label: 'Manual review', ring: 'border-danger/40' }
+          // Old worker (no Layer 6 yet) → fall back to the original
+          // verification-only signal so a partial rollout still shows
+          // *something* useful instead of "—".
+          : {
+              dot: (confidenceScore.verification_confidence ?? 0) >= 0.9 ? 'bg-success'
+                : (confidenceScore.verification_confidence ?? 0) >= 0.7 ? 'bg-warning' : 'bg-danger',
+              label: confidenceScore.verification_match ? 'Verified' : 'Unverified',
+              ring: 'border-border',
+            }
+        const pct = score != null
+          ? Math.round(score * 100)
+          : (confidenceScore.verification_confidence != null
+              ? Math.round(confidenceScore.verification_confidence * 100)
+              : null)
+        // Sources sub-chip — picks the WORST coverage across all consensus
+        // groups so a partial single-source group drags the chip down even
+        // when other parts had multi-source agreement. Hidden when consensus
+        // wasn't returned (e.g. all maintenance, no vendor lookups).
+        const consensusGroups = confidenceScore.consensus ? Object.values(confidenceScore.consensus) : []
+        let sourcesChip = null
+        if (consensusGroups.length > 0) {
+          const worst = consensusGroups.reduce((acc, g) => {
+            const total = g.vendors_total || 0
+            const priced = g.vendors_with_price || 0
+            if (acc == null || priced < acc.priced) return { priced, total, outliers: (g.outliers || []).length }
+            return acc
+          }, null)
+          if (worst) {
+            const sStyle = worst.priced >= 2 && worst.outliers === 0 ? 'bg-success/15 text-success border-success/30'
+              : worst.priced >= 2 ? 'bg-warning/15 text-warning border-warning/30'
+              : worst.priced === 1 ? 'bg-warning/15 text-warning border-warning/30'
+              : 'bg-danger/15 text-danger border-danger/30'
+            sourcesChip = (
+              <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-medium ${sStyle}`}
+                    title={worst.outliers > 0 ? `${worst.outliers} vendor outlier(s) vs median price` : 'Vendor agreement on price'}>
+                Sources: {worst.priced}/{worst.total}
+                {worst.outliers > 0 ? ` · ${worst.outliers} outlier` : ''}
+              </span>
+            )
+          }
+        }
+        const tooltip = [
+          overall?.breakdown && `Extraction ${Math.round((overall.breakdown.extraction || 0) * 100)}% · Verification ${Math.round((overall.breakdown.verification || 0) * 100)}% · Sourcing ${Math.round((overall.breakdown.sourcing || 0) * 100)}%`,
+          overall?.breakdown?.sourcing_note && `Sourcing: ${overall.breakdown.sourcing_note.replace(/_/g, ' ')}`,
+          confidenceScore.section_path && `Path: ${confidenceScore.section_path}`,
+          confidenceScore.verification_reason && `Hermes: ${confidenceScore.verification_reason}`,
+          confidenceScore.agent_steps != null && `${confidenceScore.agent_steps} agent steps`,
+          confidenceScore.elapsed_sec != null && `${confidenceScore.elapsed_sec.toFixed(1)}s elapsed`,
+        ].filter(Boolean).join(' · ')
+        return (
+          <div className="w-full max-w-4xl mx-auto mb-4 flex justify-end items-center gap-2">
+            {sourcesChip}
+            <div
+              className={`group relative inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface border ${tierStyle.ring} text-xs text-text-secondary cursor-help`}
+              title={tooltip}
+            >
+              <span className={`inline-block h-2 w-2 rounded-full ${tierStyle.dot}`} />
+              <span>
+                {tierStyle.label}
+                {pct != null ? ` · ${pct}%` : ''}
+              </span>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Main Content Area */}
       <div className="flex-grow bg-surface border border-border rounded-xl p-6 md:p-8 shadow-2xl">

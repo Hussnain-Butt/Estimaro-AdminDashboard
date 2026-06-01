@@ -160,6 +160,160 @@ def _normalize_oem(s) -> str:
     return _re.sub(r"[\s\-_./,]+", "", str(s)).upper()
 
 
+def _compute_consensus(vendor_comparison: dict | None) -> dict:
+    """Cross-source consensus for the proposal's Layer 5.
+
+    For every requested-part group we summarise the spread of vendor prices —
+    how many vendors responded, how many returned an actual price, the
+    median/min/max, and which (if any) quotes are statistical outliers vs the
+    median. This is the signal Cross-Source Consensus is meant to surface:
+    when 3 vendors agree within 10% the buy price is trustworthy; when 1
+    vendor sits at 2× the others it's almost certainly a mismatched SKU and
+    should be flagged for the advisor — not silently treated as cheapest.
+
+    Output shape per part key:
+        {
+          "vendors_total":         <int>,   # rows returned for this part
+          "vendors_with_price":    <int>,   # rows that carried a real price
+          "vendors_in_stock":      <int>,   # priced + in_stock
+          "median_price":          <float | null>,
+          "min_price":             <float | null>,
+          "max_price":             <float | null>,
+          "spread_pct":            <float | null>,  # (max-min)/median, 0..inf
+          "outliers": [{"vendor": "X", "price": Y, "delta_pct": +Z}],
+          "oem_agreement":         <float 0..1>,    # frac of priced rows whose
+                                                    # OEM matched the requested key
+        }
+
+    Outlier rule: a priced row whose price is >50% above OR below the median
+    is flagged. With only 1 priced row there is no median and no outliers.
+    """
+    out: dict[str, dict] = {}
+    for requested, group in (vendor_comparison or {}).items():
+        if not isinstance(group, dict):
+            continue
+        rows = [q for q in (group.get("all") or []) if isinstance(q, dict)]
+        priced = []
+        for q in rows:
+            try:
+                p = float(q.get("price"))
+            except (TypeError, ValueError):
+                continue
+            if p > 0:
+                priced.append((q, p))
+        if not rows:
+            continue
+        in_stock = sum(1 for q, _ in priced if q.get("in_stock"))
+        target_key = _normalize_oem(requested)
+        if priced:
+            prices = sorted(p for _, p in priced)
+            n = len(prices)
+            mid = n // 2
+            median = (prices[mid] if n % 2 else (prices[mid - 1] + prices[mid]) / 2.0)
+            mn, mx = prices[0], prices[-1]
+            spread = ((mx - mn) / median) if median > 0 else None
+            outliers = []
+            if n >= 2 and median > 0:
+                for q, p in priced:
+                    delta = (p - median) / median
+                    if abs(delta) > 0.5:
+                        outliers.append({
+                            "vendor": q.get("vendor"),
+                            "brand": q.get("brand"),
+                            "price": round(p, 2),
+                            "delta_pct": round(delta * 100, 1),
+                        })
+            oem_agree = 0
+            if target_key:
+                for q, _ in priced:
+                    if _normalize_oem(q.get("oem_number")) == target_key:
+                        oem_agree += 1
+            oem_agreement = (oem_agree / n) if n else 0.0
+            out[requested] = {
+                "vendors_total": len(rows),
+                "vendors_with_price": n,
+                "vendors_in_stock": in_stock,
+                "median_price": round(median, 2),
+                "min_price": round(mn, 2),
+                "max_price": round(mx, 2),
+                "spread_pct": (round(spread * 100, 1) if spread is not None else None),
+                "outliers": outliers,
+                "oem_agreement": round(oem_agreement, 2),
+            }
+        else:
+            out[requested] = {
+                "vendors_total": len(rows),
+                "vendors_with_price": 0,
+                "vendors_in_stock": 0,
+                "median_price": None,
+                "min_price": None,
+                "max_price": None,
+                "spread_pct": None,
+                "outliers": [],
+                "oem_agreement": 0.0,
+            }
+    return out
+
+
+def _compute_overall_confidence(
+    extraction_conf: float,
+    verification_conf: float,
+    consensus: dict | None,
+) -> dict:
+    """Layer 6: aggregate confidence + tier routing for the FE badge.
+
+    Inputs:
+      * extraction_conf — Gemini's self-rated confidence on the labor row
+      * verification_conf — Hermes verifier's match confidence vs JobSpec
+      * consensus — per-part output of _compute_consensus
+
+    Sourcing score: 1.0 when ≥2 vendors returned a price AND no outliers,
+    0.7 when ≥2 priced but with outliers, 0.5 when only 1 priced (the
+    single-source downgrade the proposal calls out), 0.3 when 0 priced.
+
+    Aggregate: weighted average extraction (0.35) + verification (0.35) +
+    sourcing (0.30). Tier thresholds match the proposal's gating rule
+    (≥0.90 auto, 0.70-0.89 advisor, <0.70 manual).
+    """
+    ex = max(0.0, min(1.0, float(extraction_conf or 0.0)))
+    vf = max(0.0, min(1.0, float(verification_conf or 0.0)))
+
+    # Sourcing — derived from consensus across ALL part groups.
+    sourcing = 0.3
+    sourcing_note = "no_vendors_returned"
+    if consensus:
+        priced_groups = [c for c in consensus.values()
+                         if (c.get("vendors_with_price") or 0) >= 1]
+        if priced_groups:
+            min_priced = min(c.get("vendors_with_price") or 0 for c in priced_groups)
+            any_outliers = any(c.get("outliers") for c in priced_groups)
+            if min_priced >= 2 and not any_outliers:
+                sourcing, sourcing_note = 1.0, "multi_source_agreement"
+            elif min_priced >= 2 and any_outliers:
+                sourcing, sourcing_note = 0.7, "multi_source_with_outliers"
+            else:
+                sourcing, sourcing_note = 0.5, "single_source"
+
+    score = round(0.35 * ex + 0.35 * vf + 0.30 * sourcing, 3)
+    if score >= 0.90:
+        tier = "auto"
+    elif score >= 0.70:
+        tier = "advisor_review"
+    else:
+        tier = "manual_review"
+
+    return {
+        "score": score,
+        "tier": tier,
+        "breakdown": {
+            "extraction": round(ex, 3),
+            "verification": round(vf, 3),
+            "sourcing": round(sourcing, 3),
+            "sourcing_note": sourcing_note,
+        },
+    }
+
+
 def _dedup_parts(parts: list[dict]) -> list[dict]:
     """Collapse part variants that share an OEM number into a single line.
 
@@ -411,6 +565,16 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
     except Exception:
         pass
 
+    # Layer 5 + Layer 6: cross-source consensus + aggregate confidence with
+    # tier routing. Both derived from data already in this payload, so the
+    # FE doesn't have to recompute (and can't drift from the gating policy).
+    consensus = _compute_consensus(vendor_comparison)
+    confidence_summary = _compute_overall_confidence(
+        extraction_conf=float(meta.get("extraction_confidence") or 0.0),
+        verification_conf=float(verification.get("confidence") or 0.0),
+        consensus=consensus,
+    )
+
     return {
         "vehicleInfo": {
             "year": vehicle.year,
@@ -438,6 +602,11 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
         "elapsed_sec": round(elapsed, 1),
         "vendorQuotes": vendor_quotes or [],
         "vendorComparison": vendor_comparison or {},
+        # Layer 5 / Layer 6 — the FE renders these directly; do not let the
+        # FE rebuild from raw vendorComparison or it will drift from the
+        # gating thresholds we use to decide auto vs advisor vs manual.
+        "consensus": consensus,
+        "confidence": confidence_summary,
     }
 
 

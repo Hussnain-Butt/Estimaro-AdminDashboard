@@ -55,6 +55,26 @@ class Breakdown(BaseModel):
     total: float = 0.0
 
 
+class ConfidenceBreakdown(BaseModel):
+    extraction: float = 0.0
+    verification: float = 0.0
+    sourcing: float = 0.0
+    sourcing_note: Optional[str] = None
+
+
+class ConfidenceSummary(BaseModel):
+    """Aggregate confidence + tier routing for the proposal's Layer 6 gate.
+
+    `tier` ∈ {"auto", "advisor_review", "manual_review"} drives the FE badge
+    colour and the policy decision on whether to push to Tekmetric without
+    advisor approval. Backend doesn't enforce the tier (Tekmetric push is a
+    user click), it just transports the worker's verdict.
+    """
+    score: float = 0.0
+    tier: str = "manual_review"
+    breakdown: ConfidenceBreakdown = Field(default_factory=ConfidenceBreakdown)
+
+
 class JobResult(BaseModel):
     vehicleInfo: VehicleInfo = Field(default_factory=VehicleInfo)
     # ALLDATA's banner often shows a more specific sub-model than NHTSA
@@ -75,6 +95,14 @@ class JobResult(BaseModel):
     # Vendor pricing (Worldpac/SSF) for the OEM parts, + best-pick comparison
     vendorQuotes: List[Dict[str, Any]] = Field(default_factory=list)
     vendorComparison: Dict[str, Any] = Field(default_factory=dict)
+    # Layer 5: per-part-group consensus across the vendors. Keyed by the
+    # requested-part name (mirrors vendorComparison's keys); each value is a
+    # dict with median/min/max/outliers/oem_agreement — see worker
+    # _compute_consensus for the exact shape. Dict[str,Any] so adding a new
+    # field there doesn't require a schema migration.
+    consensus: Dict[str, Any] = Field(default_factory=dict)
+    # Layer 6: overall confidence + tier. Worker decides; FE renders.
+    confidence: Optional[ConfidenceSummary] = None
 
 
 class JobSubmitRequest(BaseModel):
