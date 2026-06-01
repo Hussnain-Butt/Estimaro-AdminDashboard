@@ -412,8 +412,18 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
                     last_note = str(hist[-1].get("reason") or "")[:200]
             except Exception:
                 pass
+            # Specific failure modes flagged by the agent itself (set in
+            # alldata_agent.lookup_labor_time when a hard guard trips).
+            fail_reason = (meta or {}).get("fail_reason") or ""
             lowered = last_note.lower()
-            if any(k in lowered for k in ("log in", "login", "sign in", "session", "logged out")):
+            if fail_reason == "vehicle_mismatch_on_extract_page":
+                vin_tail = (meta or {}).get("target_vin_suffix") or ""
+                err = ("ALLDATA agent picked the wrong vehicle — the labor article it "
+                       "landed on does not show our target VIN "
+                       f"(suffix {vin_tail!r}). The 'Recent Vehicles' list likely had "
+                       "a stale row from a previous customer. Re-check the vehicle "
+                       "selector and try again.")
+            elif any(k in lowered for k in ("log in", "login", "sign in", "session", "logged out")):
                 err = ("ALLDATA session appears to have expired — please re-login via noVNC. "
                        f"Agent note: {last_note}")
             elif any(k in lowered for k in ("vehicle", "vin", "year", "make", "model")):

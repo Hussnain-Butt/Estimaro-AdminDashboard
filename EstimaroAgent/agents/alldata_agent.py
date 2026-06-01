@@ -155,6 +155,36 @@ async def lookup_labor_time(
 
     best = max(result["extracted"], key=lambda e: e.get("confidence", 0.0))
     raw = best["data"]
+
+    # Vehicle-match hard guard. ALLDATA prints the picked vehicle's VIN in the
+    # banner on every Parts-and-Labor page, so the suffix of the target VIN
+    # MUST appear in the extraction-time page text. If it doesn't, the agent
+    # picked the wrong vehicle (e.g. a stale "Recent Vehicles" row from a
+    # previous customer) and the labor row is for a different car entirely.
+    # That's a silent-wrong-estimate failure mode — never let it through to
+    # the estimate. We use a 6-char suffix because the full 17-char VIN is
+    # sometimes broken across spans (`VIN 58 ` + `B5244T3 ` + `YV1SZ...`) and
+    # the tail is the most-unique, contiguous slice.
+    page_text_raw = (best.get("page_text") or "")
+    page_text_lc = page_text_raw.lower()
+    target_vin = (vehicle.vin or "").strip().upper()
+    if target_vin and len(target_vin) >= 6 and page_text_lc:
+        vin_suffix = target_vin[-6:].lower()
+        # Strip whitespace from page text for the suffix check so VINs broken
+        # across HTML spans (" 78311 " vs "78311") still match.
+        page_text_compact = "".join(page_text_lc.split())
+        if vin_suffix not in page_text_lc and vin_suffix not in page_text_compact:
+            logger.error(
+                f"Vehicle-match guard FAIL: target VIN suffix {vin_suffix!r} "
+                f"not present in extraction page — agent operated on wrong vehicle"
+            )
+            return None, {
+                **result,
+                "fail_reason": "vehicle_mismatch_on_extract_page",
+                "target_vin_suffix": vin_suffix,
+                "extraction_confidence": 0.0,
+            }
+
     # Screenshot-vs-claim sanity check (cheap DOM grep). The model occasionally
     # hallucinates an operation/hours combo that doesn't actually appear on
     # the rendered page. We don't reject outright — vision is still our best
