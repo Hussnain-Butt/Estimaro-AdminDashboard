@@ -33,7 +33,13 @@ VENDOR_MODULES = [partslink24, worldpac, ssf]
 # How many ALLDATA parts to price (the most relevant ones). Keep small so a job
 # stays within its time budget; raise via env when proven.
 MAX_PARTS = int(os.environ.get("VENDOR_MAX_PARTS", "1"))
-PER_LOOKUP_TIMEOUT = int(os.environ.get("VENDOR_LOOKUP_TIMEOUT", "180"))
+# Per-vendor lookup budget. 180s was the conservative initial value, but real
+# runs show: a vendor that hasn't extracted in 90s isn't going to in 180s
+# either — it's already stuck in the picker / re-prompting Gemini. Lowering
+# the cap halves worst-case wall-clock when a vendor genuinely can't serve
+# the part, and the WorldPac picker-failure detector (see vendors.py retry
+# carve-out) means the legitimate-but-slow case is rare.
+PER_LOOKUP_TIMEOUT = int(os.environ.get("VENDOR_LOOKUP_TIMEOUT", "90"))
 # Max simultaneous vendor lookups. 2 is a safe default — three would put six
 # CDP-attached tabs in play (each vendor opens prep + agent), plus Chrome's
 # own service workers, which we saw cause connect_over_cdp timeouts on this

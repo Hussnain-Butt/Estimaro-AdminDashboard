@@ -773,14 +773,17 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
     t0 = time.time()
 
     try:
-        # 1. Hermes parse
-        await _post_progress(client, job_id, "Parsing complaint with Hermes 3", 15)
-        job_dict = hermes.parse_job_spec(complaint, vin)
+        # 1+2. Hermes parse (intent extraction) and NHTSA VIN decode are
+        # independent — running them in parallel saves the NHTSA call's
+        # wall-clock (typically 30-60s on slow days, since the public API
+        # has no SLA). Hermes is a sync Ollama call so we wrap it in
+        # asyncio.to_thread; NHTSA is already async.
+        await _post_progress(client, job_id, "Parsing complaint + decoding VIN", 20)
+        job_dict, vehicle = await asyncio.gather(
+            asyncio.to_thread(hermes.parse_job_spec, complaint, vin),
+            decode_vin(vin),
+        )
         spec = JobSpec(**job_dict)
-
-        # 2. NHTSA VIN decode
-        await _post_progress(client, job_id, "Decoding VIN via NHTSA vPIC", 25)
-        vehicle = await decode_vin(vin)
         logger.info(f"[{job_id}] decoded: {vehicle.year} {vehicle.make} {vehicle.model}")
 
         # 2b. Fail fast on an invalid / un-decodable VIN before spending an
@@ -1007,19 +1010,41 @@ async def _process_tekmetric_job(client: httpx.AsyncClient, job: dict) -> None:
         except Exception as e:
             logger.warning(f"[{job_id}] tek fail post failed: {e}")
 
-    await _progress("Opening Tekmetric in Chrome", 20)
-    try:
-        ok, result = await asyncio.wait_for(
-            tek_portal.push_estimate(estimate), timeout=JOB_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        await _fail(f"Tekmetric push timed out after {JOB_TIMEOUT}s")
-        return
-    except Exception as e:
-        import traceback
-        logger.error(f"[{job_id}] Tekmetric push EXCEPTION: {e}\n{traceback.format_exc()}")
-        await _fail(f"{type(e).__name__}: {str(e)[:300]}")
-        return
+    # Route to REST API path when TEKMETRIC_USE_API is truthy; otherwise the
+    # browser-driven vision agent (the legacy default). This gate lets the
+    # API migration be validated one job at a time without breaking the
+    # browser fallback that already works once an operator has solved the
+    # reCAPTCHA challenge via noVNC.
+    use_api = (os.environ.get("TEKMETRIC_USE_API", "") or "").lower() in {"1", "true", "yes", "on"}
+    if use_api:
+        await _progress("Pushing to Tekmetric via REST API", 20)
+        try:
+            from services.tekmetric_api import push_estimate_api
+            ok, result = await asyncio.wait_for(
+                push_estimate_api(estimate), timeout=60,
+            )
+        except asyncio.TimeoutError:
+            await _fail("Tekmetric API push timed out after 60s")
+            return
+        except Exception as e:
+            import traceback
+            logger.error(f"[{job_id}] Tekmetric API push EXCEPTION: {e}\n{traceback.format_exc()}")
+            await _fail(f"{type(e).__name__}: {str(e)[:300]}")
+            return
+    else:
+        await _progress("Opening Tekmetric in Chrome", 20)
+        try:
+            ok, result = await asyncio.wait_for(
+                tek_portal.push_estimate(estimate), timeout=JOB_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            await _fail(f"Tekmetric push timed out after {JOB_TIMEOUT}s")
+            return
+        except Exception as e:
+            import traceback
+            logger.error(f"[{job_id}] Tekmetric push EXCEPTION: {e}\n{traceback.format_exc()}")
+            await _fail(f"{type(e).__name__}: {str(e)[:300]}")
+            return
 
     if not ok:
         await _fail(result.get("error") or "Tekmetric agent did not produce an RO number")

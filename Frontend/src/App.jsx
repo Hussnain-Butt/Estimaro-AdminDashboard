@@ -7,6 +7,7 @@ import Header from './components/Header'
 import Dashboard from './components/Dashboard'
 import NewEstimate from './components/NewEstimate'
 import Estimates from './components/Estimates'
+import ReviewQueue from './components/ReviewQueue'
 import Customers from './components/Customers'
 import Vendors from './components/Vendors'
 import Reports from './components/Reports'
@@ -52,6 +53,7 @@ function App() {
                         <Route path="/" element={<Dashboard />} />
                         <Route path="/new-estimate" element={<NewEstimate />} />
                         <Route path="/estimates" element={<Estimates />} />
+                        <Route path="/review" element={<ReviewQueue />} />
                         <Route path="/customers" element={<Customers />} />
                         <Route path="/vendors" element={<Vendors />} />
                         <Route path="/reports" element={<Reports />} />
