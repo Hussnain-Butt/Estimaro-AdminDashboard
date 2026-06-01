@@ -6,11 +6,13 @@ Hermes -> NHTSA -> ALLDATA agent pipeline, posts result back.
 Run as a systemd service `estimaro-agent.service`.
 """
 import asyncio
+import base64
 import os
 import socket
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -314,6 +316,145 @@ def _compute_overall_confidence(
     }
 
 
+def _load_screenshot_b64(path: Optional[str], max_bytes: int = 600_000) -> Optional[str]:
+    """Read an extraction screenshot from disk and return a data-URL string.
+
+    Returns None when:
+      * path is empty / falsy
+      * the file doesn't exist or isn't readable
+      * the encoded payload would exceed `max_bytes` (avoid 2 MB PNGs
+        bloating every job result — anything that big is likely a
+        scaling-error screenshot anyway)
+
+    Embedded as a data URL so the FE can drop it into an <img src=...>
+    without a second round-trip; the proposal's "explainable estimate
+    with a screenshot trail" is otherwise blocked on either an S3
+    upload pipeline or a backend proxy, neither of which is in scope
+    for this PR.
+    """
+    if not path:
+        return None
+    try:
+        p = Path(path)
+        if not p.is_file():
+            return None
+        data = p.read_bytes()
+        if len(data) > max_bytes:
+            logger.info(
+                f"screenshot {p.name} too large ({len(data)} bytes) — "
+                f"skipping embed"
+            )
+            return None
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    except Exception as e:
+        logger.warning(f"screenshot load failed for {path!r}: {e}")
+        return None
+
+
+async def _get_recalls(make: str | None, model: str | None,
+                       year: int | None) -> list[dict]:
+    """Fetch active NHTSA recalls for the decoded vehicle.
+
+    NHTSA Safety API is free and uncreedled. Returns a compact list of
+    {campaign_number, component, summary, remedy} dicts the FE can render
+    as a banner. Quiet on any error — recalls are auxiliary; a NHTSA
+    outage must never block the estimate.
+    """
+    if not (make and model and year):
+        return []
+    url = "https://api.nhtsa.gov/recalls/recallsByVehicle"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(url, params={
+                "make": make, "model": model, "modelYear": str(year),
+            })
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        results = data.get("results") or []
+        out = []
+        # Cap at 8 — typical vehicles have 1-3, but Volvo XC70s of this era
+        # can have 10+. Truncating keeps the payload reasonable and the FE
+        # banner readable; full list is one click away on NHTSA itself.
+        for rec in results[:8]:
+            out.append({
+                "campaign_number": rec.get("NHTSACampaignNumber"),
+                "component": rec.get("Component"),
+                "summary": (rec.get("Summary") or "")[:400],
+                "remedy": (rec.get("Remedy") or "")[:300],
+                "report_received_date": rec.get("ReportReceivedDate"),
+            })
+        return out
+    except Exception as e:
+        logger.warning(f"recalls fetch failed: {e}")
+        return []
+
+
+# Static job -> recommended add-ons map. The proposal's "Add-on detection"
+# pipeline step is meant to be a job-classifier output; until that classifier
+# exists, this static map covers the common American shop add-ons that the
+# advisor would otherwise have to remember manually. Keys are matched against
+# job.system / job.subsystem / job.keywords case-insensitively.
+_ADDON_MAP = {
+    "brake": [
+        {"name": "Pad clip / hardware kit", "kind": "part",
+         "reason": "Recommended with every pad replacement; clips wear and squeal"},
+        {"name": "Rotor measurement / inspection", "kind": "inspection",
+         "reason": "Confirm rotors are within spec before reusing"},
+        {"name": "Brake fluid flush", "kind": "labor", "hours": 0.5,
+         "reason": "Industry standard every 2 years or with brake service"},
+    ],
+    "oil": [
+        {"name": "Oil filter", "kind": "part",
+         "reason": "Always replaced with engine oil"},
+        {"name": "Drain plug gasket / crush washer", "kind": "part",
+         "reason": "Single-use on most modern engines"},
+        {"name": "Multi-point inspection", "kind": "inspection",
+         "reason": "Standard at every service interval"},
+    ],
+    "transmission": [
+        {"name": "Transmission filter", "kind": "part",
+         "reason": "Replaced with every fluid service when accessible"},
+        {"name": "Pan gasket", "kind": "part",
+         "reason": "Single-use on drop-pan transmissions"},
+    ],
+    "suspension": [
+        {"name": "Alignment", "kind": "labor", "hours": 1.0,
+         "reason": "Required after suspension component replacement"},
+    ],
+    "ignition": [
+        {"name": "Spark plug boots / coil-on-plug check", "kind": "inspection",
+         "reason": "Common failure point at plug-service intervals"},
+    ],
+    "cooling": [
+        {"name": "Coolant flush", "kind": "labor", "hours": 0.5,
+         "reason": "Replace fluid when system was opened"},
+        {"name": "Pressure test", "kind": "inspection",
+         "reason": "Verify no leaks after thermostat / radiator service"},
+    ],
+}
+
+
+def _suggest_addons(job: JobSpec) -> list[dict]:
+    """Look up recommended add-ons for the parsed JobSpec.
+
+    Match priority: system → subsystem → keywords. The first key that hits
+    wins; we don't merge across categories so a brake-job doesn't end up
+    suggesting both pad clips AND oil filters when the symptom is brake-
+    only. Empty list when no key matches — keeps the FE panel hidden
+    instead of showing irrelevant cards.
+    """
+    pools = [(job.system or ""), (job.subsystem or "")]
+    pools.extend(job.keywords or [])
+    for token in pools:
+        t = (token or "").lower()
+        for key, addons in _ADDON_MAP.items():
+            if key in t:
+                return [dict(a) for a in addons]
+    return []
+
+
 def _dedup_parts(parts: list[dict]) -> list[dict]:
     """Collapse part variants that share an OEM number into a single line.
 
@@ -411,7 +552,9 @@ def _find_cheapest_vendor_match(part: dict, vendor_comparison: dict | None) -> d
 
 def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
                           vendor_quotes: list | None = None,
-                          vendor_comparison: dict | None = None) -> dict:
+                          vendor_comparison: dict | None = None,
+                          recalls: list | None = None,
+                          suggested_addons: list | None = None) -> dict:
     """Shape the agent output to match the Backend's JobResult schema.
 
     Part-pricing policy: for each part ALLDATA found, look up the cheapest
@@ -432,6 +575,11 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
     if labor:
         line_total = round(labor.hours * labor_rate, 2)
         labor_total += line_total
+        # Embed the extraction-time screenshot as a data URL so the FE can
+        # render a "View source" panel without a second round-trip. The
+        # loader returns None on any failure (file missing, too big) and
+        # the FE hides the panel in that case, so this never blocks the
+        # estimate even when the screenshot disk is full.
         labor_lines.append({
             "description": labor.operation,
             "hours": labor.hours,
@@ -439,6 +587,7 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
             "total": line_total,
             "source": "ALLDATA",
             "skill": (labor.vehicle_match or {}).get("skill"),
+            "extractionScreenshot": _load_screenshot_b64(labor.screenshot_path),
         })
 
     parts_lines = []
@@ -607,6 +756,12 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
         # gating thresholds we use to decide auto vs advisor vs manual.
         "consensus": consensus,
         "confidence": confidence_summary,
+        # Aux data — NHTSA recalls active for the vehicle, and the
+        # job-classifier's recommended add-ons (pad clips, oil filter, ...)
+        # Both informational; the FE renders banners/panels but does not
+        # auto-add to the estimate.
+        "recalls": list(recalls or []),
+        "suggestedAddOns": list(suggested_addons or []),
     }
 
 
@@ -764,10 +919,27 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
 
         # 5. Build payload & post
         await _post_progress(client, job_id, "Verifying with Hermes + finalising", 90)
+        # Recalls + add-ons are auxiliary; gather them in parallel so they
+        # don't add latency to the critical path. Either failing is silent
+        # — the FE simply hides the corresponding banner / panel.
+        recalls, suggested_addons = [], []
+        try:
+            recalls, suggested_addons = await asyncio.gather(
+                _get_recalls(vehicle.make, vehicle.model, vehicle.year),
+                asyncio.to_thread(_suggest_addons, spec),
+            )
+        except Exception as e:
+            logger.warning(f"[{job_id}] aux data (recalls/addons) failed: {e}")
+        if recalls:
+            logger.info(f"[{job_id}] {len(recalls)} active NHTSA recall(s) for vehicle")
+        if suggested_addons:
+            logger.info(f"[{job_id}] {len(suggested_addons)} recommended add-on(s) for job type")
         elapsed = time.time() - t0
         result = _build_result_payload(job, vehicle, labor, meta, elapsed,
                                        vendor_quotes=vendor_quotes_dicts,
-                                       vendor_comparison=vendor_comparison)
+                                       vendor_comparison=vendor_comparison,
+                                       recalls=recalls,
+                                       suggested_addons=suggested_addons)
 
         await _post_result(client, job_id, result)
         logger.info(

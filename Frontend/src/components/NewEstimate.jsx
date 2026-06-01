@@ -194,6 +194,10 @@ const IntakeStep = ({ data, updateData }) => {
 }
 
 const LaborStep = ({ data }) => {
+  // Per-row "View source" toggle. Map of index → bool. We keep it local
+  // because the source screenshot is purely informational and shouldn't
+  // round-trip through Redux/parent state.
+  const [openSource, setOpenSource] = useState({})
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -207,24 +211,57 @@ const LaborStep = ({ data }) => {
         </div>
       ) : (
         <div className="space-y-4">
-          {data.laborItems.map((item, index) => (
-            <div
-              key={index}
-              className="bg-background p-4 rounded-lg flex justify-between items-center border border-border"
-            >
-              <div>
-                <p className="font-semibold text-text-primary">{item.description}</p>
-                <p className="text-xs text-text-secondary">Source: {item.source || 'ALLDATA'}</p>
+          {data.laborItems.map((item, index) => {
+            const hasTrail = !!item.extractionScreenshot
+            const isOpen = !!openSource[index]
+            return (
+              <div
+                key={index}
+                className="bg-background p-4 rounded-lg border border-border"
+              >
+                <div className="flex justify-between items-center">
+                  <div>
+                    <p className="font-semibold text-text-primary">{item.description}</p>
+                    <p className="text-xs text-text-secondary">
+                      Source: {item.source || 'ALLDATA'}
+                      {hasTrail && (
+                        <>
+                          {' '}·{' '}
+                          <button
+                            type="button"
+                            onClick={() => setOpenSource((s) => ({ ...s, [index]: !s[index] }))}
+                            className="underline hover:text-text-primary"
+                          >
+                            {isOpen ? 'Hide source screenshot' : 'View source screenshot'}
+                          </button>
+                        </>
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-text-primary font-semibold">{item.hours}h</span>
+                    <span className="text-text-secondary">×</span>
+                    <span className="text-text-primary font-semibold">${item.rate}/hr</span>
+                    <span className="text-text-secondary">=</span>
+                    <span className="text-accent font-bold">${item.total}</span>
+                  </div>
+                </div>
+                {hasTrail && isOpen && (
+                  <div className="mt-3 pt-3 border-t border-border/50">
+                    <p className="text-xs text-text-secondary mb-2">
+                      ALLDATA Parts &amp; Labor page captured at extraction time
+                    </p>
+                    <img
+                      src={item.extractionScreenshot}
+                      alt={`ALLDATA source for ${item.description}`}
+                      className="w-full rounded border border-border"
+                      loading="lazy"
+                    />
+                  </div>
+                )}
               </div>
-              <div className="flex items-center space-x-2">
-                <span className="text-text-primary font-semibold">{item.hours}h</span>
-                <span className="text-text-secondary">×</span>
-                <span className="text-text-primary font-semibold">${item.rate}/hr</span>
-                <span className="text-text-secondary">=</span>
-                <span className="text-accent font-bold">${item.total}</span>
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
@@ -323,6 +360,40 @@ const PartsStep = ({ data }) => {
           })}
         </div>
       )}
+
+      {Array.isArray(data.suggestedAddOns) && data.suggestedAddOns.length > 0 && (
+        <div className="mt-6 bg-background p-4 rounded-lg border border-info/30">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-semibold text-text-primary text-sm">
+              Recommended add-ons
+            </h3>
+            <span className="text-[10px] text-text-secondary uppercase tracking-wide">
+              Advisor decision · not auto-billed
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {data.suggestedAddOns.map((a, i) => (
+              <div
+                key={i}
+                className="bg-surface/50 px-3 py-2 rounded border border-border/50"
+              >
+                <p className="text-sm font-medium text-text-primary">
+                  {a.name}
+                  {a.hours != null && (
+                    <span className="ml-2 text-xs text-text-secondary font-normal">
+                      ({a.hours}h)
+                    </span>
+                  )}
+                </p>
+                <p className="text-xs text-text-secondary">
+                  <span className="uppercase tracking-wide mr-1 text-[10px]">{a.kind}</span>
+                  · {a.reason}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -375,6 +446,39 @@ const PreviewStep = ({ data, calculatedTotals, onSendApproval, isSending }) => {
               </span>
             </p>
           )}
+        </div>
+      )}
+
+      {Array.isArray(data.recalls) && data.recalls.length > 0 && (
+        <div className="bg-background p-4 rounded-lg border border-warning/40">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-semibold text-warning">
+              {data.recalls.length} active NHTSA recall{data.recalls.length === 1 ? '' : 's'}
+            </h3>
+            <span className="text-[10px] text-text-secondary uppercase tracking-wide">
+              Informational · not auto-billed
+            </span>
+          </div>
+          <ul className="space-y-2">
+            {data.recalls.slice(0, 5).map((rc, i) => (
+              <li key={i} className="text-xs text-text-secondary border-l-2 border-warning/40 pl-2">
+                <p className="font-medium text-text-primary">
+                  {rc.component || 'Recall'}
+                  {rc.campaign_number && (
+                    <span className="font-mono text-text-secondary ml-2">
+                      {rc.campaign_number}
+                    </span>
+                  )}
+                </p>
+                {rc.summary && <p className="mt-0.5 line-clamp-2">{rc.summary}</p>}
+              </li>
+            ))}
+            {data.recalls.length > 5 && (
+              <li className="text-xs text-text-secondary italic">
+                + {data.recalls.length - 5} more — full list on NHTSA
+              </li>
+            )}
+          </ul>
         </div>
       )}
 
@@ -730,6 +834,10 @@ const NewEstimate = () => {
       total: parseFloat(item.total).toFixed(2),
       source: item.source || 'ALLDATA',
       skill: item.skill,
+      // Base64 data URL of the source ALLDATA page. Null on older workers
+      // or when the file was missing — LaborStep hides the "View source"
+      // toggle in that case so the UI doesn't show a broken control.
+      extractionScreenshot: item.extractionScreenshot || null,
     }))
     const partsItems = (r.partsItems || []).map((item, idx) => ({
       id: idx + 1,
@@ -761,6 +869,9 @@ const NewEstimate = () => {
     // "ALLDATA matched as: ..." beneath the NHTSA-decoded line, instead of
     // the advisor having to wonder which catalogue the labor came from.
     const alldataMatchedVehicle = r.alldataMatchedVehicle ?? null
+    // Aux data: NHTSA recalls (banner) and recommended add-ons (panel).
+    const recalls = Array.isArray(r.recalls) ? r.recalls : []
+    const suggestedAddOns = Array.isArray(r.suggestedAddOns) ? r.suggestedAddOns : []
 
     const mergedData = {
       vin: formData.vin,
@@ -773,6 +884,8 @@ const NewEstimate = () => {
       alldataMatchedVehicle,
       laborItems,
       partsItems,
+      recalls,
+      suggestedAddOns,
     }
 
     setFormData((prev) => ({
@@ -781,6 +894,8 @@ const NewEstimate = () => {
       alldataMatchedVehicle,
       laborItems,
       partsItems,
+      recalls,
+      suggestedAddOns,
     }))
 
     const bd = r.breakdown || {}
@@ -1022,115 +1137,197 @@ const NewEstimate = () => {
   // PDF Download Handler
   const handleDownloadPDF = () => {
     const doc = new jsPDF()
+    const today = new Date()
+    const validUntil = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000)
+    const fmtDate = (d) => d.toLocaleDateString(undefined, {
+      year: 'numeric', month: 'short', day: 'numeric',
+    })
+    const estimateNumber = `EST-${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}-${String(today.getHours()).padStart(2, '0')}${String(today.getMinutes()).padStart(2, '0')}`
 
-    // Header
-    doc.setFontSize(20)
+    // ---- Letterhead band ----
+    doc.setFillColor(15, 30, 50)
+    doc.rect(0, 0, 210, 28, 'F')
+    doc.setTextColor(255, 255, 255)
+    doc.setFontSize(18)
+    doc.setFont(undefined, 'bold')
+    doc.text('GERMAN SPORT AUTO REPAIR', 14, 14)
+    doc.setFont(undefined, 'normal')
+    doc.setFontSize(9)
+    doc.text('Service · Estimation · Vehicle Diagnostics', 14, 20)
+    doc.setFontSize(8)
+    doc.text('Auto-generated by Estimaro · Powered by ALLDATA + verified vendor catalogues', 14, 25)
+
+    // ---- Meta block (right-aligned) ----
     doc.setTextColor(40, 40, 40)
-    doc.text('ESTIMATE', 105, 20, { align: 'center' })
+    doc.setFontSize(16)
+    doc.setFont(undefined, 'bold')
+    doc.text('ESTIMATE', 196, 38, { align: 'right' })
+    doc.setFontSize(9)
+    doc.setFont(undefined, 'normal')
+    doc.text(`# ${estimateNumber}`, 196, 44, { align: 'right' })
+    doc.text(`Issued: ${fmtDate(today)}`, 196, 49, { align: 'right' })
+    doc.text(`Valid until: ${fmtDate(validUntil)}`, 196, 54, { align: 'right' })
 
-    // Company Info (placeholder)
-    doc.setFontSize(10)
-    doc.setTextColor(100, 100, 100)
-    doc.text('German Sport Auto Repair', 105, 28, { align: 'center' })
-    doc.text('Professional Estimation System', 105, 33, { align: 'center' })
-
-    // Date
-    doc.text(`Date: ${new Date().toLocaleDateString()}`, 14, 45)
-
-    // Customer Info
-    doc.setFontSize(12)
+    // ---- Customer + Vehicle two-column ----
+    doc.setDrawColor(220, 220, 220)
+    doc.line(14, 38, 130, 38)
+    doc.setFontSize(9)
+    doc.setTextColor(120, 120, 120)
+    doc.text('PREPARED FOR', 14, 44)
     doc.setTextColor(40, 40, 40)
-    doc.text('CUSTOMER INFORMATION', 14, 55)
-    doc.setFontSize(10)
-    doc.setTextColor(60, 60, 60)
-    doc.text(`Name: ${formData.customerName}`, 14, 62)
-    if (formData.customerEmail) doc.text(`Email: ${formData.customerEmail}`, 14, 68)
-    doc.text(`Phone: ${formData.customerPhone}`, 14, 74)
+    doc.setFontSize(11)
+    doc.setFont(undefined, 'bold')
+    doc.text(formData.customerName || '—', 14, 51)
+    doc.setFont(undefined, 'normal')
+    doc.setFontSize(9)
+    doc.setTextColor(80, 80, 80)
+    if (formData.customerEmail) doc.text(formData.customerEmail, 14, 57)
+    doc.text(formData.customerPhone || '', 14, formData.customerEmail ? 62 : 57)
 
-    // Vehicle Info
     if (formData.vehicleInfo) {
-      doc.setFontSize(12)
+      doc.setFontSize(9)
+      doc.setTextColor(120, 120, 120)
+      doc.text('VEHICLE', 72, 44)
       doc.setTextColor(40, 40, 40)
-      doc.text('VEHICLE INFORMATION', 14, 85)
-      doc.setFontSize(10)
-      doc.setTextColor(60, 60, 60)
-      doc.text(`${formData.vehicleInfo.year} ${formData.vehicleInfo.make} ${formData.vehicleInfo.model}`, 14, 92)
-      doc.text(`VIN: ${formData.vin}`, 14, 98)
-      if (formData.odometer) doc.text(`Odometer: ${formData.odometer} km`, 14, 104)
+      doc.setFontSize(11)
+      doc.setFont(undefined, 'bold')
+      doc.text(`${formData.vehicleInfo.year || ''} ${formData.vehicleInfo.make || ''} ${formData.vehicleInfo.model || ''}`.trim(), 72, 51)
+      doc.setFont(undefined, 'normal')
+      doc.setFontSize(9)
+      doc.setTextColor(80, 80, 80)
+      doc.text(`VIN: ${formData.vin || '—'}`, 72, 57)
+      if (formData.odometer) doc.text(`Odometer: ${formData.odometer}`, 72, 62)
+      if (formData.alldataMatchedVehicle && formData.alldataMatchedVehicle !==
+        `${formData.vehicleInfo.year} ${formData.vehicleInfo.make} ${formData.vehicleInfo.model}`) {
+        doc.setTextColor(120, 120, 120)
+        doc.setFontSize(8)
+        doc.text(`Catalogue match: ${formData.alldataMatchedVehicle}`, 72, formData.odometer ? 67 : 62)
+      }
     }
 
-    // Service Request
-    doc.setFontSize(12)
-    doc.setTextColor(40, 40, 40)
-    doc.text('SERVICE REQUEST', 14, 115)
+    // ---- Service request ----
+    doc.setDrawColor(220, 220, 220)
+    doc.line(14, 76, 196, 76)
+    doc.setFontSize(9)
+    doc.setTextColor(120, 120, 120)
+    doc.text('SERVICE REQUEST', 14, 82)
     doc.setFontSize(10)
-    doc.setTextColor(60, 60, 60)
-    doc.text(formData.serviceRequest, 14, 122)
+    doc.setTextColor(40, 40, 40)
+    doc.text(formData.serviceRequest || '—', 14, 88, { maxWidth: 180 })
 
-    let currentY = 135
+    let currentY = 100
 
-    // Labor Items Table
+    // ---- Labor table ----
     if (formData.laborItems.length > 0) {
       autoTable(doc, {
         startY: currentY,
-        head: [['Labor Description', 'Hours', 'Rate', 'Total']],
+        head: [['Labor', 'Skill', 'Hours', 'Rate', 'Total']],
         body: formData.laborItems.map(item => [
           item.description,
+          item.skill || '—',
           `${item.hours}h`,
           `$${item.rate}/hr`,
-          `$${item.total}`
+          `$${item.total}`,
         ]),
         theme: 'striped',
-        headStyles: { fillColor: [41, 128, 185] }
+        headStyles: { fillColor: [15, 30, 50], textColor: [255, 255, 255], fontSize: 9 },
+        bodyStyles: { fontSize: 9 },
+        columnStyles: {
+          2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' },
+        },
+      })
+      currentY = doc.lastAutoTable.finalY + 8
+    }
+
+    // ---- Parts table (expanded: OEM + Vendor SKU columns) ----
+    if (formData.partsItems.length > 0) {
+      autoTable(doc, {
+        startY: currentY,
+        head: [['Part', 'OEM #', 'Vendor SKU', 'Vendor', 'Qty', 'Unit', 'Total']],
+        body: formData.partsItems.map(item => [
+          item.description,
+          item.partNumber || '—',
+          item.vendorSku || '—',
+          item.vendor || '—',
+          item.quantity,
+          `$${item.cost}`,
+          `$${item.total}`,
+        ]),
+        theme: 'striped',
+        headStyles: { fillColor: [15, 30, 50], textColor: [255, 255, 255], fontSize: 9 },
+        bodyStyles: { fontSize: 8 },
+        columnStyles: {
+          4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right' },
+        },
       })
       currentY = doc.lastAutoTable.finalY + 10
     }
 
-    // Parts Items Table
-    if (formData.partsItems.length > 0) {
+    // ---- Totals box (right-aligned) ----
+    const totalsX = 130
+    doc.setFontSize(10)
+    doc.setTextColor(80, 80, 80)
+    doc.text(`Labor Total`, totalsX, currentY)
+    doc.text(`$${calculatedTotals.laborTotal}`, 196, currentY, { align: 'right' })
+    doc.text(`Parts Total`, totalsX, currentY + 6)
+    doc.text(`$${calculatedTotals.partsTotal}`, 196, currentY + 6, { align: 'right' })
+    doc.text(`Subtotal`, totalsX, currentY + 12)
+    doc.text(`$${calculatedTotals.subtotal}`, 196, currentY + 12, { align: 'right' })
+    doc.text(`Tax (${(formData.taxRate * 100).toFixed(1)}%)`, totalsX, currentY + 18)
+    doc.text(`$${calculatedTotals.taxAmount}`, 196, currentY + 18, { align: 'right' })
+    doc.setDrawColor(180, 180, 180)
+    doc.line(totalsX, currentY + 22, 196, currentY + 22)
+    doc.setFontSize(13)
+    doc.setFont(undefined, 'bold')
+    doc.setTextColor(15, 30, 50)
+    doc.text(`TOTAL`, totalsX, currentY + 30)
+    doc.text(`$${calculatedTotals.total}`, 196, currentY + 30, { align: 'right' })
+    doc.setFont(undefined, 'normal')
+
+    // ---- Recalls page ----
+    if (Array.isArray(formData.recalls) && formData.recalls.length > 0) {
+      doc.addPage()
+      doc.setFontSize(14)
+      doc.setTextColor(40, 40, 40)
+      doc.setFont(undefined, 'bold')
+      doc.text('Active NHTSA Recalls', 14, 20)
+      doc.setFont(undefined, 'normal')
+      doc.setFontSize(9)
+      doc.setTextColor(120, 120, 120)
+      doc.text(
+        'Informational only. Recalls below are open as of estimate date and are not included in this estimate\'s totals.',
+        14, 26, { maxWidth: 182 },
+      )
       autoTable(doc, {
-        startY: currentY,
-        head: [['Part Description', 'Part #', 'Qty', 'Price', 'Total']],
-        body: formData.partsItems.map(item => [
-          item.description,
-          item.partNumber || 'N/A',
-          item.quantity,
-          `$${item.cost}`,
-          `$${item.total}`
+        startY: 34,
+        head: [['Campaign #', 'Component', 'Summary']],
+        body: formData.recalls.map(rc => [
+          rc.campaign_number || '—',
+          rc.component || '—',
+          rc.summary || '—',
         ]),
         theme: 'striped',
-        headStyles: { fillColor: [41, 128, 185] }
+        headStyles: { fillColor: [180, 100, 40], textColor: [255, 255, 255], fontSize: 9 },
+        bodyStyles: { fontSize: 8 },
+        columnStyles: { 0: { cellWidth: 30 }, 1: { cellWidth: 45 } },
       })
-      currentY = doc.lastAutoTable.finalY + 15
     }
 
-    // Totals
-    doc.setFontSize(10)
-    doc.text(`Labor Total:`, 130, currentY)
-    doc.text(`$${calculatedTotals.laborTotal}`, 180, currentY, { align: 'right' })
+    // ---- Footer (every page) ----
+    const pageCount = doc.internal.getNumberOfPages()
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i)
+      doc.setFontSize(8)
+      doc.setTextColor(150, 150, 150)
+      doc.text(
+        `This estimate is valid until ${fmtDate(validUntil)}. Prices subject to vendor availability. Generated by Estimaro.`,
+        105, 286, { align: 'center', maxWidth: 180 },
+      )
+      doc.text(`Page ${i} of ${pageCount}`, 196, 292, { align: 'right' })
+    }
 
-    doc.text(`Parts Total:`, 130, currentY + 6)
-    doc.text(`$${calculatedTotals.partsTotal}`, 180, currentY + 6, { align: 'right' })
-
-    doc.text(`Subtotal:`, 130, currentY + 12)
-    doc.text(`$${calculatedTotals.subtotal}`, 180, currentY + 12, { align: 'right' })
-
-    doc.text(`Tax (${(formData.taxRate * 100).toFixed(1)}%):`, 130, currentY + 18)
-    doc.text(`$${calculatedTotals.taxAmount}`, 180, currentY + 18, { align: 'right' })
-
-    doc.setFontSize(12)
-    doc.setFont(undefined, 'bold')
-    doc.text(`TOTAL:`, 130, currentY + 26)
-    doc.text(`$${calculatedTotals.total}`, 180, currentY + 26, { align: 'right' })
-
-    // Footer
-    doc.setFontSize(8)
-    doc.setFont(undefined, 'normal')
-    doc.setTextColor(150, 150, 150)
-    doc.text('This estimate is valid for 30 days from the date of issue.', 105, 280, { align: 'center' })
-
-    // Save PDF
-    doc.save(`Estimate_${formData.customerName.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`)
+    // ---- Save ----
+    doc.save(`Estimate_${(formData.customerName || 'customer').replace(/\s+/g, '_')}_${today.toISOString().split('T')[0]}.pdf`)
   }
 
   const updateData = (field, value) => {

@@ -11,6 +11,11 @@ class LaborLine(BaseModel):
     total: float
     source: str = "ALLDATA"
     skill: Optional[str] = None
+    # Base64-encoded data URL of the ALLDATA Parts-and-Labor page the agent
+    # extracted this row from. Optional because: (a) older workers don't emit
+    # it, (b) loader returns None when the file is missing / too large, and
+    # (c) we never want this field's absence to gate the estimate.
+    extractionScreenshot: Optional[str] = None
 
 
 class PartLine(BaseModel):
@@ -103,6 +108,14 @@ class JobResult(BaseModel):
     consensus: Dict[str, Any] = Field(default_factory=dict)
     # Layer 6: overall confidence + tier. Worker decides; FE renders.
     confidence: Optional[ConfidenceSummary] = None
+    # NHTSA recalls active for the decoded vehicle. Empty when none / API
+    # unavailable — FE hides the banner. Shape is loose Dict so adding new
+    # NHTSA fields doesn't require a schema migration.
+    recalls: List[Dict[str, Any]] = Field(default_factory=list)
+    # Job-classifier recommended add-ons (pad clips, oil filter, ...).
+    # Each entry has {name, kind, reason, hours?, cost?} — FE renders as a
+    # read-only panel; advisor adds to estimate manually.
+    suggestedAddOns: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class JobSubmitRequest(BaseModel):
