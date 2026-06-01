@@ -75,14 +75,26 @@ PORTALS: dict[str, dict] = {
         # When the session is dead Tekmetric DOES NOT show the login form on
         # the dashboard URL — it 302s to the marketing root with a
         # `?redirect=/admin/...` query string, where there's no visible
-        # password field. The default password-field-only `is_logged_out`
-        # therefore reads "still logged in" and the keepalive skips the
-        # re-login. Recognising the redirect marker fixes the blind spot.
+        # password field initially. The default password-field-only
+        # `is_logged_out` therefore reads "still logged in" and the keepalive
+        # skips the re-login. Recognising the redirect marker fixes the
+        # blind spot. The form IS rendered on that page once MUI hydrates,
+        # so we don't need a separate login_url nav.
         "logged_out_url_marker": "?redirect=",
-        # And the actual login form lives at /login, not the dashboard URL —
-        # ensure_logged_in goes here AFTER detecting the logged-out marker so
-        # _do_login sees a real password field.
-        "login_url": "https://shop.tekmetric.com/login",
+        # MUI form uses `<input type="text" name="email">` for the username
+        # — generic selectors miss it (it's not type=email, and `name`
+        # doesn't contain `user`/`login`). Be explicit so _do_login fills
+        # the right field instead of timing out for 30 seconds. Password
+        # field uses standard name='password'.
+        "fields": {
+            "user":   "input[name='email']",
+            "passwd": "input[name='password']",
+        },
+        # The MUI submit button stays disabled until React sees the inputs
+        # change via its synthetic event system. Playwright's .fill() only
+        # mutates the DOM, so we drive the inputs through the native value
+        # setter + input/change/blur events instead.
+        "react_form": True,
     },
 }
 
@@ -139,6 +151,42 @@ async def is_logged_out(page: Page, portal_key: str | None = None) -> bool:
     return (await _password_field(page)) is not None
 
 
+async def _react_fill(page: Page, selector: str, value: str) -> bool:
+    """Fill a value into a React-controlled input via the native setter.
+
+    Playwright's `Locator.fill()` types into the DOM but does not always
+    trip React's controlled-input state — MUI forms (Tekmetric, modern
+    SaaS) keep their submit button disabled because they think the field
+    is empty. Going through the prototype's native value setter and
+    firing input/change/blur events mirrors what a real keystroke does
+    and unlocks the enabled state.
+
+    Returns True on success, False if the selector didn't match.
+    """
+    try:
+        ok = await page.evaluate(
+            """({sel, val}) => {
+                const el = document.querySelector(sel);
+                if (!el) return false;
+                el.focus();
+                const proto = el.tagName === 'TEXTAREA'
+                    ? window.HTMLTextAreaElement.prototype
+                    : window.HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                if (setter) setter.call(el, val); else el.value = val;
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+                el.dispatchEvent(new Event('blur', {bubbles: true}));
+                return true;
+            }""",
+            {"sel": selector, "val": value},
+        )
+        return bool(ok)
+    except Exception as e:
+        logger.warning(f"[auth] react_fill failed for {selector!r}: {e}")
+        return False
+
+
 async def _do_login(page: Page, cfg: dict) -> bool:
     user = getattr(settings, cfg["user"], "") or ""
     pw = getattr(settings, cfg["passwd"], "") or ""
@@ -152,13 +200,28 @@ async def _do_login(page: Page, cfg: dict) -> bool:
         return True  # already logged in
 
     fields = cfg.get("fields") or {}
+    # React-controlled MUI forms (Tekmetric) keep the submit button
+    # disabled until the input's React state matches what's in the DOM.
+    # Playwright's .fill() only updates the DOM. When `react_form` is set,
+    # we use the native value setter + input/change/blur events instead so
+    # React picks up the value and enables the submit.
+    use_react = bool(cfg.get("react_form"))
 
     # Username — prefer explicit per-portal selector, else fall back to generic.
     try:
         user_sel = fields.get("user") or _USER_SEL
-        ufield = page.locator(user_sel).first
-        await ufield.fill("")
-        await ufield.fill(user)
+        if use_react and fields.get("user"):
+            ok = await _react_fill(page, fields["user"], user)
+            if not ok:
+                logger.warning(f"[auth] react_fill missed user selector "
+                               f"{fields['user']!r} — falling back to .fill")
+                ufield = page.locator(user_sel).first
+                await ufield.fill("")
+                await ufield.fill(user)
+        else:
+            ufield = page.locator(user_sel).first
+            await ufield.fill("")
+            await ufield.fill(user)
     except Exception as e:
         logger.warning(f"[auth] username fill issue: {e}")
 
@@ -194,7 +257,12 @@ async def _do_login(page: Page, cfg: dict) -> bool:
     # over its lifetime; pinning the name avoids the wrong one).
     try:
         if fields.get("passwd"):
-            await page.locator(fields["passwd"]).first.fill(pw)
+            if use_react:
+                ok = await _react_fill(page, fields["passwd"], pw)
+                if not ok:
+                    await page.locator(fields["passwd"]).first.fill(pw)
+            else:
+                await page.locator(fields["passwd"]).first.fill(pw)
         else:
             await pw_field.fill(pw)
     except Exception as e:
@@ -236,6 +304,29 @@ async def _do_login(page: Page, cfg: dict) -> bool:
     # Final state — log the post-submit URL so an operator can see if the
     # form was rejected (still on login.do) vs site error (somewhere else).
     logger.warning(f"[auth] post-submit URL: {page.url}")
+    # When the submit never fired AND a reCAPTCHA challenge iframe is
+    # present, the form is locked behind a human-only puzzle. Surface that
+    # explicitly so the operator gets one clear "go log in via noVNC"
+    # signal instead of cycling through indistinct relogin_failed
+    # messages — Tekmetric falls into this state when it detects automated
+    # access patterns.
+    try:
+        recaptcha_challenge = await page.evaluate(
+            """() => {
+                const frames = Array.from(document.querySelectorAll('iframe'));
+                return frames.some(f => (f.src || '').includes('/recaptcha/api2/bframe')
+                    && (f.title || '').toLowerCase().includes('challenge'));
+            }"""
+        )
+        if recaptcha_challenge:
+            logger.error(
+                "[auth] reCAPTCHA challenge active on login form — "
+                "automated login cannot solve this; operator must log in "
+                "manually via noVNC (port 6080) to clear the challenge and "
+                "seed a fresh session cookie"
+            )
+    except Exception:
+        pass
     return False
 
 
