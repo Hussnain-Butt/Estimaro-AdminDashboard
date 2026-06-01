@@ -16,8 +16,23 @@ import { useToast } from './ui/Toast'
 // (vendor/brand/price/in_stock) grouped under `vendorComparison[requested_part]
 // = {best, all}`. The UI groups by requested part and ranks offers by price
 // with the best (cheapest in-stock) flagged.
+// OEM-style numbers come back with varying punctuation across vendors
+// (`007 420 92 20` vs `0074209220`). Strip whitespace + dashes for the
+// dedup key so the same SKU listed twice isn't counted as two offers.
+const _normOemForFE = (s) => {
+  if (s == null) return ''
+  return String(s).replace(/[\s\-_./,]+/g, '').toUpperCase()
+}
+
 const transformVendorData = (vendorComparison, vendorQuotes = []) => {
   if (!vendorComparison || Object.keys(vendorComparison).length === 0) return null
+
+  // Track whether ANY priced offer carries real distance data. SSF/Worldpac
+  // currently don't, so the Distance column ends up "—" for every row AND
+  // the 25% weight goes unused. When this stays false the FE hides the
+  // column and rebalances the weights display so the advisor doesn't see
+  // a quarter of the score allocated to nothing.
+  let anyDistance = false
 
   const parts = Object.entries(vendorComparison)
     .map(([requestedPart, info]) => {
@@ -26,9 +41,31 @@ const transformVendorData = (vendorComparison, vendorQuotes = []) => {
       const priced = all.filter((q) => q && q.found && q.price != null)
       if (priced.length === 0) return null
 
-      const cheapestPrice = Math.min(...priced.map((q) => parseFloat(q.price)))
-      const dearestPrice = Math.max(...priced.map((q) => parseFloat(q.price)))
-      const offers = priced
+      // Dedup priced rows. SSF in particular returns the same brand twice
+      // (once per wheel-variant the catalog labels separately) with
+      // identical vendor/brand/SKU/price/stock — surfacing both as
+      // distinct offers makes the comparison grid noisy and inflates the
+      // "Sources: X/Y" denominator. Key on what the advisor would actually
+      // treat as the same listing.
+      const seen = new Set()
+      const dedupedPriced = []
+      for (const q of priced) {
+        const key = [
+          q.vendor || '',
+          (q.brand || '').toString().toLowerCase(),
+          _normOemForFE(q.oem_number),
+          // round price to cents so $58.770000001 vs $58.77 don't split
+          Math.round(parseFloat(q.price) * 100),
+          q.in_stock === true ? '1' : q.in_stock === false ? '0' : '?',
+        ].join('|')
+        if (seen.has(key)) continue
+        seen.add(key)
+        dedupedPriced.push(q)
+      }
+
+      const cheapestPrice = Math.min(...dedupedPriced.map((q) => parseFloat(q.price)))
+      const dearestPrice = Math.max(...dedupedPriced.map((q) => parseFloat(q.price)))
+      const offers = dedupedPriced
         .map((q) => {
           const isCheapest =
             best && q.vendor === best.vendor && parseFloat(q.price) === parseFloat(best.price)
@@ -38,6 +75,18 @@ const transformVendorData = (vendorComparison, vendorQuotes = []) => {
             cheapestPrice && parseFloat(q.price)
               ? Math.round((cheapestPrice / parseFloat(q.price)) * 100)
               : 0
+          // Real distance when the vendor reports it (numeric or "X mi"
+          // string). Anything else gets the "—" placeholder and DOESN'T
+          // flip anyDistance — so a vendor that's just missing the field
+          // for everyone doesn't lock the column open.
+          let distance = '—'
+          if (q.distance_miles != null && q.distance_miles !== '') {
+            const num = parseFloat(q.distance_miles)
+            if (!Number.isNaN(num)) {
+              distance = num
+              anyDistance = true
+            }
+          }
           return {
             vendor_name: q.vendor,
             brand: brandLabel || '—',
@@ -46,7 +95,7 @@ const transformVendorData = (vendorComparison, vendorQuotes = []) => {
             stock_status:
               q.in_stock === true ? 'In Stock' : q.in_stock === false ? 'Out of Stock' : 'Unknown',
             stock_quantity: q.availability || (q.in_stock ? 'Available' : ''),
-            distance_miles: '—',
+            distance_miles: distance,
             scores: { composite },
             is_cheapest: !!isCheapest,
             selection: isCheapest ? 'Primary' : 'Backup',
@@ -84,9 +133,17 @@ const transformVendorData = (vendorComparison, vendorQuotes = []) => {
   }
   const successfulVendors = vendorsQueried.filter((v) => !seenFailureVendors.has(v))
 
+  // When no offer carried real distance data the 25% weight is allocated
+  // to a tied-zero column for everyone — meaningless. Rebalance to a
+  // Brand+Price split (53 / 47, preserving the original 40:35 ratio) and
+  // flag distance hidden so the table can collapse the column.
+  const weights = anyDistance
+    ? { brand: 40, price: 35, distance: 25, distance_available: true }
+    : { brand: 53, price: 47, distance: 0, distance_available: false }
+
   return {
     parts,
-    weights: { brand: 40, price: 35, distance: 25 },
+    weights,
     summary: {
       vendors_queried: vendorsQueried,
       successful_vendors: successfulVendors,

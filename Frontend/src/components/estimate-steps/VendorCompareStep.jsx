@@ -17,14 +17,20 @@ const VendorCompareStep = ({ vendorData }) => {
     )
   }
 
-  const weights = vendorData.weights || { brand: 40, price: 35, distance: 25 }
+  const weights = vendorData.weights || { brand: 40, price: 35, distance: 25, distance_available: false }
+  // Distance is only meaningful when at least one vendor returned a real
+  // mileage. Otherwise hide the column AND drop its weight from the
+  // display, so the advisor doesn't see 25% of the score allocated to a
+  // dimension that's "— mi" for every row.
+  const showDistance = !!weights.distance_available
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-2xl font-bold text-text-primary">Vendor Compare (Worldpac / SSF)</h2>
         <div className="text-sm text-text-secondary">
-          Weights: Brand {weights.brand}% • Price {weights.price}% • Distance {weights.distance}%
+          Weights: Brand {weights.brand}% • Price {weights.price}%
+          {showDistance && (<> • Distance {weights.distance}%</>)}
         </div>
       </div>
 
@@ -43,7 +49,9 @@ const VendorCompareStep = ({ vendorData }) => {
                   <th className="p-3 text-sm font-semibold text-text-secondary">Brand</th>
                   <th className="p-3 text-sm font-semibold text-text-secondary">Price</th>
                   <th className="p-3 text-sm font-semibold text-text-secondary">Stock</th>
-                  <th className="p-3 text-sm font-semibold text-text-secondary">Distance</th>
+                  {showDistance && (
+                    <th className="p-3 text-sm font-semibold text-text-secondary">Distance</th>
+                  )}
                   <th className="p-3 text-sm font-semibold text-text-secondary">Score</th>
                   <th className="p-3 text-sm font-semibold text-text-secondary">Selection</th>
                 </tr>
@@ -79,7 +87,13 @@ const VendorCompareStep = ({ vendorData }) => {
                         {offer.stock_status} ({offer.stock_quantity})
                       </span>
                     </td>
-                    <td className="p-3 text-text-secondary">{offer.distance_miles} mi</td>
+                    {showDistance && (
+                      <td className="p-3 text-text-secondary">
+                        {typeof offer.distance_miles === 'number'
+                          ? `${offer.distance_miles} mi`
+                          : '—'}
+                      </td>
+                    )}
                     <td className="p-3">
                       <div className="flex items-center space-x-2">
                         <div className="w-16 h-2 bg-background rounded-full overflow-hidden">
