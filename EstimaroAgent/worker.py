@@ -160,6 +160,50 @@ def _normalize_oem(s) -> str:
     return _re.sub(r"[\s\-_./,]+", "", str(s)).upper()
 
 
+def _dedup_parts(parts: list[dict]) -> list[dict]:
+    """Collapse part variants that share an OEM number into a single line.
+
+    ALLDATA sometimes lists the same physical part twice on a Parts-and-Labor
+    page with different wheel-size / option qualifiers — e.g. "Front Pads
+    (15\" Wheels)" and "Front Pads (16\" Wheels)" both with OEM 8634921. The
+    physical pad is the same; only the vehicle's rim size determines which
+    label applies. Adding both to the estimate double-bills the customer.
+
+    Strategy: group by normalised OEM number (falls back to normalised name
+    for parts without an OEM). Keep the FIRST occurrence as canonical, and
+    record the other variants' display names on `applies_to_variants` so the
+    UI can disclose that the same SKU covers multiple options.
+    """
+    seen: dict[str, dict] = {}
+    out: list[dict] = []
+    for p in parts or []:
+        key = _normalize_oem(p.get("oem_number")) or (
+            "name:" + (p.get("name") or "").strip().lower()
+        )
+        if not key:
+            out.append(p)
+            continue
+        if key in seen:
+            # Merge variant label into the canonical row; do not bill twice.
+            variant = (p.get("name") or "").strip()
+            if variant and variant not in seen[key].setdefault("applies_to_variants", []):
+                seen[key]["applies_to_variants"].append(variant)
+            continue
+        # Seed variants with this row's own name so the UI can render a
+        # uniform "applies to" list even when there's only one entry.
+        own = (p.get("name") or "").strip()
+        p = {**p, "applies_to_variants": [own] if own else []}
+        seen[key] = p
+        out.append(p)
+    # If a canonical entry ended up with only its own name in variants, drop
+    # the field so the UI doesn't show a redundant single-item "applies to".
+    for p in out:
+        v = p.get("applies_to_variants")
+        if isinstance(v, list) and len(v) <= 1:
+            p.pop("applies_to_variants", None)
+    return out
+
+
 def _find_cheapest_vendor_match(part: dict, vendor_comparison: dict | None) -> dict | None:
     """Return the cheapest in-stock vendor quote that matches `part`, or None.
 
@@ -245,7 +289,10 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
 
     parts_lines = []
     parts_total = 0.0
-    for p in (meta.get("parts") or []):
+    # Dedup BEFORE pricing so the same OEM doesn't get billed twice when
+    # ALLDATA listed it under multiple wheel-size / option labels.
+    deduped_parts = _dedup_parts(meta.get("parts") or [])
+    for p in deduped_parts:
         alldata_cost = float(p.get("price") or 0.0)
         vendor_match = _find_cheapest_vendor_match(p, vendor_comparison)
 
@@ -284,6 +331,19 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
             "total": line_total,
             "vendor": vendor_label,
         }
+        # Vendor SKU: the vendor's own part number (often DIFFERENT from the
+        # OEM number ALLDATA listed — e.g. ALLDATA 8634921 vs SSF 573003J).
+        # Exposing both lets the advisor cross-check what the vendor will
+        # actually ship; without this the UI showed only one of the two and
+        # the advisor couldn't tell which catalogue the number was from.
+        if vendor_match is not None:
+            vendor_sku = vendor_match.get("oem_number") or vendor_match.get("part_number")
+            if vendor_sku and _normalize_oem(vendor_sku) != _normalize_oem(p.get("oem_number")):
+                line["vendorSku"] = str(vendor_sku)
+        # Carry merged variant labels through so the UI can disclose
+        # "Also fits: 16\" wheels" instead of silently swallowing the dup.
+        if p.get("applies_to_variants"):
+            line["appliesToVariants"] = list(p["applies_to_variants"])
         # When we did substitute a vendor price, surface the savings vs the
         # ALLDATA list so the UI / advisor can see why this row is below
         # MSRP. Cheap to compute, doesn't bloat the payload when irrelevant.
@@ -337,6 +397,20 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
     verification = meta.get("verification") or {}
     agent_run = meta.get("agent_run") or {}
 
+    # ALLDATA's banner often shows a more specific trim/sub-model than NHTSA
+    # decoded (NHTSA: "2002 VOLVO V70"; ALLDATA banner: "2002 Volvo XC70
+    # L5-2.4L Turbo"). Same platform, different label. Surface BOTH so the
+    # advisor can confirm the labor row came from the right catalogue row
+    # — and so the customer-facing estimate doesn't quietly mislabel the car.
+    alldata_matched_vehicle = None
+    try:
+        if labor and labor.vehicle_match:
+            reported = (labor.vehicle_match or {}).get("reported")
+            if reported and isinstance(reported, str):
+                alldata_matched_vehicle = reported.strip() or None
+    except Exception:
+        pass
+
     return {
         "vehicleInfo": {
             "year": vehicle.year,
@@ -345,6 +419,7 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
             "trim": vehicle.trim,
             "engine": vehicle.engine,
         },
+        "alldataMatchedVehicle": alldata_matched_vehicle,
         "laborItems": labor_lines,
         "partsItems": parts_lines,
         "breakdown": {

@@ -273,8 +273,21 @@ const PartsStep = ({ data }) => {
                 <div>
                   <p className="font-semibold text-text-primary">{part.description}</p>
                   <p className="text-xs text-text-secondary mt-1">
-                    {part.partNumber || 'N/A'} • Vendor: {part.vendor || 'Unknown'}
+                    OEM: <span className="font-mono">{part.partNumber || 'N/A'}</span>
+                    {part.vendorSku && (
+                      <>
+                        {' '}• Vendor SKU: <span className="font-mono">{part.vendorSku}</span>
+                      </>
+                    )}
                   </p>
+                  <p className="text-xs text-text-secondary">
+                    Vendor: {part.vendor || 'Unknown'}
+                  </p>
+                  {Array.isArray(part.appliesToVariants) && part.appliesToVariants.length > 1 && (
+                    <p className="text-xs text-text-secondary mt-1 italic">
+                      Same SKU fits: {part.appliesToVariants.join(' · ')}
+                    </p>
+                  )}
                   {part.isOEM && (
                     <span className="inline-block mt-1 mr-2 px-2 py-0.5 bg-accent/20 text-accent text-xs rounded">
                       OEM
@@ -350,7 +363,18 @@ const PreviewStep = ({ data, calculatedTotals, onSendApproval, isSending }) => {
             {data.vehicleInfo.year} {data.vehicleInfo.make} {data.vehicleInfo.model}
             {data.vehicleInfo.trim && ` ${data.vehicleInfo.trim}`}
           </p>
-          <p className="text-xs text-text-secondary mt-1">VIN: {data.vin}</p>
+          <p className="text-xs text-text-secondary mt-1">
+            VIN: <span className="font-mono">{data.vin}</span>
+            <span className="ml-2 text-text-secondary/70">· Decoded by NHTSA</span>
+          </p>
+          {data.alldataMatchedVehicle && (
+            <p className="text-xs text-info mt-1">
+              ALLDATA matched as: <span className="font-medium">{data.alldataMatchedVehicle}</span>
+              <span className="text-text-secondary/70 ml-1">
+                · labor row sourced from this catalogue entry
+              </span>
+            </p>
+          )}
         </div>
       )}
 
@@ -711,6 +735,16 @@ const NewEstimate = () => {
       id: idx + 1,
       description: item.description,
       partNumber: item.partNumber,
+      // Vendor's own SKU when it differs from the OEM number — the worker
+      // omits this field when they match, so a falsy check is correct here.
+      vendorSku: item.vendorSku ?? null,
+      // Wheel-size / option variants ALLDATA listed under the same OEM that
+      // the worker collapsed into this single line. UI uses it to disclose
+      // "Same SKU fits: 15\" Wheels · 16\" Wheels" instead of silently
+      // hiding the dedup.
+      appliesToVariants: Array.isArray(item.appliesToVariants)
+        ? item.appliesToVariants
+        : null,
       quantity: item.quantity,
       cost: item.cost,
       markup: item.markup,
@@ -722,6 +756,12 @@ const NewEstimate = () => {
       savings_vs_list: item.savings_vs_list ?? null,
     }))
 
+    // ALLDATA's banner shows a more specific trim than NHTSA usually does
+    // (V70 → XC70 L5-2.4L Turbo). Pass it through so PreviewStep can show
+    // "ALLDATA matched as: ..." beneath the NHTSA-decoded line, instead of
+    // the advisor having to wonder which catalogue the labor came from.
+    const alldataMatchedVehicle = r.alldataMatchedVehicle ?? null
+
     const mergedData = {
       vin: formData.vin,
       serviceRequest: formData.serviceRequest,
@@ -730,6 +770,7 @@ const NewEstimate = () => {
       customerPhone: formData.customerPhone,
       odometer: formData.odometer,
       vehicleInfo: veh,
+      alldataMatchedVehicle,
       laborItems,
       partsItems,
     }
@@ -737,6 +778,7 @@ const NewEstimate = () => {
     setFormData((prev) => ({
       ...prev,
       vehicleInfo: veh,
+      alldataMatchedVehicle,
       laborItems,
       partsItems,
     }))

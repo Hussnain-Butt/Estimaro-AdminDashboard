@@ -16,6 +16,16 @@ class LaborLine(BaseModel):
 class PartLine(BaseModel):
     description: str
     partNumber: Optional[str] = None
+    # Vendor's own SKU for the part — often DIFFERENT from the OEM number
+    # (ALLDATA: 8634921 vs SSF: 573003J for the same physical pad). Worker
+    # only sets this when the two numbers actually differ, so the UI can
+    # show both side-by-side without echoing the same value twice.
+    vendorSku: Optional[str] = None
+    # Wheel-size / option labels ALLDATA listed under the same OEM that the
+    # worker collapsed into this single line (e.g. ["Front Pads (15\" Wheels)",
+    # "Front Pads (16\" Wheels)"]). UI renders as "Same SKU fits: ..." so the
+    # dedup is disclosed instead of silently swallowing the duplicate row.
+    appliesToVariants: Optional[List[str]] = None
     quantity: int = 1
     cost: float = 0.0
     markup: float = 0.0
@@ -47,6 +57,11 @@ class Breakdown(BaseModel):
 
 class JobResult(BaseModel):
     vehicleInfo: VehicleInfo = Field(default_factory=VehicleInfo)
+    # ALLDATA's banner often shows a more specific sub-model than NHTSA
+    # decoded (NHTSA: "VOLVO V70"; ALLDATA: "Volvo XC70 L5-2.4L Turbo"). Same
+    # chassis, different label. Surfaced so the UI can show both and the
+    # advisor confirms the labor row came from the right catalogue entry.
+    alldataMatchedVehicle: Optional[str] = None
     laborItems: List[LaborLine] = Field(default_factory=list)
     partsItems: List[PartLine] = Field(default_factory=list)
     breakdown: Breakdown = Field(default_factory=Breakdown)
