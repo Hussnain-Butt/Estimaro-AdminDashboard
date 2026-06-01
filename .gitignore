@@ -3,6 +3,7 @@ _*.py
 !**/__init__.py
 _screenshots/
 .claude/
+.server_pull/
 *.log
 
 # Python / agent runtime artifacts

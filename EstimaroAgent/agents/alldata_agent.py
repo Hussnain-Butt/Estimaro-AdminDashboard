@@ -42,40 +42,71 @@ matches the customer symptom, extract BOTH labor hours AND OEM parts.
 NAVIGATION PLAN (use numbered overlays in screenshots):
   1. If you see REPAIR / ESTIMATOR tiles, click REPAIR.
   2. Pick the vehicle (Year/Make/Model/Engine) — VERIFY it matches the spec above.
-  3. Navigate the category tree to the SPECIFIC subsystem matching the symptom.
-     ALLDATA's tree is two levels deep: a parent category (a header like
-     "Engine, Cooling and Exhaust") expands into several sibling cards
-     ("Engine", "Cooling System", "Exhaust System", "Lubrication System",
-     etc.). The subsystem you want is a DIRECT SIBLING of the obvious
-     "Engine" card, NOT a child of it — do NOT click "Engine" first if the
-     subsystem you actually want (e.g. Lubrication System) is already visible
-     as its own card on the same screen.
-     - For brakes:    Brakes and Traction Control -> Disc Brake System -> Brake Pad (front pads complaint)
-                                                                       -> Brake Rotor (rotor complaint)
-     - For engine oil / oil change / oil filter:
-                       Engine, Cooling and Exhaust -> Lubrication System (sibling, NOT inside "Engine")
-                       (fallback: if Lubrication System isn't visible after expanding the parent,
-                        try "Engine" -> "Oil and Filter" or "Lubrication" inside it; if still
-                        nothing, use action="find" with value="Lubrication System" or "Oil Filter".)
-     - For transmission fluid / shift / clutch:
-                       Transmission and Drivetrain -> Automatic Transmission (auto) or Manual Transmission
-     - For suspension/shocks/struts/control arm:
-                       Suspension and Steering -> the specific component (Shock, Strut, Control Arm)
-     - For ignition / spark plug / coil:
-                       Engine, Cooling and Exhaust -> Engine -> Ignition System -> Spark Plug
-     - For battery / starter / alternator:
-                       Starting and Charging -> the specific component
-     - For cooling / coolant / radiator / thermostat:
-                       Engine, Cooling and Exhaust -> Cooling System (sibling, NOT inside "Engine")
-     - For belts / pulleys / tensioner:
-                       Engine, Cooling and Exhaust -> Belt Driven Accessories (or Drive Belts)
-     - For exhaust / muffler / catalytic converter:
-                       Engine, Cooling and Exhaust -> Exhaust System
-     If you clicked a wrong card and the expected sibling card is no longer
-     visible (the tree drilled one level too deep), use the breadcrumb at the
-     top of the page to navigate BACK one level — do NOT keep retrying find /
-     scroll on the wrong page. Returning to the parent and re-picking is far
-     cheaper than 4 failed find attempts.
+     The vehicle banner at the top of every subsequent page shows the
+     year/make/model and ends with the VIN. If that VIN does NOT contain
+     the last 6 chars of the target VIN above, you picked the wrong vehicle:
+     use action="ask_human" with reason="vehicle_mismatch" rather than continuing.
+  3. NAVIGATE THE CATEGORY TREE — FILTER-FIRST STRATEGY.
+
+     Every category and sub-category page in ALLDATA has a filter input near
+     the top, labelled "Type term and hit enter to filter list below". This
+     filter is your PRIMARY navigation tool — it is deterministic, instant,
+     and works across every vehicle make. Card-trees differ per make
+     (a "Lubrication System" card that exists for Honda does NOT exist on
+     Volvo's parent page), so do NOT memorise tree paths. Filter instead.
+
+     Algorithm:
+       a. After picking the vehicle you land on a page of parent-category
+          cards (e.g. "Engine, Cooling and Exhaust", "Brakes and Traction
+          Control", "Transmission and Drivetrain", ...). Identify the ONE
+          parent that most plausibly contains the symptom and click it.
+       b. On the resulting page you see component cards AND a filter input.
+          Use action="type" on the filter input with value = the most
+          specific job keyword from the table below. Press Enter is NOT
+          required — typing fires the filter live.
+       c. The card list will reduce to cards whose name contains the keyword.
+          Click the matching card.
+       d. If filter yields ZERO cards, the keyword is too specific for this
+          make's catalogue. Clear the filter (action="type" with value="") and
+          retry with a BROADER keyword from the fallback column. If that also
+          yields nothing, click the breadcrumb to go back ONE level and try a
+          DIFFERENT parent category.
+
+     Job → filter keyword table (try primary first, then fallback):
+
+       Brake (front pads / grinding):   primary "pad"      fallback "brake"
+       Brake (rear pads):               primary "pad"      fallback "brake"
+       Brake (rotor / disc):            primary "rotor"    fallback "disc"
+       Oil change / oil filter:         primary "oil"      fallback "lubricat"
+       Coolant / radiator / thermostat: primary "cool"     fallback "radiator"
+       Transmission fluid / shift:      primary "transmis" fallback "drivetrain"
+       Spark plug / ignition:           primary "spark"    fallback "ignition"
+       Belt / serpentine / tensioner:   primary "belt"     fallback "drive"
+       Battery:                         primary "battery"  fallback "charging"
+       Alternator:                      primary "alternat" fallback "charging"
+       Starter:                         primary "starter"  fallback "starting"
+       Exhaust / muffler / catalytic:   primary "exhaust"  fallback "muffler"
+       Suspension / strut / shock:      primary "strut"    fallback "suspens"
+       Control arm / ball joint:        primary "control"  fallback "suspens"
+       Wheel bearing:                   primary "bearing"  fallback "wheel"
+
+     If the symptom isn't in this table, pick the parent category most likely
+     to contain it, then filter by the most-distinctive noun from the job's
+     Keywords field above.
+
+     HARD RULES for navigation:
+       * Never run action="find" or action="scroll" more than TWICE on the
+         same page. If the second attempt fails, the item is not on this page
+         — use the filter, breadcrumb back, or ask_human.
+       * If you clicked a wrong parent and the page no longer shows the
+         category cards you need, click the breadcrumb (typically "Vehicle"
+         or the parent name in the top-left of the content area) to go back
+         one level. Do NOT navigate by URL.
+       * Do not click "Engine" as a catch-all — on most makes, oil/cooling/
+         exhaust items live OUTSIDE "Engine" as sibling cards. Filter first
+         on the parent page; only enter "Engine" if filter narrows to a card
+         inside it.
+
   4. From the component page, click the "P" (Parts and Labor) cell, NOT "R" (Repair text).
   5. On the Parts and Labor article page you will see two tables:
        Parts table:  columns OEM PART #, PRICE, QUANTITY
