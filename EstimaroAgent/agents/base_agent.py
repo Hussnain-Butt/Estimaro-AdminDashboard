@@ -82,7 +82,7 @@ class VisionAgent:
             if self.login_portal:
                 try:
                     from portals.auth import is_logged_out, restore_session_on_page
-                    if await is_logged_out(page):
+                    if await is_logged_out(page, self.login_portal):
                         self._mid_flight_relogin_attempts += 1
                         if self._mid_flight_relogin_attempts > self._mid_flight_relogin_limit:
                             logger.error(f"  mid-flight relogin limit "

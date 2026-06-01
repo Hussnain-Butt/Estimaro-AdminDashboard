@@ -72,6 +72,17 @@ PORTALS: dict[str, dict] = {
         "url": "https://shop.tekmetric.com/admin/dashboard",
         "match": "tekmetric.com",
         "user": "TEKMETRIC_USERNAME", "passwd": "TEKMETRIC_PASSWORD",
+        # When the session is dead Tekmetric DOES NOT show the login form on
+        # the dashboard URL — it 302s to the marketing root with a
+        # `?redirect=/admin/...` query string, where there's no visible
+        # password field. The default password-field-only `is_logged_out`
+        # therefore reads "still logged in" and the keepalive skips the
+        # re-login. Recognising the redirect marker fixes the blind spot.
+        "logged_out_url_marker": "?redirect=",
+        # And the actual login form lives at /login, not the dashboard URL —
+        # ensure_logged_in goes here AFTER detecting the logged-out marker so
+        # _do_login sees a real password field.
+        "login_url": "https://shop.tekmetric.com/login",
     },
 }
 
@@ -100,8 +111,31 @@ async def _password_field(page: Page):
     return None
 
 
-async def is_logged_out(page: Page) -> bool:
-    """Heuristic: a visible password field means we're on a login screen."""
+async def is_logged_out(page: Page, portal_key: str | None = None) -> bool:
+    """Decide whether the current page indicates a dead session.
+
+    Default heuristic: a visible password field means we're on a login form.
+
+    Per-portal extension: when `portal_key` is given AND its PORTALS entry
+    has `logged_out_url_marker` set, a URL substring match also counts as
+    logged-out. This handles SPAs / SaaS apps that redirect to a marketing
+    or "where do you want to go?" screen on session expiry, where no
+    password field is visible (Tekmetric goes to
+    `/?redirect=/admin/...` — no form, but absolutely not authenticated).
+    Default to None so legacy callers that don't know the portal_key are
+    unaffected.
+    """
+    if portal_key:
+        cfg = PORTALS.get(portal_key) or {}
+        marker = cfg.get("logged_out_url_marker")
+        if marker:
+            markers = [marker] if isinstance(marker, str) else list(marker)
+            try:
+                u = page.url or ""
+                if any(m in u for m in markers):
+                    return True
+            except Exception:
+                pass
     return (await _password_field(page)) is not None
 
 
@@ -216,8 +250,23 @@ async def ensure_logged_in(portal_key: str) -> dict:
         async with ChromeDebugBrowser() as browser:
             page = await browser.open_or_focus(cfg["url"], url_match=cfg["match"])
             await asyncio.sleep(2)
-            if not await is_logged_out(page):
+            if not await is_logged_out(page, portal_key):
                 return {"portal": portal_key, "ok": True, "action": "already_logged_in"}
+
+            # When the logged-out marker fired BUT no password field is
+            # currently visible (the marketing-redirect case), the actual
+            # login form usually lives at a different URL. Navigate there
+            # so _do_login has a real form to drive.
+            login_url = cfg.get("login_url")
+            if login_url and (await _password_field(page)) is None:
+                logger.info(f"[auth] {portal_key}: redirected to logged-out URL "
+                            f"({page.url[:80]}); navigating to {login_url} for form")
+                try:
+                    await page.goto(login_url, wait_until="domcontentloaded",
+                                    timeout=20000)
+                    await asyncio.sleep(2)
+                except Exception as e:
+                    logger.warning(f"[auth] {portal_key}: login_url nav failed: {e}")
 
             logger.info(f"[auth] {portal_key}: session dropped — re-logging in as "
                         f"{getattr(settings, cfg['user'], '') or '(no user set)'}")
