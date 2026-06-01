@@ -169,10 +169,77 @@ class VisionAgent:
             sig = _action_signature(decision, page.url)
             self._sig_counts[sig] = self._sig_counts.get(sig, 0) + 1
             if self._sig_counts[sig] >= 4:
-                logger.warning(f"  same action repeated 4x → giving up")
-                decision["result"] = "loop_giveup"
-                self.history.append(decision)
-                break
+                # Filter-rescue: before giving up, if the stuck action is a
+                # find/scroll for a label, try typing the same value into the
+                # first visible text input on the page. ALLDATA's category
+                # pages all carry a filter box that no amount of vision
+                # prompting reliably steers the model towards; this rescue
+                # gives the agent one deterministic shot at it before quit.
+                # We only attempt once per stuck signature so this can't
+                # itself loop.
+                rescue_key = f"rescue:{sig}"
+                rescued = False
+                if (action in ("find", "scroll") and value
+                        and not self._sig_counts.get(rescue_key)):
+                    self._sig_counts[rescue_key] = 1
+                    needle = str(value).strip()
+                    # Use just the first meaningful word — ALLDATA's filter
+                    # narrows on substring, and broad keywords ("oil", "brake")
+                    # are more forgiving than full labels ("Lubrication System")
+                    # that may not appear verbatim on every make's catalogue.
+                    first_word = next(
+                        (w for w in needle.split() if len(w) > 2 and w.isalpha()),
+                        needle,
+                    ).lower()[:12]
+                    try:
+                        filled = await page.evaluate(
+                            """(needle) => {
+                                const inputs = Array.from(document.querySelectorAll(
+                                    'input[type=text], input[type=search], input:not([type]), [role=searchbox], [contenteditable=true]'
+                                ));
+                                const visible = inputs.filter(el => {
+                                    if (el.disabled || el.readOnly) return false;
+                                    const r = el.getBoundingClientRect();
+                                    if (r.width < 30 || r.height < 10) return false;
+                                    const cs = getComputedStyle(el);
+                                    if (cs.visibility === 'hidden' || cs.display === 'none') return false;
+                                    return true;
+                                });
+                                if (!visible.length) return false;
+                                const el = visible[0];
+                                el.focus();
+                                const proto = el.tagName === 'TEXTAREA'
+                                    ? window.HTMLTextAreaElement.prototype
+                                    : window.HTMLInputElement.prototype;
+                                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                                if (setter && el.tagName !== 'DIV') setter.call(el, needle);
+                                else el.value = needle;
+                                el.dispatchEvent(new Event('input', {bubbles: true}));
+                                el.dispatchEvent(new Event('change', {bubbles: true}));
+                                el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
+                                el.dispatchEvent(new KeyboardEvent('keyup',   {key: 'Enter', bubbles: true}));
+                                return true;
+                            }""",
+                            first_word,
+                        )
+                        if filled:
+                            rescued = True
+                            logger.warning(
+                                f"  loop-rescue: typed {first_word!r} into first "
+                                f"visible filter input — giving the agent one more "
+                                f"chance instead of giving up"
+                            )
+                            decision["result"] = f"loop_rescue_filter:{first_word}"
+                            self.history.append(decision)
+                            await asyncio.sleep(1.2)
+                            continue
+                    except Exception as e:
+                        logger.warning(f"  loop-rescue eval failed: {e}")
+                if not rescued:
+                    logger.warning(f"  same action repeated 4x → giving up")
+                    decision["result"] = "loop_giveup"
+                    self.history.append(decision)
+                    break
 
             # 5. Terminal actions
             if action == "done":
