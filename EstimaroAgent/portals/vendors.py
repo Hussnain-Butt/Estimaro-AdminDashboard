@@ -106,8 +106,20 @@ async def _lookup_one_vendor(
     # briefly between attempts lets the vendor site recover and avoids
     # hammering it; 20s is short enough to keep the overall job within
     # budget when paired with VENDOR_CONCURRENCY > 1.
+    #
+    # Carve-out: a `vehicle_set_failed` / `year_pick_failed` / `picker_
+    # open_failed` is a brittle SELECTOR issue — the vendor's catalogue
+    # picker UI can't be driven for THIS year/make/model. Re-trying the
+    # same selectors will fail the exact same way and just burn another
+    # 180s timeout. Skip the retry, surface the vehicle-coverage error
+    # straight to the FE.
+    deterministic_vehicle_fail = (last_err and any(
+        tag in last_err.lower() for tag in
+        ("vehicle_set_failed", "year_pick_failed", "picker_open_failed")
+    ))
     if (not per_vendor_quotes and last_err
-            and "timeout" in last_err.lower() and candidates):
+            and "timeout" in last_err.lower() and candidates
+            and not deterministic_vehicle_fail):
         logger.info(f"[vendors] {mod.PORTAL_NAME} timed out on first pass — "
                     f"retrying {candidates[0]!r} once after 20s cool-off")
         await asyncio.sleep(20)

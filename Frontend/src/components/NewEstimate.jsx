@@ -100,16 +100,33 @@ const transformVendorData = (vendorComparison, vendorQuotes = []) => {
 
 // Short, advisor-readable summary of why a vendor returned no quote — keeps
 // the surfacing useful without dumping a stack trace into the UI.
+//
+// Order matters: SPECIFIC tokens come before GENERIC ones, otherwise
+// `low.includes('timeout')` swallows every more-specific failure (a
+// vehicle_set_failed bubbles up as a TimeoutError from Playwright, but the
+// advisor needs to see that the *vehicle* couldn't be set, not that the
+// vendor site was generically slow — they're very different problems).
 const describeVendorFailure = (note) => {
   if (!note) return 'No quote returned'
   const low = String(note).toLowerCase()
   if (low.includes('session_expired') || low.includes('login_failed') || low.includes('login_required'))
     return 'Session expired — please log in via VPS console'
-  if (low.includes('timeout')) return 'Timed out — vendor site was slow'
-  if (low.includes('prep_failed')) return 'Vendor page did not load correctly'
+  if (low.includes('skipped')) {
+    // Portal explicitly declined this run (e.g. "VOLVO not covered by
+    // PartsLink24"). Surface the reason verbatim, it's already short.
+    const reason = String(note).split('skipped ::').pop().trim().slice(0, 120)
+    return reason ? `Skipped — ${reason}` : 'Skipped by vendor'
+  }
+  if (low.includes('vehicle_set_failed') || low.includes('year_pick_failed') ||
+      low.includes('picker_open_failed'))
+    return 'Vehicle not available on this vendor (year / make / model could not be selected in their catalog)'
+  if (low.includes('no_brand_app')) return 'Vendor does not cover this make'
   if (low.includes('row_not_found') || low.includes('unmapped_part_type'))
     return 'No matching catalog row for this part type'
-  if (low.includes('no_brand_app')) return 'Vendor does not cover this make'
+  if (low.includes('prep_failed')) return 'Vendor page did not load correctly'
+  // Generic timeout AFTER the specific vehicle/picker timeouts above — only
+  // matches when the failure really was the vendor site being slow.
+  if (low.includes('timeout')) return 'Timed out — vendor site was slow'
   return String(note).slice(0, 120)
 }
 
