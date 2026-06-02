@@ -153,56 +153,134 @@ async def _scan_repair_procedure(browser, article_url: str) -> dict:
     the matching Service-and-Repair article, dump body text, and parse
     with the keyword-based parser.
 
-    ALLDATA's SPA route for the R-cell is the sibling of the P-cell:
-        /repair/#/parts-and-labor-article/<vehicle>/component/<c>/itype/<i>/...
-        /repair/#/repair-article/<vehicle>/component/<c>/itype/<i>/...
+    Two-step traversal — ALLDATA's SPA does NOT expose a direct
+    repair-article URL from the parts-and-labor-article URL. R-cell
+    clicks update Angular state, not the segment name. So:
 
-    Direct URL substitution avoids running a second vision agent and
-    keeps the scan to a sub-5-second cost. Falls back to a clear
-    scan_status string on any failure — the worker treats absence of
-    items as informational, never blocking the estimate.
+      1) Parse <vehicle> and <component> ids out of the article URL,
+         navigate to /vehicle/<v>/component/<c>/filter/repair — that's
+         ALLDATA's component-page-filtered-to-repair-articles view, a
+         LIST of repair article titles like "Removal and Replacement",
+         "Overhaul", "Disassembly".
+
+      2) Click the first link matching a known procedure title
+         ("removal and replacement" is the canonical one for parts
+         replacement jobs; "overhaul" / "service and repair" fall
+         back). The SPA loads the actual repair-article body in place.
+
+      3) Read body.innerText and pass to parse_repair_procedure.
+
+    Falls back to a clear scan_status string on any failure — the
+    worker treats absence of items as informational, never blocking
+    the estimate.
     """
+    import re
     import asyncio as _asyncio
     from services.repair_procedure_parser import parse_repair_procedure
 
-    r_url = article_url.replace("/parts-and-labor-article/", "/repair-article/")
-    if r_url == article_url:
-        return {"items": [], "scan_status": "url_not_transformable",
+    m = re.search(r"/parts-and-labor-article/(\d+)/component/(\d+)/", article_url)
+    if not m:
+        return {"items": [], "scan_status": "url_parse_failed",
                 "tried_url": article_url}
+    vehicle_id, component_id = m.group(1), m.group(2)
+    repair_list_url = (
+        f"https://my.alldata.com/repair/#/vehicle/{vehicle_id}"
+        f"/component/{component_id}/filter/repair"
+    )
 
     try:
         page = await browser.find_tab_by_url("alldata.com")
         if page is None:
             return {"items": [], "scan_status": "no_alldata_tab",
-                    "tried_url": r_url}
+                    "tried_url": repair_list_url}
+
+        # Step 1: nav to the filter=repair list view for the same component
         try:
-            await page.goto(r_url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(repair_list_url, wait_until="domcontentloaded", timeout=30000)
         except Exception as e:
             return {"items": [], "scan_status": f"nav_failed: {str(e)[:120]}",
-                    "tried_url": r_url}
-        # ALLDATA Repair articles render into a SPA shell that finishes
-        # painting a couple of seconds after domcontentloaded. Without
-        # this sleep the body text is just the loading skeleton and the
-        # parser finds zero items.
-        await _asyncio.sleep(4)
+                    "tried_url": repair_list_url}
+        await _asyncio.sleep(4)  # SPA hydration
+
+        # Step 2: click the canonical procedure link. Ordered by usefulness
+        # — "Removal and Replacement" is the article that explicitly walks
+        # the tech through replacing the part (which is where the renew /
+        # replace / torque-to-yield language lives). "Overhaul" and
+        # "Service and Repair" are broader fallbacks.
+        clicked = await page.evaluate("""() => {
+            const order = [
+                'removal and replacement',
+                'removal & replacement',
+                'removal, installation',
+                'removal and installation',
+                'overhaul',
+                'service and repair',
+                'replacement',
+            ];
+            const visible = el => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                if (r.width < 5 || r.height < 5) return false;
+                const cs = getComputedStyle(el);
+                if (cs.visibility === 'hidden' || cs.display === 'none') return false;
+                return true;
+            };
+            const els = Array.from(document.querySelectorAll('a, button, [role=link], [role=button]')).filter(visible);
+            for (const candidate of order) {
+                const hit = els.find(el => {
+                    const t = (el.innerText || '').trim().toLowerCase();
+                    return t.length > 0 && t.length < 80 && t.includes(candidate);
+                });
+                if (hit) {
+                    hit.click();
+                    return {clicked: candidate, text: (hit.innerText || '').trim().slice(0, 80)};
+                }
+            }
+            return null;
+        }""")
+        if not clicked:
+            return {"items": [], "scan_status": "no_procedure_link_found",
+                    "tried_url": repair_list_url}
+
+        # Step 3: wait for article content to render, then dump body text
+        await _asyncio.sleep(5)
         body_text = await page.evaluate(
             "() => (document.body && document.body.innerText) || ''"
         )
-        if not body_text or len(body_text) < 200:
-            return {"items": [], "scan_status": "page_text_too_short",
-                    "tried_url": r_url, "got_chars": len(body_text or "")}
+        # Honest reality: ALLDATA renders article content via canvas /
+        # offscreen rendering for anti-scraping. document.body.innerText
+        # returns only the navigation shell (~500 chars) even when the
+        # full procedure is visually on screen. The text-based parser
+        # therefore returns empty on every modern ALLDATA article. This
+        # function stays as scaffolding for a future vision-LLM
+        # extraction path; today it consistently logs
+        # `article_text_dom_blocked` so the worker doesn't depend on it.
+        # The skeleton coverage (task #12) is the real signal — it
+        # surfaces missing components without needing R-cell text.
+        if not body_text or len(body_text) < 1500:
+            return {
+                "items": [], "scan_status": "article_text_dom_blocked",
+                "tried_url": page.url,
+                "got_chars": len(body_text or ""),
+                "clicked_link": clicked.get("text") if isinstance(clicked, dict) else None,
+                "note": "ALLDATA articles render via canvas / anti-scraping. "
+                        "Vision-LLM scan required (not yet wired).",
+            }
+
         parsed = parse_repair_procedure(body_text)
         parsed["scan_status"] = "ok"
-        parsed["tried_url"] = r_url
+        parsed["tried_url"] = page.url
+        parsed["clicked_link"] = clicked.get("text") if isinstance(clicked, dict) else None
         logger.info(
             f"[R-cell] parsed {len(parsed['items'])} replacement items "
-            f"from {parsed['scanned_chars']} chars of repair text"
+            f"from {parsed['scanned_chars']} chars after clicking "
+            f"{clicked!r}"
         )
         return parsed
     except Exception as e:
         logger.warning(f"R-cell scan error: {type(e).__name__}: {str(e)[:160]}")
         return {"items": [], "scan_status": f"error: {type(e).__name__}",
-                "tried_url": r_url}
+                "tried_url": repair_list_url}
 
 
 async def lookup_labor_time(
