@@ -119,6 +119,103 @@ _TORQUE_PATTERN = re.compile(
 # --- main entry point ------------------------------------------------------
 
 
+def normalize_vision_items(vision_items: list[dict]) -> dict[str, Any]:
+    """Convert Gemini's free-form repair-item output to the same shape
+    parse_repair_procedure produces from text — so the skeleton merger
+    in worker._build_skeleton_coverage works without branching on the
+    source.
+
+    Gemini returns:
+      [{component, action, quantity, context}, ...]
+    We normalize to:
+      {items: [{action, component_key, component_phrase, quantity,
+                occurrences, contexts}, ...],
+       raw_keyword_hits: <int>, scanned_chars: <int>}
+
+    Components are mapped through the same _COMPONENT_VOCAB used for
+    text scanning, so 'Carrier Bolt' from Gemini collapses to the same
+    component_key as 'carrier bolt' from text parsing.
+    """
+    if not vision_items:
+        return {"items": [], "raw_keyword_hits": 0, "scanned_chars": 0}
+
+    valid_actions = {"renew", "replace", "torque_to_yield", "one_time_use"}
+    agg: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for raw in vision_items:
+        if not isinstance(raw, dict):
+            continue
+        comp_text = str(raw.get("component") or "").strip()
+        if not comp_text:
+            continue
+        action = str(raw.get("action") or "").strip().lower()
+        if action not in valid_actions:
+            # Gemini occasionally returns 'one-time use' etc — normalise.
+            if "renew" in action:
+                action = "renew"
+            elif "torque" in action:
+                action = "torque_to_yield"
+            elif "one" in action and "time" in action:
+                action = "one_time_use"
+            elif "replace" in action:
+                action = "replace"
+            else:
+                action = "replace"  # safe default
+
+        # Map free-form component to canonical component_key via vocab.
+        comp_lc = comp_text.lower()
+        component_key = None
+        component_phrase = comp_text
+        for phrase, key in _COMPONENT_VOCAB:
+            if phrase in comp_lc:
+                component_key = key
+                component_phrase = phrase  # use canonical phrase for display
+                break
+        if not component_key:
+            # No vocab match — fall back to a slugified version of Gemini's
+            # text so unfamiliar parts still aggregate consistently across
+            # runs (e.g. 'Cabin Air Filter' -> 'cabin_air_filter').
+            component_key = re.sub(r"[^a-z0-9]+", "_", comp_lc).strip("_")
+            if not component_key:
+                continue
+
+        qty = raw.get("quantity")
+        try:
+            qty = int(qty) if qty is not None else None
+            if qty is not None and not (1 <= qty <= 20):
+                qty = None
+        except (TypeError, ValueError):
+            qty = None
+
+        context = str(raw.get("context") or "").strip()[:180]
+
+        key = (action, component_key)
+        if key not in agg:
+            agg[key] = {
+                "action": action,
+                "component_key": component_key,
+                "component_phrase": component_phrase,
+                "quantity": qty,
+                "occurrences": 0,
+                "contexts": [],
+            }
+        agg[key]["occurrences"] += 1
+        if qty and (agg[key]["quantity"] is None or qty > agg[key]["quantity"]):
+            agg[key]["quantity"] = qty
+        if context and len(agg[key]["contexts"]) < 3:
+            agg[key]["contexts"].append(context)
+
+    items = sorted(
+        agg.values(),
+        key=lambda v: (-v["occurrences"], v["component_key"]),
+    )
+    return {
+        "items": items,
+        "raw_keyword_hits": len(vision_items),
+        "scanned_chars": 0,  # vision doesn't have a char count
+    }
+
+
 def parse_repair_procedure(text: str) -> dict[str, Any]:
     """Scan an ALLDATA repair-procedure article body for replacement items.
 

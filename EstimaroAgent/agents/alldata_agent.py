@@ -148,7 +148,8 @@ CRITICAL RULES:
 """
 
 
-async def _scan_repair_procedure(browser, article_url: str) -> dict:
+async def _scan_repair_procedure(browser, article_url: str,
+                                 history_urls: list[str] | None = None) -> dict:
     """Navigate the live ALLDATA tab from the Parts-and-Labor article to
     the matching Service-and-Repair article, dump body text, and parse
     with the keyword-based parser.
@@ -178,14 +179,38 @@ async def _scan_repair_procedure(browser, article_url: str) -> dict:
     import asyncio as _asyncio
     from services.repair_procedure_parser import parse_repair_procedure
 
-    m = re.search(r"/parts-and-labor-article/(\d+)/component/(\d+)/", article_url)
+    m = re.search(r"/parts-and-labor-article/(\d+)/component/(\d+)/itype/(\d+)/?", article_url)
     if not m:
         return {"items": [], "scan_status": "url_parse_failed",
                 "tried_url": article_url}
-    vehicle_id, component_id = m.group(1), m.group(2)
+    vehicle_id, parent_component, itype = m.group(1), m.group(2), m.group(3)
+
+    # The article URL records the PARENT category component (e.g. 3077 for
+    # Disc Brake System) — but the actual labor row sits under a LEAF
+    # child (e.g. component 21 = Brake Pad). Parent categories' filter=
+    # repair view is empty; only the leaf has a usable list of repair
+    # articles. Recover the leaf component id from the agent's history
+    # by finding the most recent /vehicle/<v>/component/<leaf>/filter/
+    # <itype> URL (filter equals itype because that's how the agent
+    # drilled into the article in step 7).
+    leaf_component = parent_component
+    if history_urls:
+        leaf_pat = re.compile(
+            rf"/vehicle/{vehicle_id}/component/(\d+)/filter/{itype}\b"
+        )
+        for url in reversed(history_urls):  # most-recent wins
+            mm = leaf_pat.search(url or "")
+            if mm and mm.group(1) != parent_component:
+                leaf_component = mm.group(1)
+                logger.info(
+                    f"[R-cell] derived leaf component {leaf_component} "
+                    f"from agent history (parent was {parent_component})"
+                )
+                break
+
     repair_list_url = (
         f"https://my.alldata.com/repair/#/vehicle/{vehicle_id}"
-        f"/component/{component_id}/filter/repair"
+        f"/component/{leaf_component}/filter/repair"
     )
 
     try:
@@ -242,41 +267,76 @@ async def _scan_repair_procedure(browser, article_url: str) -> dict:
             return {"items": [], "scan_status": "no_procedure_link_found",
                     "tried_url": repair_list_url}
 
-        # Step 3: wait for article content to render, then dump body text
+        # Step 3: wait for article content to render. Try text DOM first
+        # (works on the small minority of ALLDATA pages that DO expose
+        # text), fall back to vision-LLM screenshot extraction for the
+        # majority (canvas / anti-scraping protected pages).
         await _asyncio.sleep(5)
         body_text = await page.evaluate(
             "() => (document.body && document.body.innerText) || ''"
         )
-        # Honest reality: ALLDATA renders article content via canvas /
-        # offscreen rendering for anti-scraping. document.body.innerText
-        # returns only the navigation shell (~500 chars) even when the
-        # full procedure is visually on screen. The text-based parser
-        # therefore returns empty on every modern ALLDATA article. This
-        # function stays as scaffolding for a future vision-LLM
-        # extraction path; today it consistently logs
-        # `article_text_dom_blocked` so the worker doesn't depend on it.
-        # The skeleton coverage (task #12) is the real signal — it
-        # surfaces missing components without needing R-cell text.
-        if not body_text or len(body_text) < 1500:
-            return {
-                "items": [], "scan_status": "article_text_dom_blocked",
-                "tried_url": page.url,
-                "got_chars": len(body_text or ""),
-                "clicked_link": clicked.get("text") if isinstance(clicked, dict) else None,
-                "note": "ALLDATA articles render via canvas / anti-scraping. "
-                        "Vision-LLM scan required (not yet wired).",
-            }
+        clicked_text = clicked.get("text") if isinstance(clicked, dict) else None
 
-        parsed = parse_repair_procedure(body_text)
-        parsed["scan_status"] = "ok"
-        parsed["tried_url"] = page.url
-        parsed["clicked_link"] = clicked.get("text") if isinstance(clicked, dict) else None
+        # Path 1 — text DOM had real content (rare on ALLDATA but free
+        # when it works, so we always try first).
+        if body_text and len(body_text) >= 1500:
+            parsed = parse_repair_procedure(body_text)
+            parsed["scan_status"] = "ok_text"
+            parsed["tried_url"] = page.url
+            parsed["clicked_link"] = clicked_text
+            logger.info(
+                f"[R-cell text] parsed {len(parsed['items'])} replacement "
+                f"items from {parsed['scanned_chars']} chars after clicking "
+                f"{clicked!r}"
+            )
+            return parsed
+
+        # Path 2 — text DOM blocked (canvas / anti-scrape). Screenshot
+        # the full page and let Gemini Flash read the rendered procedure.
+        # This adds ~10-20s + ~$0.002 per job but it's the only way
+        # ALLDATA's modern article surface yields the renew/replace
+        # instructions Sergio's manual workflow depends on.
         logger.info(
-            f"[R-cell] parsed {len(parsed['items'])} replacement items "
-            f"from {parsed['scanned_chars']} chars after clicking "
-            f"{clicked!r}"
+            f"[R-cell vision] text DOM returned {len(body_text)} chars "
+            f"(below 1500 threshold) — falling back to screenshot + "
+            f"Gemini vision extraction"
         )
-        return parsed
+        try:
+            from core.gemini_client import GeminiClient
+            from services.repair_procedure_parser import normalize_vision_items
+
+            screenshot_bytes = await page.screenshot(full_page=True)
+            shot_kb = len(screenshot_bytes) // 1024
+            logger.info(f"[R-cell vision] captured {shot_kb} KB screenshot")
+
+            gemini = GeminiClient()
+            # extract_repair_items is sync (uses google-generativeai
+            # which is sync under the hood). Run in a thread so we
+            # don't block the asyncio loop.
+            vision_items = await _asyncio.to_thread(
+                gemini.extract_repair_items, screenshot_bytes
+            )
+            parsed = normalize_vision_items(vision_items or [])
+            parsed["scan_status"] = "ok_vision"
+            parsed["tried_url"] = page.url
+            parsed["clicked_link"] = clicked_text
+            parsed["screenshot_kb"] = shot_kb
+            logger.info(
+                f"[R-cell vision] Gemini returned {len(vision_items)} raw "
+                f"items, normalised to {len(parsed['items'])} unique "
+                f"replacement components"
+            )
+            return parsed
+        except Exception as e:
+            logger.warning(
+                f"[R-cell vision] failed: {type(e).__name__}: {str(e)[:160]}"
+            )
+            return {
+                "items": [], "scan_status": f"vision_failed: {type(e).__name__}",
+                "tried_url": page.url,
+                "clicked_link": clicked_text,
+                "note": str(e)[:200],
+            }
     except Exception as e:
         logger.warning(f"R-cell scan error: {type(e).__name__}: {str(e)[:160]}")
         return {"items": [], "scan_status": f"error: {type(e).__name__}",
@@ -309,8 +369,15 @@ async def lookup_labor_time(
                                    key=lambda e: e.get("confidence", 0.0))
                 article_url = (best_for_url.get("url_at_decision") or "").strip()
                 if "/parts-and-labor-article/" in article_url:
+                    # Pass every URL the agent visited so the scanner can
+                    # recover the LEAF component (article URL only has
+                    # parent category; leaf is in step-N history).
+                    history_urls = [
+                        (h.get("url_at_decision") or "")
+                        for h in (result.get("history") or [])
+                    ]
                     repair_procedure_meta = await _scan_repair_procedure(
-                        browser, article_url
+                        browser, article_url, history_urls=history_urls
                     )
                 else:
                     repair_procedure_meta["scan_status"] = (

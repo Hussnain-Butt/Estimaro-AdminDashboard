@@ -132,6 +132,84 @@ If a field is not visible, set its value to null. Return JSON object keyed by fi
             logger.error(f"Gemini extract failed: {e}")
             return {}
 
+    def extract_repair_items(self, screenshot_bytes: bytes) -> list[dict]:
+        """Vision-based extraction for ALLDATA repair-procedure articles.
+
+        ALLDATA's repair-article content is rendered via canvas /
+        offscreen surfaces (anti-scraping), so document.body.innerText
+        comes back empty. Sending the rendered screenshot to Gemini
+        Flash is the only reliable way to read renew/replace/torque-
+        to-yield instructions out of the procedure.
+
+        Returns a list of dicts:
+          [{component, action, quantity, context}, ...]
+        Empty list on Gemini failure or unparseable response — the
+        caller treats absence the same as "no items found", never
+        an error.
+        """
+        prompt = """You are reading a screenshot of an ALLDATA Repair article
+(removal-and-replacement / overhaul / service procedure). Your job is to
+list EVERY component the article tells the technician to REPLACE, RENEW,
+TORQUE-TO-YIELD, or treat as ONE-TIME-USE.
+
+Return STRICT JSON — a single JSON ARRAY with this exact element shape:
+
+[
+  {
+    "component": "<plain noun phrase, e.g. 'Brake Caliper Carrier Bolt' or 'Crush Washer'>",
+    "action":    "renew" | "replace" | "torque_to_yield" | "one_time_use",
+    "quantity":  <integer 1-20, or null if not stated>,
+    "context":   "<short phrase 5-15 words from the article showing where this came from>"
+  },
+  ...
+]
+
+RULES — read carefully:
+  1. Only include items the article LITERALLY tells the tech to renew
+     or replace. Skip items that are merely removed for access and put
+     back. Skip torque values (those are forces, not parts).
+  2. "Renew" (BMW/Volvo verb) is the same as "replace". Both -> the
+     respective action.
+  3. "Torque to yield" indicates the fastener MUST be replaced — treat
+     action as "torque_to_yield" with the fastener name as component.
+  4. Quantity: only set when explicitly stated near the component name
+     (e.g. "renew 6 carrier bolts" -> quantity=6). Otherwise null.
+  5. Deduplicate: if the article mentions "renew screws" three times
+     for the same screws, return ONE entry with the highest stated
+     quantity.
+  6. Use the component's plain English name, not part numbers. Title case.
+  7. If the article doesn't mention any replacement items (very rare
+     for a real Removal/Replacement procedure), return [] -- never
+     invent.
+
+Return ONLY the JSON array, no prose, no markdown fences."""
+        image_part = {"mime_type": "image/png", "data": screenshot_bytes}
+        try:
+            response = self.model.generate_content(
+                [prompt, image_part],
+                generation_config={
+                    "temperature": 0.1,
+                    "response_mime_type": "application/json",
+                },
+            )
+            parsed = json.loads(response.text)
+            if isinstance(parsed, list):
+                return parsed
+            # Some Gemini responses wrap a list in an envelope like
+            # {"items": [...]}. Be lenient.
+            if isinstance(parsed, dict):
+                for k in ("items", "components", "results"):
+                    v = parsed.get(k)
+                    if isinstance(v, list):
+                        return v
+            logger.warning(
+                f"Gemini extract_repair_items returned non-list: {type(parsed).__name__}"
+            )
+            return []
+        except Exception as e:
+            logger.error(f"Gemini extract_repair_items failed: {e}")
+            return []
+
 
 if __name__ == "__main__":
     print("Testing Gemini client...")
