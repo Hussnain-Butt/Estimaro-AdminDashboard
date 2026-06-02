@@ -116,6 +116,12 @@ class JobResult(BaseModel):
     # Each entry has {name, kind, reason, hours?, cost?} — FE renders as a
     # read-only panel; advisor adds to estimate manually.
     suggestedAddOns: List[Dict[str, Any]] = Field(default_factory=list)
+    # Task #12 — service-type skeleton + coverage report. None when no
+    # skeleton matched (uncommon service type or vague complaint); FE
+    # hides the panel in that case. When present, includes a
+    # `coverage_pct` over always-required components — the headline
+    # number for advisor sanity-checking.
+    serviceSkeleton: Optional[Dict[str, Any]] = None
 
 
 class JobSubmitRequest(BaseModel):

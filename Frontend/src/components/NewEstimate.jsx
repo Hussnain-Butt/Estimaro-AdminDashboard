@@ -435,6 +435,77 @@ const PartsStep = ({ data }) => {
         </div>
       )}
 
+      {data.serviceSkeleton && (() => {
+        const sk = data.serviceSkeleton
+        const cov = sk.coverage_pct ?? 0
+        const range = sk.expected_estimate_range || []
+        const tier =
+          cov >= 90 ? { chip: 'bg-success/15 text-success border-success/40', label: 'Full coverage' }
+          : cov >= 60 ? { chip: 'bg-warning/15 text-warning border-warning/40', label: 'Partial coverage' }
+          : { chip: 'bg-danger/15 text-danger border-danger/40', label: 'Missing items' }
+        return (
+          <div className="mt-6 bg-background p-4 rounded-lg border border-border">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <div>
+                <h3 className="font-semibold text-text-primary text-sm">
+                  Expected components for {sk.display_name}
+                </h3>
+                {range.length === 2 && (
+                  <p className="text-xs text-text-secondary mt-0.5">
+                    Industry-standard estimate range:{' '}
+                    <span className="font-mono">${range[0]}-${range[1]}</span>
+                  </p>
+                )}
+              </div>
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${tier.chip}`}>
+                {tier.label} · {sk.components_found}/{sk.components_required} ({cov}%)
+              </span>
+            </div>
+            {sk.notes && (
+              <p className="text-xs text-text-secondary italic mb-3">{sk.notes}</p>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {(sk.components || []).map((c, i) => (
+                <div
+                  key={c.key || i}
+                  className={`px-3 py-2 rounded border text-xs ${
+                    c.found_in_extraction
+                      ? 'bg-success/5 border-success/20'
+                      : c.always_required
+                        ? 'bg-danger/5 border-danger/30'
+                        : 'bg-surface/50 border-border/50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-medium text-text-primary">
+                      {c.found_in_extraction ? '✓ ' : c.always_required ? '✗ ' : '○ '}
+                      {c.display_name}
+                      {c.default_qty > 1 && (
+                        <span className="ml-1 text-text-secondary font-normal">×{c.default_qty}</span>
+                      )}
+                    </p>
+                    <span className="text-[10px] text-text-secondary uppercase">{c.kind}</span>
+                  </div>
+                  {c.reason && (
+                    <p className="text-text-secondary mt-0.5 leading-snug">{c.reason}</p>
+                  )}
+                  {!c.found_in_extraction && c.always_required && (
+                    <p className="text-danger mt-1 text-[11px] font-medium">
+                      Missing from estimate — add manually
+                    </p>
+                  )}
+                  {c.found_in_extraction && c.matched_part_description && (
+                    <p className="text-success/80 mt-0.5 text-[11px]">
+                      Matched: {c.matched_part_description}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      })()}
+
       {Array.isArray(data.suggestedAddOns) && data.suggestedAddOns.length > 0 && (
         <div className="mt-6 bg-background p-4 rounded-lg border border-info/30">
           <div className="flex items-center justify-between mb-2">
@@ -946,6 +1017,9 @@ const NewEstimate = () => {
     // Aux data: NHTSA recalls (banner) and recommended add-ons (panel).
     const recalls = Array.isArray(r.recalls) ? r.recalls : []
     const suggestedAddOns = Array.isArray(r.suggestedAddOns) ? r.suggestedAddOns : []
+    // Task #12 — service-type skeleton + coverage. Null when worker didn't
+    // recognise the service type; FE hides the panel in that case.
+    const serviceSkeleton = r.serviceSkeleton || null
 
     const mergedData = {
       vin: formData.vin,
@@ -960,6 +1034,7 @@ const NewEstimate = () => {
       partsItems,
       recalls,
       suggestedAddOns,
+      serviceSkeleton,
     }
 
     setFormData((prev) => ({
@@ -970,6 +1045,7 @@ const NewEstimate = () => {
       partsItems,
       recalls,
       suggestedAddOns,
+      serviceSkeleton,
     }))
 
     const bd = r.breakdown || {}

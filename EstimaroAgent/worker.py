@@ -554,7 +554,8 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
                           vendor_quotes: list | None = None,
                           vendor_comparison: dict | None = None,
                           recalls: list | None = None,
-                          suggested_addons: list | None = None) -> dict:
+                          suggested_addons: list | None = None,
+                          service_skeleton: dict | None = None) -> dict:
     """Shape the agent output to match the Backend's JobResult schema.
 
     Part-pricing policy: for each part ALLDATA found, look up the cheapest
@@ -762,6 +763,92 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
         # auto-add to the estimate.
         "recalls": list(recalls or []),
         "suggestedAddOns": list(suggested_addons or []),
+        # Task #12 — service-type skeleton + coverage report. Tells the FE
+        # which components THIS service type is EXPECTED to have, and
+        # whether the ALLDATA extraction found each one. The
+        # `coverage_pct` is the headline number an advisor watches: 100%
+        # means the estimate carries every component the skeleton asked
+        # for; lower means line items are missing and the advisor needs
+        # to add them manually (or task #13's Repair Procedure scan
+        # would supply them).
+        "serviceSkeleton": _build_skeleton_coverage(service_skeleton, parts_lines),
+    }
+
+
+def _build_skeleton_coverage(skeleton: dict | None, parts_lines: list[dict]) -> dict | None:
+    """Compare the static skeleton against what ALLDATA actually extracted.
+
+    For each expected component, attempt a loose name match against the
+    extracted parts. Output per-component {expected, found, matched_part?}
+    plus a headline `coverage_pct` so the FE can show "5/8 expected
+    components found (62%)" — making missing line items visible to the
+    advisor instead of silently shipping a $430 estimate for a $1,000 job.
+
+    Returns None when no skeleton was matched, so the FE hides the panel
+    instead of showing a meaningless "0% coverage" badge.
+    """
+    if not skeleton:
+        return None
+
+    expected = (skeleton.get("components") or []) + (skeleton.get("addons") or [])
+    extracted_names = [
+        (p.get("description") or "").lower() for p in (parts_lines or [])
+    ]
+
+    component_status = []
+    found_count = 0
+    for c in expected:
+        # Name-match heuristic: any of the component's display_name tokens
+        # OR vendor_search_terms appearing in any extracted part name.
+        candidates = [c.get("display_name", "").lower()]
+        candidates.extend([s.lower() for s in (c.get("vendor_search_terms") or [])])
+        candidates.extend([k.lower() for k in (c.get("alldata_keywords") or [])])
+        # Strip empties + dedup
+        candidates = [t.strip() for t in candidates if t and len(t.strip()) > 2]
+
+        matched_idx = None
+        for i, en in enumerate(extracted_names):
+            if not en:
+                continue
+            # Token-overlap match: any candidate appears as substring of
+            # the extracted name, or vice versa for short names.
+            if any(t in en or (len(en) > 3 and en in t) for t in candidates):
+                matched_idx = i
+                break
+
+        is_found = matched_idx is not None
+        if is_found:
+            found_count += 1
+        component_status.append({
+            "key": c.get("key"),
+            "display_name": c.get("display_name"),
+            "kind": c.get("kind"),
+            "default_qty": c.get("default_qty"),
+            "always_required": c.get("always_required", True),
+            "reason": c.get("reason"),
+            "default_cost": c.get("default_cost"),
+            "found_in_extraction": is_found,
+            "matched_part_description": (
+                parts_lines[matched_idx].get("description") if matched_idx is not None else None
+            ),
+        })
+
+    # Coverage % is calculated over ALWAYS-REQUIRED items only — optional
+    # if-equipped components (wear sensors etc.) shouldn't drag the
+    # number down when the vehicle legitimately doesn't have them.
+    required = [c for c in component_status if c["always_required"]]
+    required_found = sum(1 for c in required if c["found_in_extraction"])
+    coverage_pct = round(100.0 * required_found / len(required), 1) if required else 100.0
+
+    return {
+        "service_type": skeleton.get("service_type"),
+        "display_name": skeleton.get("display_name"),
+        "expected_estimate_range": skeleton.get("expected_estimate_range"),
+        "notes": skeleton.get("notes"),
+        "coverage_pct": coverage_pct,
+        "components_found": required_found,
+        "components_required": len(required),
+        "components": component_status,
     }
 
 
@@ -785,6 +872,28 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
         )
         spec = JobSpec(**job_dict)
         logger.info(f"[{job_id}] decoded: {vehicle.year} {vehicle.make} {vehicle.model}")
+
+        # 2c. Service-type skeleton (task #12). Map the parsed JobSpec to a
+        # canonical service_type and load its expected-components skeleton.
+        # This is the BASELINE list of what the service typically needs
+        # (e.g. brakes = pads + rotors + carriers + sensors + cleaning kit)
+        # per the client's verbatim definition from the June 6 meeting.
+        # ALLDATA's Repair Procedure scan (task #13) will refine this with
+        # actual `renew`/`replace` items pulled from the live article.
+        from services.service_skeleton import skeleton_for_job
+        service_skeleton = skeleton_for_job(spec)
+        if service_skeleton:
+            logger.info(
+                f"[{job_id}] service skeleton: {service_skeleton['service_type']!r} "
+                f"({service_skeleton['display_name']}) — "
+                f"{len(service_skeleton['components'])} expected components, "
+                f"{len(service_skeleton['addons'])} add-ons, "
+                f"target range ${service_skeleton['expected_estimate_range'][0]}-"
+                f"${service_skeleton['expected_estimate_range'][1]}"
+            )
+        else:
+            logger.info(f"[{job_id}] no service skeleton match — falling back to "
+                        f"ALLDATA-extracted parts only")
 
         # 2b. Fail fast on an invalid / un-decodable VIN before spending an
         # expensive agent run. ALLDATA needs at least year + make + model.
@@ -942,7 +1051,8 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
                                        vendor_quotes=vendor_quotes_dicts,
                                        vendor_comparison=vendor_comparison,
                                        recalls=recalls,
-                                       suggested_addons=suggested_addons)
+                                       suggested_addons=suggested_addons,
+                                       service_skeleton=service_skeleton)
 
         await _post_result(client, job_id, result)
         logger.info(
