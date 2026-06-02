@@ -41,11 +41,22 @@ matches the customer symptom, extract BOTH labor hours AND OEM parts.
 
 NAVIGATION PLAN (use numbered overlays in screenshots):
   1. If you see REPAIR / ESTIMATOR tiles, click REPAIR.
-  2. Pick the vehicle (Year/Make/Model/Engine) — VERIFY it matches the spec above.
-     The vehicle banner at the top of every subsequent page shows the
-     year/make/model and ends with the VIN. If that VIN does NOT contain
-     the last 6 chars of the target VIN above, you picked the wrong vehicle:
-     use action="ask_human" with reason="vehicle_mismatch" rather than continuing.
+  2. Pick the vehicle. The vehicle banner at the top of every subsequent
+     page shows the year/make/model and ends with the VIN.
+
+     VIN is the ONLY ground truth. If the banner's VIN contains the last 6
+     chars of the target VIN above, this IS the right vehicle — proceed.
+     Do NOT abort over model-name / trim / engine differences between the
+     'VEHICLE' block above and what ALLDATA displays. NHTSA (which produced
+     the VEHICLE block) is often less specific than ALLDATA's catalogue:
+       - NHTSA "V70"  → ALLDATA may show "XC70" or "V70 XC"  (same chassis)
+       - NHTSA "3-Series" → ALLDATA may show "330i" or "F30"  (sub-trim)
+       - NHTSA "C-Class"  → ALLDATA may show "C300 4MATIC"   (sub-variant)
+     All of these are CORRECT — proceed.
+
+     Only use action="ask_human" with reason="vehicle_mismatch" when the
+     VIN itself does not match (banner shows a completely different VIN
+     suffix), not when the model name is just more or less specific.
   3. NAVIGATE THE CATEGORY TREE — FILTER-FIRST STRATEGY.
 
      Every category and sub-category page in ALLDATA has a filter input near
@@ -137,6 +148,63 @@ CRITICAL RULES:
 """
 
 
+async def _scan_repair_procedure(browser, article_url: str) -> dict:
+    """Navigate the live ALLDATA tab from the Parts-and-Labor article to
+    the matching Service-and-Repair article, dump body text, and parse
+    with the keyword-based parser.
+
+    ALLDATA's SPA route for the R-cell is the sibling of the P-cell:
+        /repair/#/parts-and-labor-article/<vehicle>/component/<c>/itype/<i>/...
+        /repair/#/repair-article/<vehicle>/component/<c>/itype/<i>/...
+
+    Direct URL substitution avoids running a second vision agent and
+    keeps the scan to a sub-5-second cost. Falls back to a clear
+    scan_status string on any failure — the worker treats absence of
+    items as informational, never blocking the estimate.
+    """
+    import asyncio as _asyncio
+    from services.repair_procedure_parser import parse_repair_procedure
+
+    r_url = article_url.replace("/parts-and-labor-article/", "/repair-article/")
+    if r_url == article_url:
+        return {"items": [], "scan_status": "url_not_transformable",
+                "tried_url": article_url}
+
+    try:
+        page = await browser.find_tab_by_url("alldata.com")
+        if page is None:
+            return {"items": [], "scan_status": "no_alldata_tab",
+                    "tried_url": r_url}
+        try:
+            await page.goto(r_url, wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            return {"items": [], "scan_status": f"nav_failed: {str(e)[:120]}",
+                    "tried_url": r_url}
+        # ALLDATA Repair articles render into a SPA shell that finishes
+        # painting a couple of seconds after domcontentloaded. Without
+        # this sleep the body text is just the loading skeleton and the
+        # parser finds zero items.
+        await _asyncio.sleep(4)
+        body_text = await page.evaluate(
+            "() => (document.body && document.body.innerText) || ''"
+        )
+        if not body_text or len(body_text) < 200:
+            return {"items": [], "scan_status": "page_text_too_short",
+                    "tried_url": r_url, "got_chars": len(body_text or "")}
+        parsed = parse_repair_procedure(body_text)
+        parsed["scan_status"] = "ok"
+        parsed["tried_url"] = r_url
+        logger.info(
+            f"[R-cell] parsed {len(parsed['items'])} replacement items "
+            f"from {parsed['scanned_chars']} chars of repair text"
+        )
+        return parsed
+    except Exception as e:
+        logger.warning(f"R-cell scan error: {type(e).__name__}: {str(e)[:160]}")
+        return {"items": [], "scan_status": f"error: {type(e).__name__}",
+                "tried_url": r_url}
+
+
 async def lookup_labor_time(
     job: JobSpec, vehicle: VehicleFingerprint, max_steps: int = 30
 ) -> tuple[LaborResult | None, dict]:
@@ -146,8 +214,33 @@ async def lookup_labor_time(
     agent = VisionAgent(portal_url=ALLDATA_HOME, task=task, max_steps=max_steps,
                         login_portal="alldata")
 
+    # Repair-Procedure scan (task #13) is folded into the same browser
+    # context as the labor extraction: when the labor agent finishes
+    # successfully we already have the ALLDATA tab parked on the
+    # parts-and-labor-article page, so a sibling-URL navigation to the
+    # repair-article variant + body-text dump is cheap and avoids
+    # re-running the whole vision flow.
+    repair_procedure_meta: dict = {"items": [], "scan_status": "not_attempted"}
     async with ChromeDebugBrowser() as browser:
         result = await agent.run(browser)
+        # Best result NOW so we can pick the article URL while the
+        # browser is still alive for the R-cell scan.
+        if result["extracted"]:
+            try:
+                best_for_url = max(result["extracted"],
+                                   key=lambda e: e.get("confidence", 0.0))
+                article_url = (best_for_url.get("url_at_decision") or "").strip()
+                if "/parts-and-labor-article/" in article_url:
+                    repair_procedure_meta = await _scan_repair_procedure(
+                        browser, article_url
+                    )
+                else:
+                    repair_procedure_meta["scan_status"] = (
+                        f"no_pnl_article_url (got {article_url[:80]!r})"
+                    )
+            except Exception as e:
+                logger.warning(f"R-cell scan setup failed: {e}")
+                repair_procedure_meta["scan_status"] = f"setup_error: {str(e)[:120]}"
 
     if not result["extracted"]:
         logger.warning("ALLDATA agent extracted nothing")
@@ -298,6 +391,10 @@ async def lookup_labor_time(
         "extraction_confidence": best.get("confidence", 0.0),
         "parts": [p.model_dump() for p in parts],
         "section_path": section_path,
+        # Task #13 — repair procedure scan output. Items list may be empty
+        # when ALLDATA's R-cell didn't load, the URL wasn't transformable,
+        # or no replacement keywords fired. scan_status carries the reason.
+        "repair_procedure": repair_procedure_meta,
     }
 
 

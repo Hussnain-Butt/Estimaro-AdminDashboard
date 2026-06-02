@@ -478,10 +478,13 @@ const PartsStep = ({ data }) => {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <p className="font-medium text-text-primary">
-                      {c.found_in_extraction ? '✓ ' : c.always_required ? '✗ ' : '○ '}
+                      {(c.found_in_extraction || c.confirmed_by_repair_procedure)
+                        ? '✓ ' : c.always_required ? '✗ ' : '○ '}
                       {c.display_name}
-                      {c.default_qty > 1 && (
-                        <span className="ml-1 text-text-secondary font-normal">×{c.default_qty}</span>
+                      {(c.repair_procedure_qty || c.default_qty) > 1 && (
+                        <span className="ml-1 text-text-secondary font-normal">
+                          ×{c.repair_procedure_qty || c.default_qty}
+                        </span>
                       )}
                     </p>
                     <span className="text-[10px] text-text-secondary uppercase">{c.kind}</span>
@@ -489,7 +492,13 @@ const PartsStep = ({ data }) => {
                   {c.reason && (
                     <p className="text-text-secondary mt-0.5 leading-snug">{c.reason}</p>
                   )}
-                  {!c.found_in_extraction && c.always_required && (
+                  {c.confirmed_by_repair_procedure && (
+                    <p className="text-info mt-1 text-[11px] font-medium">
+                      Confirmed by ALLDATA repair procedure ({c.repair_procedure_action})
+                      {c.repair_procedure_qty && ` · qty ${c.repair_procedure_qty}`}
+                    </p>
+                  )}
+                  {!c.found_in_extraction && !c.confirmed_by_repair_procedure && c.always_required && (
                     <p className="text-danger mt-1 text-[11px] font-medium">
                       Missing from estimate — add manually
                     </p>
@@ -505,6 +514,71 @@ const PartsStep = ({ data }) => {
           </div>
         )
       })()}
+
+      {data.repairProcedure && Array.isArray(data.repairProcedure.items)
+        && data.repairProcedure.items.length > 0 && (
+        <div className="mt-6 bg-background p-4 rounded-lg border border-info/40">
+          <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+            <div>
+              <h3 className="font-semibold text-text-primary text-sm">
+                ALLDATA repair procedure — renew / replace items
+              </h3>
+              <p className="text-xs text-text-secondary mt-0.5">
+                Every line the article says must be replaced, parsed for
+                <span className="font-mono ml-1">renew</span> /
+                <span className="font-mono ml-1">replace</span> /
+                <span className="font-mono ml-1">torque-to-yield</span> keywords.
+              </p>
+            </div>
+            <span className="text-[10px] text-text-secondary uppercase tracking-wide">
+              {data.repairProcedure.items.length} items · {data.repairProcedure.raw_keyword_hits || 0} hits
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {data.repairProcedure.items.map((it, i) => {
+              const actionStyle =
+                it.action === 'renew' ? 'bg-warning/15 text-warning border-warning/40'
+                : it.action === 'torque_to_yield' ? 'bg-danger/15 text-danger border-danger/40'
+                : it.action === 'one_time_use' ? 'bg-danger/15 text-danger border-danger/40'
+                : 'bg-info/15 text-info border-info/40'
+              return (
+                <div key={i} className="px-3 py-2 rounded border border-border/50 bg-surface/50 text-xs">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <p className="font-medium text-text-primary">
+                      {it.component_phrase}
+                      {it.quantity && (
+                        <span className="ml-1 text-text-secondary font-normal">×{it.quantity}</span>
+                      )}
+                    </p>
+                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full border text-[10px] font-medium ${actionStyle}`}>
+                      {it.action.replace(/_/g, ' ')}
+                    </span>
+                  </div>
+                  {Array.isArray(it.contexts) && it.contexts.length > 0 && (
+                    <p className="text-text-secondary italic leading-snug line-clamp-2">
+                      "{it.contexts[0]}"
+                    </p>
+                  )}
+                  {it.occurrences > 1 && (
+                    <p className="text-text-secondary mt-0.5 text-[10px]">
+                      Found in {it.occurrences} places in the procedure
+                    </p>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {data.repairProcedure && data.repairProcedure.scan_status
+        && data.repairProcedure.scan_status !== 'ok'
+        && data.repairProcedure.scan_status !== 'not_attempted' && (
+        <div className="mt-3 px-3 py-2 rounded bg-warning/10 border border-warning/30 text-xs text-warning">
+          Repair Procedure scan: {data.repairProcedure.scan_status} —
+          coverage panel uses ALLDATA Parts table only
+        </div>
+      )}
 
       {Array.isArray(data.suggestedAddOns) && data.suggestedAddOns.length > 0 && (
         <div className="mt-6 bg-background p-4 rounded-lg border border-info/30">
@@ -1020,6 +1094,11 @@ const NewEstimate = () => {
     // Task #12 — service-type skeleton + coverage. Null when worker didn't
     // recognise the service type; FE hides the panel in that case.
     const serviceSkeleton = r.serviceSkeleton || null
+    // Task #13 — Repair-Procedure scan items. Surfaced separately so the
+    // FE can show the raw renew/replace list even when no skeleton was
+    // matched, and so the advisor sees ALLDATA's exact procedure-language
+    // hits (with the context phrase) rather than just the merged coverage.
+    const repairProcedure = r.repairProcedure || null
 
     const mergedData = {
       vin: formData.vin,
@@ -1035,6 +1114,7 @@ const NewEstimate = () => {
       recalls,
       suggestedAddOns,
       serviceSkeleton,
+      repairProcedure,
     }
 
     setFormData((prev) => ({
@@ -1046,6 +1126,7 @@ const NewEstimate = () => {
       recalls,
       suggestedAddOns,
       serviceSkeleton,
+      repairProcedure,
     }))
 
     const bd = r.breakdown || {}

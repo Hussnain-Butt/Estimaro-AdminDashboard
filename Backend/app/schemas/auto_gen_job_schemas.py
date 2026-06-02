@@ -122,6 +122,13 @@ class JobResult(BaseModel):
     # `coverage_pct` over always-required components — the headline
     # number for advisor sanity-checking.
     serviceSkeleton: Optional[Dict[str, Any]] = None
+    # Task #13 — Repair-Procedure (R-cell) scan output. `items` is a
+    # list of {action, component_key, component_phrase, quantity,
+    # occurrences, contexts}. `scan_status` reports why a scan didn't
+    # produce items (URL not transformable, page text too short, etc.).
+    # Always present so the FE can display either the items or the
+    # diagnostic, never silently empty.
+    repairProcedure: Optional[Dict[str, Any]] = None
 
 
 class JobSubmitRequest(BaseModel):

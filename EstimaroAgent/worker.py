@@ -769,13 +769,25 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
         # `coverage_pct` is the headline number an advisor watches: 100%
         # means the estimate carries every component the skeleton asked
         # for; lower means line items are missing and the advisor needs
-        # to add them manually (or task #13's Repair Procedure scan
-        # would supply them).
-        "serviceSkeleton": _build_skeleton_coverage(service_skeleton, parts_lines),
+        # to add them manually.
+        # Task #13 — Repair Procedure scan items piped in as a second
+        # confirmation source so a component the procedure explicitly
+        # tells the tech to "renew" is marked confirmed even when the
+        # Parts table didn't list it (the BMW carrier-bolt + Volvo
+        # crush-washer cases Sergio walked through).
+        "serviceSkeleton": _build_skeleton_coverage(
+            service_skeleton, parts_lines,
+            repair_procedure=(meta or {}).get("repair_procedure"),
+        ),
+        "repairProcedure": (meta or {}).get("repair_procedure") or {"items": [], "scan_status": "not_attempted"},
     }
 
 
-def _build_skeleton_coverage(skeleton: dict | None, parts_lines: list[dict]) -> dict | None:
+def _build_skeleton_coverage(
+    skeleton: dict | None,
+    parts_lines: list[dict],
+    repair_procedure: dict | None = None,
+) -> dict | None:
     """Compare the static skeleton against what ALLDATA actually extracted.
 
     For each expected component, attempt a loose name match against the
@@ -794,6 +806,15 @@ def _build_skeleton_coverage(skeleton: dict | None, parts_lines: list[dict]) -> 
     extracted_names = [
         (p.get("description") or "").lower() for p in (parts_lines or [])
     ]
+
+    # Repair-Procedure item index (task #13). Lets us promote a skeleton
+    # component from MISSING to CONFIRMED-BY-REPAIR-PROCEDURE when the
+    # ALLDATA repair article literally tells the tech to renew/replace
+    # that part — even when the Parts table didn't list it. This is the
+    # mechanism that closes Sergio's $430→$1000 gap.
+    rp_items = (repair_procedure or {}).get("items") or []
+    rp_keys = {(it.get("component_key") or "").lower() for it in rp_items}
+    rp_phrases = [(it.get("component_phrase") or "").lower() for it in rp_items]
 
     component_status = []
     found_count = 0
@@ -816,7 +837,25 @@ def _build_skeleton_coverage(skeleton: dict | None, parts_lines: list[dict]) -> 
                 matched_idx = i
                 break
 
-        is_found = matched_idx is not None
+        # R-cell confirmation: skeleton's `key` matches a repair-procedure
+        # component_key (e.g. skeleton key 'brake_carrier_bolts' →
+        # rp_key 'carrier_bolt'), OR a vendor_search_term substring
+        # matches an rp phrase. Generous to favour catching items.
+        rp_match = None
+        skel_key = (c.get("key") or "").lower()
+        for rp_it in rp_items:
+            rp_key = (rp_it.get("component_key") or "").lower()
+            rp_phrase = (rp_it.get("component_phrase") or "").lower()
+            # Direct key contains check (carrier_bolt in brake_carrier_bolts)
+            if rp_key and (rp_key in skel_key or skel_key in rp_key):
+                rp_match = rp_it
+                break
+            # Phrase against candidates (rp 'crush washer' vs candidate 'drain plug crush washer')
+            if rp_phrase and any(rp_phrase in cnd or cnd in rp_phrase for cnd in candidates):
+                rp_match = rp_it
+                break
+
+        is_found = matched_idx is not None or rp_match is not None
         if is_found:
             found_count += 1
         component_status.append({
@@ -827,7 +866,10 @@ def _build_skeleton_coverage(skeleton: dict | None, parts_lines: list[dict]) -> 
             "always_required": c.get("always_required", True),
             "reason": c.get("reason"),
             "default_cost": c.get("default_cost"),
-            "found_in_extraction": is_found,
+            "found_in_extraction": matched_idx is not None,
+            "confirmed_by_repair_procedure": rp_match is not None,
+            "repair_procedure_action": (rp_match or {}).get("action"),
+            "repair_procedure_qty": (rp_match or {}).get("quantity"),
             "matched_part_description": (
                 parts_lines[matched_idx].get("description") if matched_idx is not None else None
             ),
