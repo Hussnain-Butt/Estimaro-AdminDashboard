@@ -694,6 +694,70 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
                 "vendor": vendor_label,
             })
 
+    # Task #14 — auto-add skeleton addons (cleaning kit, multi-point
+    # inspection, alignment labor) for service types that require them.
+    # Sergio June 6: "we add a cleaning kit of like 35 bucks" for brake
+    # services. The skeleton (task #12) declares these addons; this
+    # block injects them as actual line items so they (a) contribute
+    # to the estimate total and (b) show up in PartsStep/LaborStep
+    # with an "auto-added" badge instead of just sitting on the
+    # coverage panel as informational.
+    if service_skeleton and isinstance(service_skeleton.get("addons"), list):
+        for addon in service_skeleton["addons"]:
+            if not isinstance(addon, dict):
+                continue
+            kind = (addon.get("kind") or "").lower()
+            default_cost = addon.get("default_cost")
+            no_markup = bool(addon.get("no_markup"))
+            qty = int(addon.get("default_qty") or 1)
+            display_name = addon.get("display_name") or addon.get("key") or "Add-on"
+            reason = addon.get("reason") or "Auto-added per service type"
+
+            if kind in ("supply", "inspection"):
+                # Inspections are usually $0 (free with service); supplies
+                # have a default cost (cleaning kit = $35).
+                try:
+                    cost = float(default_cost) if default_cost is not None else 0.0
+                except (TypeError, ValueError):
+                    cost = 0.0
+                markup_pct = 0.0 if no_markup else parts_markup_pct
+                markup_dollars = round(cost * markup_pct / 100.0, 2)
+                line_total = round((cost + markup_dollars) * qty, 2)
+                parts_total += line_total
+                parts_lines.append({
+                    "description": display_name,
+                    "partNumber": None,
+                    "vendorSku": None,
+                    "quantity": qty,
+                    "cost": cost,
+                    "markup": markup_pct,
+                    "total": line_total,
+                    "vendor": "Shop supplies" if kind == "supply" else "Shop service",
+                    # Flags so FE can render an "Auto-added per service type"
+                    # badge — operator knows the line wasn't from ALLDATA
+                    # extraction or vendor quotes.
+                    "auto_added": True,
+                    "auto_added_kind": kind,
+                    "auto_added_reason": reason,
+                })
+            elif kind == "labor":
+                # Labor add-ons (e.g. Wheel Alignment for suspension) go
+                # in labor_lines, not parts_lines.
+                hours = float(addon.get("hours") or addon.get("default_qty") or 1.0)
+                line_total = round(hours * labor_rate, 2)
+                labor_total += line_total
+                labor_lines.append({
+                    "description": display_name,
+                    "hours": hours,
+                    "rate": labor_rate,
+                    "total": line_total,
+                    "source": "Skeleton (auto-added)",
+                    "skill": None,
+                    "extractionScreenshot": None,
+                    "auto_added": True,
+                    "auto_added_reason": reason,
+                })
+
     subtotal = round(labor_total + parts_total, 2)
     tax_amount = round(subtotal * tax_rate, 2)
     grand_total = round(subtotal + tax_amount, 2)

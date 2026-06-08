@@ -42,6 +42,13 @@ class PartLine(BaseModel):
     # when no substitution happened.
     list_price: Optional[float] = None
     savings_vs_list: Optional[float] = None
+    # Task #14 — skeleton-driven auto-add (cleaning kit, multi-point
+    # inspection). Set to True when the worker injected the line from
+    # the service skeleton's addons rather than extracting it from
+    # ALLDATA. FE shows an "Auto-added per service type" badge.
+    auto_added: bool = False
+    auto_added_kind: Optional[str] = None      # "supply" | "inspection"
+    auto_added_reason: Optional[str] = None
 
 
 class VehicleInfo(BaseModel):

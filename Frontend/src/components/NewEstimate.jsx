@@ -399,6 +399,16 @@ const PartsStep = ({ data }) => {
                       Same SKU fits: {part.appliesToVariants.join(' · ')}
                     </p>
                   )}
+                  {part.auto_added && (
+                    <span className="inline-block mt-1 mr-2 px-2 py-0.5 bg-info/15 text-info text-xs rounded border border-info/30">
+                      Auto-added{part.auto_added_kind ? ` (${part.auto_added_kind})` : ''}
+                      {part.auto_added_reason && (
+                        <span className="text-info/80 ml-1 italic">
+                          — {part.auto_added_reason}
+                        </span>
+                      )}
+                    </span>
+                  )}
                   {part.isOEM && (
                     <span className="inline-block mt-1 mr-2 px-2 py-0.5 bg-accent/20 text-accent text-xs rounded">
                       OEM
@@ -1081,6 +1091,13 @@ const NewEstimate = () => {
       // ALLDATA's MSRP — PartsStep renders a "Saved $X vs MSRP" badge.
       list_price: item.list_price ?? null,
       savings_vs_list: item.savings_vs_list ?? null,
+      // Task #14 — skeleton addon auto-add flags (cleaning kit, multi-
+      // point inspection, etc.). PartsStep shows an "Auto-added per
+      // service type" badge so the advisor knows the line wasn't from
+      // ALLDATA extraction or a vendor quote.
+      auto_added: !!item.auto_added,
+      auto_added_kind: item.auto_added_kind ?? null,
+      auto_added_reason: item.auto_added_reason ?? null,
     }))
 
     // ALLDATA's banner shows a more specific trim than NHTSA usually does
