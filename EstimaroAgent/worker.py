@@ -581,6 +581,10 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
         # loader returns None on any failure (file missing, too big) and
         # the FE hides the panel in that case, so this never blocks the
         # estimate even when the screenshot disk is full.
+        # Task #15 — determinism signal piped through so the FE can show
+        # whether this labor row is the canonical pick for the service
+        # type (matched_preferred / matched_fallback / off_script).
+        det = (meta or {}).get("determinism") or {}
         labor_lines.append({
             "description": labor.operation,
             "hours": labor.hours,
@@ -589,6 +593,9 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
             "source": "ALLDATA",
             "skill": (labor.vehicle_match or {}).get("skill"),
             "extractionScreenshot": _load_screenshot_b64(labor.screenshot_path),
+            "determinism_status": det.get("status"),
+            "determinism_rank": det.get("rank"),
+            "determinism_preferred": det.get("preferred"),
         })
 
     parts_lines = []
@@ -1039,7 +1046,9 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
         await _post_progress(client, job_id, "Running ALLDATA vision agent (Gemini)", 50)
         try:
             labor, meta = await asyncio.wait_for(
-                lookup_labor_time(spec, vehicle, max_steps=25), timeout=JOB_TIMEOUT
+                lookup_labor_time(spec, vehicle, max_steps=25,
+                                  service_skeleton=service_skeleton),
+                timeout=JOB_TIMEOUT,
             )
         except asyncio.TimeoutError:
             err = f"Timed out after {JOB_TIMEOUT}s — ALLDATA agent did not finish (site slow or stuck)."

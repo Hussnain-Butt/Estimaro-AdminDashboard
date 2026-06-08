@@ -16,6 +16,17 @@ class LaborLine(BaseModel):
     # it, (b) loader returns None when the file is missing / too large, and
     # (c) we never want this field's absence to gate the estimate.
     extractionScreenshot: Optional[str] = None
+    # Task #15 — determinism signal. status ∈ {matched_preferred,
+    # matched_fallback, off_script, no_skeleton}. FE renders a small
+    # badge on the labor row so the advisor sees whether the picked
+    # row is the canonical one for this service type.
+    determinism_status: Optional[str] = None
+    determinism_rank: Optional[int] = None
+    determinism_preferred: Optional[str] = None
+    # Task #14 auto-add flags (applies to labor addons too — Wheel Alignment
+    # added for suspension jobs).
+    auto_added: bool = False
+    auto_added_reason: Optional[str] = None
 
 
 class PartLine(BaseModel):

@@ -86,9 +86,25 @@ SERVICE_SKELETONS: dict[str, dict[str, Any]] = {
     "brake_front_full": {
         "service_type": "brake_front_full",
         "display_name": "Front Brake Service",
+        # Task #15 — deterministic labor-row selection. The agent is told
+        # to ALWAYS try labor_preferred first; only fall back to ordered
+        # labor_keywords if the preferred row literally doesn't exist on
+        # the article. labor_default_hours is the safety fallback when
+        # extraction fails entirely (rare). Without this, the same VIN+
+        # complaint produced 0.9h ('Front Pads' alone) on one run and
+        # 1.3h ('Brake Pad and Rotor') on another — same estimate,
+        # different numbers. Now it's a single canonical pick.
+        "labor_preferred": "Front Pads",
+        "labor_default_hours": 1.3,
         "labor_keywords": [
-            "Front Pads", "Front Brake", "Brake Pad", "Front Disc",
-            "Brake Pad and Rotor", "Brake Pads and Rotors",
+            # ORDERED most-specific → most-general. Agent picks first match.
+            "Front Pads",
+            "Front Brake Pads",
+            "Brake Pad",
+            "Front Brake",
+            "Front Disc",
+            "Brake Pad and Rotor",
+            "Brake Pads and Rotors",
         ],
         "components": [
             _component(
@@ -128,7 +144,12 @@ SERVICE_SKELETONS: dict[str, dict[str, Any]] = {
     "brake_rear_full": {
         "service_type": "brake_rear_full",
         "display_name": "Rear Brake Service",
-        "labor_keywords": ["Rear Pads", "Rear Brake", "Rear Disc"],
+        "labor_preferred": "Rear Pads",
+        "labor_default_hours": 1.2,
+        "labor_keywords": [
+            "Rear Pads", "Rear Brake Pads", "Brake Pad",
+            "Rear Brake", "Rear Disc", "Brake Pad and Rotor",
+        ],
         "components": [
             _component(
                 "rear_brake_pads", "Rear Brake Pad Set",
@@ -163,7 +184,12 @@ SERVICE_SKELETONS: dict[str, dict[str, Any]] = {
     "oil_change_standard": {
         "service_type": "oil_change_standard",
         "display_name": "Oil Change",
-        "labor_keywords": ["Oil Change", "Engine Oil", "Oil and Filter", "Lubrication"],
+        "labor_preferred": "Oil Change",
+        "labor_default_hours": 0.5,
+        "labor_keywords": [
+            "Oil Change", "Engine Oil", "Oil and Filter",
+            "Lubrication", "Oil Filter",
+        ],
         "components": [
             _component(
                 "engine_oil", "Engine Oil",
@@ -194,9 +220,12 @@ SERVICE_SKELETONS: dict[str, dict[str, Any]] = {
     "shocks_front": {
         "service_type": "shocks_front",
         "display_name": "Front Shock / Strut Replacement",
+        "labor_preferred": "Front Shock Absorber",
+        "labor_default_hours": 2.0,
         "labor_keywords": [
-            "Shock Absorber", "Strut", "Spring Strut", "Front Shock",
-            "Front Strut",
+            "Front Shock Absorber", "Front Strut",
+            "Shock Absorber", "Spring Strut", "Front Shock",
+            "Strut",
         ],
         "components": [
             _component(
@@ -244,7 +273,13 @@ SERVICE_SKELETONS: dict[str, dict[str, Any]] = {
     "shocks_rear": {
         "service_type": "shocks_rear",
         "display_name": "Rear Shock / Strut Replacement",
-        "labor_keywords": ["Rear Shock", "Rear Strut", "Spring Strut"],
+        "labor_preferred": "Rear Shock Absorber",
+        "labor_default_hours": 1.8,
+        "labor_keywords": [
+            "Rear Shock Absorber", "Rear Strut",
+            "Shock Absorber", "Spring Strut", "Rear Shock",
+            "Strut",
+        ],
         "components": [
             _component("rear_shock_absorber", "Rear Shock Absorber",
                        default_qty=2, axle_specific=True,
@@ -272,8 +307,11 @@ SERVICE_SKELETONS: dict[str, dict[str, Any]] = {
     "transmission_fluid_service": {
         "service_type": "transmission_fluid_service",
         "display_name": "Transmission Fluid Service",
+        "labor_preferred": "Transmission Fluid",
+        "labor_default_hours": 1.0,
         "labor_keywords": [
-            "Transmission Fluid", "ATF", "Transmission Service", "Fluid Change",
+            "Transmission Fluid", "ATF", "Transmission Service",
+            "Fluid Change", "Fluid Service",
         ],
         "components": [
             _component("atf", "Transmission Fluid", default_qty=1,
@@ -295,7 +333,12 @@ SERVICE_SKELETONS: dict[str, dict[str, Any]] = {
     "spark_plugs": {
         "service_type": "spark_plugs",
         "display_name": "Spark Plug Replacement",
-        "labor_keywords": ["Spark Plug", "Ignition", "Plug Replacement"],
+        "labor_preferred": "Spark Plug",
+        "labor_default_hours": 1.0,
+        "labor_keywords": [
+            "Spark Plug", "Spark Plugs", "Ignition",
+            "Plug Replacement", "Ignition Plug",
+        ],
         "components": [
             # default_qty=4 is a 4-cyl baseline; per-VIN cylinder count
             # override happens during Repair Procedure scan (task #13).

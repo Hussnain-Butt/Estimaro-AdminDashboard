@@ -18,7 +18,43 @@ from services.verification import verify_with_hermes
 ALLDATA_HOME = "https://my.alldata.com/migrate/#/home"
 
 
-def _build_task(job: JobSpec, vehicle: VehicleFingerprint) -> str:
+def _build_task(job: JobSpec, vehicle: VehicleFingerprint,
+                service_skeleton: dict | None = None) -> str:
+    # Task #15 — deterministic labor-row selection. When the skeleton knows
+    # which row this service "always" picks, inject it into the prompt as
+    # the FIRST priority. Without this, the agent picks freely between
+    # 'Front Pads' (0.9h) and 'Brake Pad and Rotor' (1.3h) on different
+    # runs of the same VIN — same estimate, different numbers. With the
+    # explicit priority list the same VIN+complaint produces the same row.
+    preferred_block = ""
+    if service_skeleton:
+        pref = service_skeleton.get("labor_preferred")
+        kws = service_skeleton.get("labor_keywords") or []
+        if pref or kws:
+            ranked = []
+            seen = set()
+            if pref:
+                ranked.append(pref)
+                seen.add(pref.lower())
+            for k in kws:
+                if k and k.lower() not in seen:
+                    ranked.append(k)
+                    seen.add(k.lower())
+            preferred_block = f"""
+
+PREFERRED LABOR ROW (read carefully):
+  Pick the row whose name matches this priority list — try them IN ORDER.
+  Only fall back to the next name if the previous one literally is not on
+  the article. This keeps the SAME VIN + SAME complaint producing the
+  SAME labor row across runs.
+{chr(10).join(f'    {i+1}. {name!r}' for i, name in enumerate(ranked[:8]))}
+
+  If NONE of these row names exist on the article, pick the row whose
+  description best matches the customer symptom + subsystem above and
+  set confidence <= 0.75 so downstream gating flags the picked row for
+  advisor review.
+"""
+
     return f"""
 You are inside the ALLDATA Repair portal. The shop is already logged in.
 
@@ -35,7 +71,7 @@ CUSTOMER JOB:
   Subsystem: {job.subsystem}
   Symptom:   {job.symptom}
   Keywords:  {', '.join(job.keywords)}
-
+{preferred_block}
 GOAL: On the ALLDATA "Parts and Labor" article page for the operation that best
 matches the customer symptom, extract BOTH labor hours AND OEM parts.
 
@@ -411,11 +447,12 @@ async def _scan_repair_procedure(browser, article_url: str,
 
 
 async def lookup_labor_time(
-    job: JobSpec, vehicle: VehicleFingerprint, max_steps: int = 30
+    job: JobSpec, vehicle: VehicleFingerprint, max_steps: int = 30,
+    service_skeleton: dict | None = None,
 ) -> tuple[LaborResult | None, dict]:
     """Returns (labor, meta).  meta["parts"] holds the OEM parts list parsed
     from the same Parts and Labor page."""
-    task = _build_task(job, vehicle)
+    task = _build_task(job, vehicle, service_skeleton=service_skeleton)
     agent = VisionAgent(portal_url=ALLDATA_HOME, task=task, max_steps=max_steps,
                         login_portal="alldata")
 
@@ -608,6 +645,70 @@ async def lookup_labor_time(
         f"reason={verification.reason[:120]}"
     )
 
+    # Task #15 — deterministic-row match check. Compare the extracted
+    # operation against the skeleton's labor_keywords priority list. If
+    # the agent picked the labor_preferred row → high signal. If a
+    # later-priority match → still OK but mark unpreferred. If NONE of
+    # the listed rows → off-script extraction, cap confidence so
+    # downstream gating routes it to advisor review. This is what
+    # eliminates the 0.9h-vs-1.3h variance the Volvo brake test
+    # produced across runs.
+    determinism_status = "no_skeleton"
+    determinism_rank = None
+    if service_skeleton:
+        op_lc = (labor.operation or "").lower().strip()
+        pref = (service_skeleton.get("labor_preferred") or "").lower().strip()
+        kws_lc = [
+            (k or "").lower().strip()
+            for k in (service_skeleton.get("labor_keywords") or [])
+            if k
+        ]
+        # Build a single priority list with preferred at position 0
+        priority = []
+        if pref:
+            priority.append(pref)
+        for k in kws_lc:
+            if k and k not in priority:
+                priority.append(k)
+
+        matched_at = None
+        for idx, kw in enumerate(priority):
+            if kw and (kw in op_lc or op_lc in kw):
+                matched_at = idx
+                break
+
+        if matched_at is None:
+            determinism_status = "off_script"
+            determinism_rank = None
+            # Cap extraction_confidence at 0.7 so the confidence-gate
+            # routes this estimate to advisor_review tier rather than
+            # auto-approve. The agent picked a row that's not on the
+            # canonical priority list — could be legitimate (unusual
+            # job phrasing) or wrong (misclassified row).
+            current_conf = float(best.get("confidence", 0.0))
+            if current_conf > 0.7:
+                best["confidence"] = 0.7
+            logger.warning(
+                f"[determinism] extracted operation {labor.operation!r} "
+                f"matches NONE of skeleton priority {priority[:4]!r} — "
+                f"capping confidence to 0.7 for advisor review"
+            )
+        elif matched_at == 0:
+            determinism_status = "matched_preferred"
+            determinism_rank = 0
+            logger.info(
+                f"[determinism] extracted {labor.operation!r} matched "
+                f"PREFERRED row at priority 0 — deterministic pick"
+            )
+        else:
+            determinism_status = "matched_fallback"
+            determinism_rank = matched_at
+            logger.info(
+                f"[determinism] extracted {labor.operation!r} matched "
+                f"fallback row at priority {matched_at} — non-preferred "
+                f"but on-list"
+            )
+
     return labor, {
         "agent_run": result,
         "verification": verification.model_dump(),
@@ -618,6 +719,18 @@ async def lookup_labor_time(
         # when ALLDATA's R-cell didn't load, the URL wasn't transformable,
         # or no replacement keywords fired. scan_status carries the reason.
         "repair_procedure": repair_procedure_meta,
+        # Task #15 — determinism signal. status ∈ {matched_preferred,
+        # matched_fallback, off_script, no_skeleton}. rank is the
+        # priority index of the matched row (0 = preferred). FE shows
+        # a small badge on the labor row so the advisor sees whether
+        # this estimate's labor pick is the canonical one for this
+        # service type.
+        "determinism": {
+            "status": determinism_status,
+            "rank": determinism_rank,
+            "preferred": service_skeleton.get("labor_preferred") if service_skeleton else None,
+            "default_hours": service_skeleton.get("labor_default_hours") if service_skeleton else None,
+        },
     }
 
 

@@ -311,6 +311,29 @@ const LaborStep = ({ data }) => {
                         </>
                       )}
                     </p>
+                    {item.determinism_status && item.determinism_status !== 'no_skeleton' && (() => {
+                      const ds = item.determinism_status
+                      const style =
+                        ds === 'matched_preferred' ? { chip: 'bg-success/15 text-success border-success/40', label: 'Canonical pick' }
+                        : ds === 'matched_fallback' ? { chip: 'bg-info/15 text-info border-info/40', label: `Fallback pick (priority ${item.determinism_rank ?? '?'})` }
+                        : { chip: 'bg-warning/15 text-warning border-warning/40', label: 'Off-script row' }
+                      return (
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2 py-0.5 mt-1 rounded-full border text-[10px] font-medium ${style.chip}`}
+                          title={item.determinism_preferred ? `Skeleton preferred row: "${item.determinism_preferred}"` : ''}
+                        >
+                          {style.label}
+                          {item.determinism_preferred && ds !== 'matched_preferred' && (
+                            <span className="opacity-70">· expected "{item.determinism_preferred}"</span>
+                          )}
+                        </span>
+                      )
+                    })()}
+                    {item.auto_added && (
+                      <span className="inline-block mt-1 ml-2 px-2 py-0.5 bg-info/15 text-info text-[10px] rounded border border-info/30">
+                        Auto-added{item.auto_added_reason ? ` — ${item.auto_added_reason}` : ''}
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center space-x-2">
                     <span className="text-text-primary font-semibold">{item.hours}h</span>
@@ -1067,6 +1090,15 @@ const NewEstimate = () => {
       // or when the file was missing — LaborStep hides the "View source"
       // toggle in that case so the UI doesn't show a broken control.
       extractionScreenshot: item.extractionScreenshot || null,
+      // Task #15 — determinism signal. Tells the FE whether the picked
+      // labor row is the canonical (preferred) one for the service
+      // type, a fallback that's still on-list, or off-script.
+      determinism_status: item.determinism_status ?? null,
+      determinism_rank: item.determinism_rank ?? null,
+      determinism_preferred: item.determinism_preferred ?? null,
+      // Task #14 — labor addons (e.g. Wheel Alignment for suspension).
+      auto_added: !!item.auto_added,
+      auto_added_reason: item.auto_added_reason ?? null,
     }))
     const partsItems = (r.partsItems || []).map((item, idx) => ({
       id: idx + 1,
