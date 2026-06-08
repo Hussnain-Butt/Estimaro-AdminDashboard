@@ -36,7 +36,17 @@ class Settings(BaseSettings):
 
     LOG_LEVEL: str = "INFO"
     SCREENSHOT_DIR: str = "./screenshots"
-    MAX_AGENT_STEPS: int = 25
+    # Task #16 — lowered from 25 to 15. Typical successful ALLDATA agent
+    # runs need 6-9 steps; 15 still has 60%+ headroom. Off-script jobs
+    # that genuinely need more either succeed via loop-rescue or fail
+    # gracefully via loop-giveup at the same outcome — just faster.
+    # Env-overridable via MAX_AGENT_STEPS for stuck-portal recovery.
+    MAX_AGENT_STEPS: int = 15
+    # Task #16 — sleep between agent actions. Was hardcoded 1.2s in
+    # base_agent.run(). Most clicks settle in 300-500ms; only nav-
+    # triggering clicks need longer. Default 0.6s halves wall-clock
+    # on typical 8-step runs (~5s saved). Env override for slow VPS.
+    AGENT_STEP_SLEEP_SEC: float = 0.6
 
     @property
     def chrome_cdp_url(self) -> str:

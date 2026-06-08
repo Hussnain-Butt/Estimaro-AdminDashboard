@@ -1042,19 +1042,67 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
             await _post_failure(client, job_id, err)
             return
 
-        # 4. Run the vision agent (hard timeout so a hang can't wedge the worker)
-        await _post_progress(client, job_id, "Running ALLDATA vision agent (Gemini)", 50)
-        try:
-            labor, meta = await asyncio.wait_for(
-                lookup_labor_time(spec, vehicle, max_steps=25,
-                                  service_skeleton=service_skeleton),
-                timeout=JOB_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            err = f"Timed out after {JOB_TIMEOUT}s — ALLDATA agent did not finish (site slow or stuck)."
-            logger.error(f"[{job_id}] {err}")
-            await _post_failure(client, job_id, err)
-            return
+        # 4. ALLDATA labor + parts extraction. Cache check first — task #16
+        # lets a repeat (VIN, service_type, complaint) skip the 4-7 min
+        # ALLDATA vision agent entirely (the single largest contributor to
+        # job wall-clock). Vendor pricing + recalls are always live; only
+        # the ALLDATA portion is cached.
+        from services.result_cache import get_cached_result, store_result
+        service_type_key = (service_skeleton or {}).get("service_type") if service_skeleton else None
+        cached_meta = get_cached_result(vin, service_type_key, complaint)
+        labor = None
+        meta = None
+        if cached_meta:
+            try:
+                # Reconstruct LaborResult from cached dict so downstream code
+                # (which expects an object) keeps working.
+                from models.job_spec import LaborResult
+                lr = cached_meta.get("labor")
+                if lr:
+                    labor = LaborResult(**lr)
+                meta = cached_meta.get("meta") or {}
+                op = labor.operation if labor else None
+                hrs = labor.hours if labor else None
+                logger.info(
+                    f"[{job_id}] ALLDATA cache HIT — "
+                    f"labor={op!r} hours={hrs} — skipping agent"
+                )
+                await _post_progress(
+                    client, job_id, "Loaded ALLDATA result from cache", 70
+                )
+            except Exception as e:
+                logger.warning(f"[{job_id}] cache hit but rehydration failed: {e}")
+                labor = None
+                meta = None
+
+        if labor is None:
+            await _post_progress(client, job_id, "Running ALLDATA vision agent (Gemini)", 50)
+            try:
+                labor, meta = await asyncio.wait_for(
+                    lookup_labor_time(spec, vehicle, max_steps=25,
+                                      service_skeleton=service_skeleton),
+                    timeout=JOB_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                err = f"Timed out after {JOB_TIMEOUT}s — ALLDATA agent did not finish (site slow or stuck)."
+                logger.error(f"[{job_id}] {err}")
+                await _post_failure(client, job_id, err)
+                return
+            # Persist a successful run for future repeat-VIN hits. Cache
+            # only when extraction actually produced a labor row AND the
+            # vehicle-mismatch guard didn't trip — never cache a failed
+            # extraction (it would poison the next legitimate run).
+            if labor and not (meta or {}).get("fail_reason"):
+                try:
+                    cache_payload = {
+                        "labor": labor.model_dump(),
+                        "meta": meta,
+                    }
+                    store_result(vin, service_type_key, complaint, cache_payload)
+                except Exception as e:
+                    logger.warning(f"[{job_id}] cache store failed (non-fatal): {e}")
+        # Below this point `labor` and `meta` are populated either from
+        # the cache hit OR a successful agent run. Both paths join here.
 
         if not labor:
             # Surface WHY: include the agent's last note, and flag the common

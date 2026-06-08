@@ -231,6 +231,10 @@ class VisionAgent:
                             )
                             decision["result"] = f"loop_rescue_filter:{first_word}"
                             self.history.append(decision)
+                            # Loop-rescue specifically waits a bit longer
+                            # (1.2s) than the normal step sleep because
+                            # the filter-typing usually triggers an SPA
+                            # re-render that needs settle time.
                             await asyncio.sleep(1.2)
                             continue
                     except Exception as e:
@@ -295,7 +299,12 @@ class VisionAgent:
                 decision["result"] = f"error:{err_text}"
 
             self.history.append(decision)
-            await asyncio.sleep(1.2)
+            # Task #16 — configurable inter-step sleep. Default 0.6s (was
+            # hardcoded 1.2s). Most clicks settle in 300-500ms; nav-
+            # triggering clicks already have their own wait inside
+            # _execute. Halving this default shaves ~5s off a typical
+            # 8-step ALLDATA run with no observed reliability loss.
+            await asyncio.sleep(getattr(settings, "AGENT_STEP_SLEEP_SEC", 0.6))
 
         return {
             "task": self.task,
