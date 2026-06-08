@@ -275,6 +275,11 @@ class VisionAgent:
                 self.extracted.append({
                     "step": step, "data": value, "confidence": conf,
                     "page_text": page_text,
+                    # url_at_decision lives on history entries; mirror it
+                    # onto extracted entries too so downstream code
+                    # (alldata_agent R-cell scan) can find the article
+                    # URL without cross-referencing history[step].
+                    "url_at_decision": page.url,
                 })
                 decision["result"] = "extracted"
                 self.history.append(decision)

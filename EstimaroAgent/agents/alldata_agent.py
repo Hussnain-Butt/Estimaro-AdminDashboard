@@ -80,19 +80,26 @@ NAVIGATION PLAN (use numbered overlays in screenshots):
   2. Pick the vehicle. The vehicle banner at the top of every subsequent
      page shows the year/make/model and ends with the VIN.
 
-     VIN is the ONLY ground truth. If the banner's VIN contains the last 6
-     chars of the target VIN above, this IS the right vehicle — proceed.
-     Do NOT abort over model-name / trim / engine differences between the
-     'VEHICLE' block above and what ALLDATA displays. NHTSA (which produced
-     the VEHICLE block) is often less specific than ALLDATA's catalogue:
+     A post-extraction VIN-suffix guard runs AFTER you finish, so do NOT
+     use ask_human with "vehicle_mismatch" — that check is automated and
+     catches wrong-vehicle picks reliably. Your job is just to navigate.
+
+     Specifically: do NOT abort over what looks like a VIN difference.
+     ALLDATA's banner contains MULTIPLE alphanumeric tokens — engine
+     code (e.g. "B5244T3", "N20", "M52B28"), VIN position chars, the
+     full 17-char VIN, sometimes a trim code. ONLY the 17-character
+     string IS the VIN; the short codes are engine / trim identifiers.
+     If you see a short alphanumeric like "B5244T3" that doesn't match
+     the target VIN suffix, that's an ENGINE CODE not a VIN — proceed.
+
+     Also do NOT abort over model-name differences:
        - NHTSA "V70"  → ALLDATA may show "XC70" or "V70 XC"  (same chassis)
        - NHTSA "3-Series" → ALLDATA may show "330i" or "F30"  (sub-trim)
        - NHTSA "C-Class"  → ALLDATA may show "C300 4MATIC"   (sub-variant)
      All of these are CORRECT — proceed.
 
-     Only use action="ask_human" with reason="vehicle_mismatch" when the
-     VIN itself does not match (banner shows a completely different VIN
-     suffix), not when the model name is just more or less specific.
+     Use ask_human ONLY when you genuinely cannot reach a vehicle on
+     the article (no VIN search worked, no Recent Vehicles entry, etc.).
   3. NAVIGATE THE CATEGORY TREE — FILTER-FIRST STRATEGY.
 
      Every category and sub-category page in ALLDATA has a filter input near
@@ -464,6 +471,23 @@ async def lookup_labor_time(
     # re-running the whole vision flow.
     repair_procedure_meta: dict = {"items": [], "scan_status": "not_attempted"}
     async with ChromeDebugBrowser() as browser:
+        # Force-reset the ALLDATA tab to the vehicle selector before the
+        # agent starts. Without this, a leftover deep-article URL (from
+        # a previous run or a probe) leaves the agent staring at content
+        # whose vehicle banner doesn't match — it then ask_human's on
+        # what looks like a VIN mismatch (an engine code mis-read as a
+        # VIN). Explicit nav guarantees the agent starts from a known
+        # state every time.
+        try:
+            pre_page = await browser.find_tab_by_url("alldata.com")
+            if pre_page is not None:
+                await pre_page.goto(
+                    "https://my.alldata.com/repair/#/select-vehicle",
+                    wait_until="domcontentloaded", timeout=20000,
+                )
+                await asyncio.sleep(2)
+        except Exception as e:
+            logger.warning(f"[alldata] pre-run reset to /select-vehicle failed: {e}")
         result = await agent.run(browser)
         # Best result NOW so we can pick the article URL while the
         # browser is still alive for the R-cell scan.
