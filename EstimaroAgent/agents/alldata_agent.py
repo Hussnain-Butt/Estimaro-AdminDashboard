@@ -149,7 +149,8 @@ CRITICAL RULES:
 
 
 async def _scan_repair_procedure(browser, article_url: str,
-                                 history_urls: list[str] | None = None) -> dict:
+                                 history_urls: list[str] | None = None,
+                                 side_hint: str | None = None) -> dict:
     """Navigate the live ALLDATA tab from the Parts-and-Labor article to
     the matching Service-and-Repair article, dump body text, and parse
     with the keyword-based parser.
@@ -227,21 +228,16 @@ async def _scan_repair_procedure(browser, article_url: str,
                     "tried_url": repair_list_url}
         await _asyncio.sleep(4)  # SPA hydration
 
-        # Step 2: click the canonical procedure link. Ordered by usefulness
-        # — "Removal and Replacement" is the article that explicitly walks
-        # the tech through replacing the part (which is where the renew /
-        # replace / torque-to-yield language lives). "Overhaul" and
-        # "Service and Repair" are broader fallbacks.
-        clicked = await page.evaluate("""() => {
-            const order = [
-                'removal and replacement',
-                'removal & replacement',
-                'removal, installation',
-                'removal and installation',
-                'overhaul',
-                'service and repair',
-                'replacement',
-            ];
+        # Step 2: drill through ALLDATA's nested repair-procedure tree.
+        # The hierarchy is usually 3 levels:
+        #   level 1: list view  → 'Removal and Replacement', 'Overhaul', ...
+        #   level 2: sub-list   → 'Brake Pads Front, Replacing', 'Brake Pads Rear, Replacing'
+        #   level 3: ARTICLE    → actual procedure text/canvas
+        # We may need to click twice. Use side_hint ('front'/'rear') to
+        # disambiguate the level-2 choice when present; otherwise prefer
+        # 'front' since most jobs are front-brake-leaning.
+        click_trail = []
+        DRILL_JS = """({order, side}) => {
             const visible = el => {
                 if (!el) return false;
                 const r = el.getBoundingClientRect();
@@ -251,21 +247,88 @@ async def _scan_repair_procedure(browser, article_url: str,
                 return true;
             };
             const els = Array.from(document.querySelectorAll('a, button, [role=link], [role=button]')).filter(visible);
+            // Apply side preference first when caller passed one
+            if (side) {
+                for (const candidate of order) {
+                    const hit = els.find(el => {
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        return t.length > 0 && t.length < 80
+                            && t.includes(candidate) && t.includes(side);
+                    });
+                    if (hit) { hit.click(); return {clicked: candidate, side_matched: true, text: (hit.innerText || '').trim().slice(0, 80)}; }
+                }
+            }
+            // No side match — pick first candidate text-match
             for (const candidate of order) {
                 const hit = els.find(el => {
                     const t = (el.innerText || '').trim().toLowerCase();
                     return t.length > 0 && t.length < 80 && t.includes(candidate);
                 });
-                if (hit) {
-                    hit.click();
-                    return {clicked: candidate, text: (hit.innerText || '').trim().slice(0, 80)};
-                }
+                if (hit) { hit.click(); return {clicked: candidate, side_matched: false, text: (hit.innerText || '').trim().slice(0, 80)}; }
             }
             return null;
-        }""")
-        if not clicked:
+        }"""
+
+        level1_order = [
+            "removal and replacement", "removal & replacement",
+            "removal, installation", "removal and installation",
+            "overhaul", "service and repair", "replacement",
+        ]
+        level2_order = [
+            "replacing", "removing", "installing", "replacement",
+            "removal", "service",
+        ]
+
+        # Normalise side hint
+        side = (side_hint or "").strip().lower()
+        if side not in ("front", "rear"):
+            side = "front"  # default — Sergio's most common service
+
+        # Level 1 click
+        l1 = await page.evaluate(DRILL_JS, {"order": level1_order, "side": None})
+        if not l1:
             return {"items": [], "scan_status": "no_procedure_link_found",
                     "tried_url": repair_list_url}
+        click_trail.append({"level": 1, **l1})
+        await _asyncio.sleep(4)
+
+        # Level 2 (optional) — only when the page looks like another
+        # sub-list (small number of short "Replacing"/"Removing" links,
+        # short body). Otherwise the same link selector would match
+        # individual procedure-step words on the article and wrongly
+        # navigate away.
+        is_sublist = await page.evaluate("""() => {
+            const visible = el => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                if (r.width < 5 || r.height < 5) return false;
+                const cs = getComputedStyle(el);
+                if (cs.visibility === 'hidden' || cs.display === 'none') return false;
+                return true;
+            };
+            const els = Array.from(document.querySelectorAll('a')).filter(visible);
+            const hits = els.filter(el => {
+                const t = (el.innerText || '').trim().toLowerCase();
+                return t.length > 0 && t.length < 80
+                    && (t.includes('replacing') || t.includes('removing')
+                        || t.includes('installing') || t.includes('replacement'));
+            });
+            const bodyLen = (document.body && document.body.innerText || '').length;
+            // Sub-list characteristics: 2-15 short procedure-y links AND
+            // body shorter than ~1500 chars (article content would push it
+            // higher even with canvas — at least breadcrumbs etc).
+            return {sublist: hits.length >= 1 && hits.length <= 15 && bodyLen < 1500,
+                    hits: hits.length, bodyLen: bodyLen};
+        }""")
+        logger.info(f"[R-cell] post-level-1 page: {is_sublist}")
+        if isinstance(is_sublist, dict) and is_sublist.get("sublist"):
+            l2 = await page.evaluate(DRILL_JS, {"order": level2_order, "side": side})
+            if l2:
+                click_trail.append({"level": 2, **l2})
+                await _asyncio.sleep(4)
+        # else: we're already on the article page — proceed
+
+        clicked = click_trail[-1]  # most recent click for logging
 
         # Step 3: wait for article content to render. Try text DOM first
         # (works on the small minority of ALLDATA pages that DO expose
@@ -276,6 +339,10 @@ async def _scan_repair_procedure(browser, article_url: str,
             "() => (document.body && document.body.innerText) || ''"
         )
         clicked_text = clicked.get("text") if isinstance(clicked, dict) else None
+        # Combined trail for diagnostics (e.g. "L1:Removal and Replacement -> L2:Brake Pads Front, Replacing")
+        trail_str = " -> ".join(
+            f"L{t.get('level')}:{t.get('text', '')[:50]}" for t in click_trail
+        )
 
         # Path 1 — text DOM had real content (rare on ALLDATA but free
         # when it works, so we always try first).
@@ -376,8 +443,19 @@ async def lookup_labor_time(
                         (h.get("url_at_decision") or "")
                         for h in (result.get("history") or [])
                     ]
+                    # Derive side hint from JobSpec so the level-2 picker
+                    # ('Brake Pads Front, Replacing' vs 'Rear, Replacing')
+                    # matches the customer's actual job.
+                    job_text = " ".join([
+                        (job.subsystem or ""),
+                        (job.symptom or ""),
+                        " ".join(job.keywords or []),
+                    ]).lower()
+                    side_hint = "rear" if "rear" in job_text else "front"
                     repair_procedure_meta = await _scan_repair_procedure(
-                        browser, article_url, history_urls=history_urls
+                        browser, article_url,
+                        history_urls=history_urls,
+                        side_hint=side_hint,
                     )
                 else:
                     repair_procedure_meta["scan_status"] = (
