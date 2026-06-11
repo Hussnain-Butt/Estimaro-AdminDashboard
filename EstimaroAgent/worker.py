@@ -965,7 +965,18 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
         grand_total = round(subtotal + tax_amount, 2)
 
     conf = float(match.get("confidence") or 0.0)
-    tier = "auto" if conf >= 0.85 else "advisor_review"
+    # Honest tier routing: "auto" ONLY when the match is essentially certain —
+    # the same physical car came back (exact VIN), or a near-identical vehicle
+    # (≤2 model-years apart) matched with very high confidence. Everything
+    # else goes to advisor review; a wrong auto-approved estimate costs more
+    # trust than one extra review click.
+    match_tier = match.get("match_tier") or "keyword"
+    year_gap = match.get("year_gap")
+    if match_tier == "exact_vin" or (conf >= 0.9 and isinstance(year_gap, int)
+                                     and year_gap <= 2):
+        tier = "auto"
+    else:
+        tier = "advisor_review"
     return {
         "vehicleInfo": {
             "year": vehicle.year, "make": vehicle.make, "model": vehicle.model,
@@ -988,6 +999,10 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
             "filtered": match.get("filtered", False),
             "jobsUsed": match.get("jobs_used"),
             "jobsInRO": match.get("jobs_in_ro"),
+            # How the match was made: exact_vin (same physical car) /
+            # service_type (canonical classification) / keyword (fallback).
+            "matchTier": match_tier,
+            "yearGap": year_gap,
         },
         "laborItems": labor_lines,
         "partsItems": parts_lines,
@@ -1189,7 +1204,8 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
         # score; otherwise we fall straight through to the live pipeline below.
         try:
             from services.historical_corpus import match_job
-            hist = match_job(vehicle.year, vehicle.make, vehicle.model, complaint)
+            hist = match_job(vehicle.year, vehicle.make, vehicle.model,
+                             complaint, vin=vin)
         except Exception as e:
             logger.warning(f"[{job_id}] corpus match error (non-fatal): {e}")
             hist = None

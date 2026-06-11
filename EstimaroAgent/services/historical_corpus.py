@@ -367,6 +367,21 @@ _SUPPLY_WORDS = {"cleaner", "cleaning", "fluid", "grease", "lubricant", "lube",
                  "gasket", "washer", "additive"}
 # Largest year gap allowed between the query vehicle and a historical RO.
 _MAX_YEAR_GAP = 8
+
+# Concrete service nouns. A complaint must name at least one of these (or
+# classify to a canonical type) before we attempt a historical match at all.
+# "making noise" / "feels weird" are DIAGNOSIS requests — a past estimate for
+# some other noise is exactly the wrong thing to show; let the live pipeline
+# handle them.
+_SERVICE_NOUNS = {
+    "brake", "pad", "rotor", "disc", "caliper", "sensor", "oil", "filter",
+    "plug", "spark", "shock", "strut", "suspension", "battery", "coolant",
+    "radiator", "thermostat", "transmission", "clutch", "alternator",
+    "starter", "belt", "tire", "wheel", "alignment", "wiper", "bulb",
+    "headlight", "exhaust", "muffler", "axle", "bearing", "pump", "hose",
+    "gasket", "mount", "tune", "fluid", "flush", "injector", "turbo",
+    "differential", "driveshaft", "sway", "tie", "control",
+}
 # Position qualifiers — disambiguate (front vs rear pads) but carry no service
 # meaning on their own, so a line matching ONLY a qualifier isn't relevant.
 _QUALIFIER_WORDS = {"front", "rear", "left", "right", "upper", "lower",
@@ -386,19 +401,96 @@ def _norm(s: Optional[str]) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
+def classify_text(text: str) -> Optional[str]:
+    """Canonical service-type for a free-text complaint OR a corpus job name.
+
+    Mirrors services.service_skeleton.classify_service but works on raw text
+    (the corpus side has no Hermes JobSpec). Used as the PRIMARY matching gate:
+    deterministic type equality replaces fuzzy keyword overlap, so an "oil
+    change" query can never bind to an "oil leak diagnostics" RO."""
+    t = (text or "").lower()
+    if "brake" in t or "squeak" in t or "squeal" in t or "grind" in t:
+        if "fluid" in t and "brake" in t:
+            return "brake_fluid_service"
+        side = "rear" if "rear" in t else "front"
+        return f"brake_{side}_full"
+    if "oil" in t and ("change" in t or "service" in t or "filter" in t
+                       or "lubricat" in t or re.search(r"\beos\b", t)):
+        return "oil_change_standard"
+    if "shock" in t or "strut" in t or "suspension" in t:
+        side = "rear" if "rear" in t else "front"
+        return f"shocks_{side}"
+    if ("transmission" in t or re.search(r"\batf?\b", t)) and \
+            ("fluid" in t or "service" in t):
+        return "transmission_fluid_service"
+    if "spark" in t or "ignition coil" in t:
+        return "spark_plugs"
+    if "battery" in t:
+        return "battery"
+    if "coolant" in t or "radiator" in t or "thermostat" in t or "overheat" in t:
+        return "cooling_system"
+    if "tire" in t and ("rotat" in t or "balanc" in t or "new" in t):
+        return "tires"
+    if "cabin" in t and "filter" in t:
+        return "cabin_filter"
+    if "air filter" in t:
+        return "engine_air_filter"
+    if "wiper" in t:
+        return "wipers"
+    if "alternator" in t or "starter" in t:
+        return "charging_starting"
+    return None
+
+
+def _parse_posted(s: Optional[str]) -> float:
+    """'Jun 10, 2026' -> sortable ordinal (0.0 when unparseable). Used to
+    prefer the most RECENT matching RO — fresher prices, current SOP."""
+    if not s:
+        return 0.0
+    from datetime import datetime as _dt
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%Y-%m-%d"):
+        try:
+            return float(_dt.strptime(s.strip(), fmt).toordinal())
+        except ValueError:
+            continue
+    return 0.0
+
+
+def _model_token_score(q_model_toks: set[str], series_prefix: Optional[str],
+                       r_model: str) -> float:
+    """Word-boundary model matching. Substring matching was a wrong-map source:
+    's60' is a substring of 's600' (different car). Tokens must match whole
+    words; the series-prefix fallback handles 'C-Class' ↔ 'C300'."""
+    if not q_model_toks:
+        return 0.0
+    r_words = set(re.split(r"[\s\-/]+", r_model))
+    hits = sum(1 for t in q_model_toks if t in r_words)
+    score = hits / len(q_model_toks)
+    if score == 0 and series_prefix and re.match(rf"^{series_prefix}\d", r_model):
+        score = 0.8
+    return score
+
+
 def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
-              complaint: str, *, db_path: str = DB_DEFAULT,
-              threshold: float = 0.55) -> Optional[dict]:
-    """Find the single best historical RO for a new (year, make, model,
-    complaint) query, or None if nothing clears `threshold`.
+              complaint: str, *, vin: Optional[str] = None,
+              db_path: str = DB_DEFAULT, threshold: float = 0.55) -> Optional[dict]:
+    """Find the single best historical RO for a new query, or None.
 
-    Conservative by design: showing the WRONG past estimate erodes trust far
-    more than missing a match (we just fall through to the live portals). So
-    the make must match, and the score multiplies a vehicle component by a
-    service/complaint component — a strong vehicle alone never qualifies.
+    TIERED, deterministic-first matching — fuzzy keywords are the LAST resort,
+    not the primary gate (fuzzy-first is what produced wrong maps):
 
-    Returns a dict: {ro_number, vehicle, total, labor_total, parts_total,
-    date_posted, confidence, vehicle_score, service_score, jobs, raw}.
+      TIER 1 — exact VIN: the same physical car came back (repeat customer).
+               Vehicle identity is certain; only the service must line up.
+      TIER 2 — canonical service-type: classify_text(complaint) equals the
+               classified type of a job on the RO, plus a strict vehicle gate
+               (word-boundary model match ≥ 0.7, year gap ≤ 8).
+      TIER 3 — keyword fallback, with SEPARATE minimums (vehicle ≥ 0.7 AND
+               service ≥ 0.6) — the old product-only threshold let a perfect
+               vehicle drag a weak service match over the line.
+
+    Ties prefer the most RECENT RO (fresh prices), then the more focused one.
+    Returns the match dict + match_tier/year_gap so the caller can route
+    auto vs advisor_review honestly.
     """
     if not make:
         return None
@@ -410,63 +502,70 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
 
     q_model_toks = {t for t in re.split(r"[\s\-/]+", (model or "").lower()) if len(t) >= 2}
     q_svc = _svc_words(complaint)
-    # Mercedes/BMW class naming: NHTSA decodes "C-Class" / "E-Class" / "GLC-Class"
-    # but Tekmetric stores the trim ("C300", "E350", "GLC300"). The class token
-    # ("class") never appears in the trim, so token overlap misses a car Sergio
-    # has clearly serviced. Extract the series prefix (C / E / GLC) and also
-    # accept a corpus model that starts with it followed by a digit.
+    q_type = classify_text(complaint)
+    # Specificity gate: no canonical type AND no concrete service noun means
+    # this is a diagnosis-style request ("making noise") — a historical
+    # estimate for some OTHER car's noise is precisely the wrong answer.
+    if not q_type and not (q_svc & _SERVICE_NOUNS):
+        return None
+    vin_n = _norm(vin) if vin else None
     m_series = re.match(r"^([a-z]{1,3})[\s-]*class\b", (model or "").lower())
     series_prefix = m_series.group(1) if m_series else None
 
-    best = None
-    best_base = 0.0
-    best_sort = -1.0
+    best = None          # (tier_rank, sort_key, r, veh, svc, conf)
     for r in rows:
         if _norm(r["make"]) != make_n and make_n not in _norm(r["make"]):
             continue
-        # Hard year-gap cap: a 2023 car must NOT match a 1999 one of the same
-        # nameplate — different generation, different part numbers entirely.
-        # 8 years keeps same/adjacent generations (where parts still apply) and
-        # rejects cross-generation matches outright.
-        if year and r["year"] and abs(int(year) - int(r["year"])) > _MAX_YEAR_GAP:
+        year_gap = abs(int(year) - int(r["year"])) if (year and r["year"]) else 99
+        vin_hit = bool(vin_n and r["vin"] and _norm(r["vin"]) == vin_n)
+        # Hard year-gap cap (cross-generation parts don't transfer). An exact
+        # VIN bypasses it — it IS the same car regardless of catalogue age,
+        # though recency still decides ties.
+        if not vin_hit and year_gap > _MAX_YEAR_GAP:
             continue
-        # Vehicle score: model-family overlap + year proximity.
-        r_model = (r["model"] or "").lower()
-        if q_model_toks:
-            hits = sum(1 for t in q_model_toks if t in r_model)
-            model_score = hits / len(q_model_toks)
-            # Series-prefix fallback for "<letter>-Class" ↔ trim ("C-Class"↔"C300").
-            if model_score == 0 and series_prefix and \
-                    re.match(rf"^{series_prefix}\d", r_model):
-                model_score = 0.8
-        else:
+
+        model_score = _model_token_score(q_model_toks, series_prefix,
+                                         (r["model"] or "").lower())
+        if not q_model_toks:
             model_score = 0.5
-        if year and r["year"]:
-            dy = abs(int(year) - int(r["year"]))
-            year_score = 1.0 if dy == 0 else max(0.4, 1.0 - dy * 0.1)
+        year_score = 1.0 if year_gap == 0 else max(0.4, 1.0 - year_gap * 0.1)
+        veh_score = 1.0 if vin_hit else \
+            ((0.7 * model_score + 0.3 * year_score) if model_score else 0.0)
+
+        # Service signals: canonical type equality (deterministic) + keywords.
+        names_blob = r["service_names"] or ""
+        type_hit = bool(q_type) and any(
+            classify_text(seg) == q_type for seg in names_blob.split("|"))
+        names = _svc_words(names_blob)
+        kw_score = (len(q_svc & names) / len(q_svc)) if q_svc else 0.0
+
+        # Tier assignment (lower rank = better).
+        if vin_hit and (type_hit or kw_score >= 0.5):
+            tier_rank, svc_score = 0, (1.0 if type_hit else kw_score)
+            conf = round(min(0.99, 0.9 + 0.09 * svc_score), 3)
+        elif type_hit and veh_score >= 0.7:
+            tier_rank, svc_score = 1, 1.0
+            conf = round(veh_score, 3)
+        elif veh_score >= 0.7 and kw_score >= 0.6 and veh_score * kw_score >= threshold:
+            tier_rank, svc_score = 2, kw_score
+            conf = round(veh_score * kw_score, 3)
         else:
-            year_score = 0.6
-        veh_score = (0.7 * model_score + 0.3 * year_score) if model_score else 0.0
-
-        # Service score: complaint words found among the RO's job names.
-        names = _svc_words(r["service_names"] or "")
-        svc_score = (len(q_svc & names) / len(q_svc)) if q_svc else 0.0
-
-        base = round(veh_score * svc_score, 4)
-        if base < threshold:
             continue
-        # Tiebreaker: when scores tie, prefer the MORE FOCUSED RO (fewer jobs) —
-        # a 23-job Sprinter visit that happens to include brakes is a worse
-        # source for a "front brake pads" query than a dedicated brake RO. Cheap
-        # (no job-JSON parse): count the pipe-separated service names.
-        n_services = (r["service_names"] or "").count("|")
-        sort_score = base - 0.0005 * n_services
-        if sort_score > best_sort:
-            best_sort, best_base, best = sort_score, base, (r, veh_score, svc_score)
+
+        n_services = names_blob.count("|")
+        sort_key = (-tier_rank, conf, _parse_posted(r["date_posted"]),
+                    -n_services)
+        if best is None or sort_key > best[1]:
+            best = (tier_rank, sort_key, r, veh_score, svc_score, conf, year_gap)
 
     if not best:
         return None
-    r, veh_score, svc_score = best
+    tier_rank, _, r, veh_score, svc_score, best_base, year_gap = best
+    match_tier = ("exact_vin", "service_type", "keyword")[tier_rank]
+    try:
+        all_jobs = json.loads(r["jobs_json"]) if r["jobs_json"] else []
+    except json.JSONDecodeError:
+        all_jobs = []
     try:
         all_jobs = json.loads(r["jobs_json"]) if r["jobs_json"] else []
     except json.JSONDecodeError:
@@ -488,11 +587,17 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
 
     used_jobs = all_jobs
     filtered = False
-    if q_svc:
+    if q_svc or q_type:
         kept_jobs: list[dict] = []
         removed = 0
         for j in all_jobs:
             jn = j.get("name") or ""
+            # A job whose NAME classifies to the requested canonical type is
+            # the dedicated job for this service — keep it whole (its lines
+            # are what Sergio actually billed for exactly this work).
+            if q_type and classify_text(jn) == q_type:
+                kept_jobs.append(j)
+                continue
             fl = [l for l in (j.get("labor") or [])
                   if _line_relevant(l.get("description") or "", jn)]
             fp = [p for p in (j.get("parts") or [])
@@ -501,7 +606,7 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
                        (len(j.get("parts") or []) - len(fp))
             if fl or fp:
                 kept_jobs.append({**j, "labor": fl, "parts": fp})
-        if kept_jobs and removed > 0:
+        if kept_jobs and (removed > 0 or len(kept_jobs) < len(all_jobs)):
             used_jobs, filtered = kept_jobs, True
 
     if filtered:
@@ -532,6 +637,10 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
         "filtered": filtered,
         "jobs_used": len(used_jobs),
         "jobs_in_ro": len(all_jobs),
+        # Honest routing signals for the caller: how this match was made and
+        # how far apart the vehicles are. "exact_vin" = same physical car.
+        "match_tier": match_tier,
+        "year_gap": year_gap,
     }
 
 
