@@ -352,6 +352,19 @@ _SVC_SYNONYMS = {
 }
 
 
+# Generic service-supply words. A part/labor line naming one of these is kept
+# even if it doesn't match the complaint directly — they accompany most jobs
+# (a brake job's cleaner, a service's gasket). Battery/bulb/tire are NOT here,
+# so they get filtered out of an unrelated request.
+_SUPPLY_WORDS = {"cleaner", "kit", "fluid", "grease", "lubricant", "lube",
+                 "hardware", "clip", "shim", "sealer", "seal", "gasket",
+                 "washer", "additive"}
+# Position qualifiers — disambiguate (front vs rear pads) but carry no service
+# meaning on their own, so a line matching ONLY a qualifier isn't relevant.
+_QUALIFIER_WORDS = {"front", "rear", "left", "right", "upper", "lower",
+                    "driver", "passenger", "side", "inner", "outer"}
+
+
 def _svc_words(text: str) -> set[str]:
     out: set[str] = set()
     for w in re.split(r"\W+", (text or "").lower()):
@@ -434,23 +447,40 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
     except json.JSONDecodeError:
         all_jobs = []
 
-    # JOB-LEVEL FILTER — return only the jobs relevant to the request. The RO
-    # may bundle many services (oil, brakes, suspension…) from one visit; a
-    # "front brake pads" query must show ONLY the brake jobs, not the whole
-    # $11k visit. A job is relevant if its name or any labor line shares a
-    # service word with the complaint.
-    def _job_relevant(job: dict) -> bool:
-        words = _svc_words(job.get("name") or "")
-        for lab in job.get("labor") or []:
-            words |= _svc_words(lab.get("description") or "")
-        return bool(words & q_svc)
+    # LINE-ITEM FILTER — keep only the labor/part LINES relevant to the request.
+    # A single Tekmetric RO/job often bundles unrelated work from one visit
+    # (e.g. "front brakes" plus a battery + a bulb on the same ticket). Job- or
+    # RO-level filtering can't separate those, so we filter individual lines: a
+    # line is relevant if its OWN description shares a service word with the
+    # complaint, or names a generic service supply (cleaner/kit/fluid/…).
+    def _line_relevant(desc: str, fallback: str = "") -> bool:
+        words = _svc_words(desc) or _svc_words(fallback)
+        # A match on a QUALIFIER alone (front/rear/left/…) doesn't count — it
+        # would wrongly keep "tire pressure FRONT 47" for a "front brake" query.
+        # Require a real service noun (brake/pad/rotor/…) or a supply word.
+        svc_hits = (words & q_svc) - _QUALIFIER_WORDS
+        return bool(svc_hits) or bool(words & _SUPPLY_WORDS)
 
-    relevant = [j for j in all_jobs if _job_relevant(j)] if q_svc else all_jobs
-    filtered = bool(relevant) and len(relevant) < len(all_jobs)
-    used_jobs = relevant if relevant else all_jobs
+    used_jobs = all_jobs
+    filtered = False
+    if q_svc:
+        kept_jobs: list[dict] = []
+        removed = 0
+        for j in all_jobs:
+            jn = j.get("name") or ""
+            fl = [l for l in (j.get("labor") or [])
+                  if _line_relevant(l.get("description") or "", jn)]
+            fp = [p for p in (j.get("parts") or [])
+                  if _line_relevant(p.get("description") or "")]
+            removed += (len(j.get("labor") or []) - len(fl)) + \
+                       (len(j.get("parts") or []) - len(fp))
+            if fl or fp:
+                kept_jobs.append({**j, "labor": fl, "parts": fp})
+        if kept_jobs and removed > 0:
+            used_jobs, filtered = kept_jobs, True
 
     if filtered:
-        # Recompute from the kept jobs; total=None so the payload re-adds tax.
+        # Recompute from the kept lines; total=None so the payload re-adds tax.
         def _sum(js, kind):
             return round(sum(float(ln.get("total") or 0)
                              for j in js for ln in (j.get(kind) or [])), 2)

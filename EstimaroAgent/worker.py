@@ -888,17 +888,28 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
             })
         for pt in jb.get("parts") or []:
             qty = int(pt.get("qty") or 1)
-            cost = pt.get("cost")
             total = pt.get("total")
-            if total is None and cost is not None:
-                total = round(float(cost) * qty, 2)
+            # Show the per-unit RETAIL price Sergio billed, so qty × unit == the
+            # line total. The corpus 'cost' is the shop's WHOLESALE cost while
+            # 'total' is retail × qty — displaying cost as the unit price made
+            # "qty × $40.10 = $142" look broken. Prefer retail; else derive the
+            # unit from total/qty; else fall back to cost.
+            retail = pt.get("retail")
+            if retail is not None:
+                unit = round(float(retail), 2)
+            elif total is not None and qty:
+                unit = round(float(total) / qty, 2)
+            else:
+                unit = round(float(pt.get("cost") or 0.0), 2)
+            if total is None:
+                total = round(unit * qty, 2)
             parts_lines.append({
                 "description": pt.get("description") or "",
                 "partNumber": pt.get("part_number"),
                 "quantity": qty,
-                "cost": cost if cost is not None else (pt.get("retail") or 0.0),
+                "cost": unit,
                 "markup": 0.0,
-                "total": total if total is not None else 0.0,
+                "total": round(float(total), 2),
                 "vendor": pt.get("vendor") or "Historical",
                 "source": f"Historical RO #{ro}",
             })

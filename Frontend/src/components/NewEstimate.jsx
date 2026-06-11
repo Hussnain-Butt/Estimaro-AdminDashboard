@@ -720,9 +720,8 @@ const PreviewStep = ({ data, calculatedTotals, onSendApproval, isSending }) => {
           </p>
           {data.historicalMatch.filtered && (
             <p className="text-[10px] text-warning/90 mt-1">
-              Showing the {data.historicalMatch.jobsUsed} job
-              {data.historicalMatch.jobsUsed === 1 ? '' : 's'} relevant to this request
-              {data.historicalMatch.jobsInRO ? ` (RO #${data.historicalMatch.roNumber} also covered ${data.historicalMatch.jobsInRO - data.historicalMatch.jobsUsed} other service${(data.historicalMatch.jobsInRO - data.historicalMatch.jobsUsed) === 1 ? '' : 's'})` : ''}.
+              Filtered to the labor &amp; parts relevant to this request — RO #{data.historicalMatch.roNumber} also
+              included other work from that visit, which has been left out.
             </p>
           )}
           {!data.historicalMatch.filtered && data.historicalMatch.services && (
