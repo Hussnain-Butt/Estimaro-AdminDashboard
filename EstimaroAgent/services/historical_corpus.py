@@ -402,6 +402,13 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
 
     q_model_toks = {t for t in re.split(r"[\s\-/]+", (model or "").lower()) if len(t) >= 2}
     q_svc = _svc_words(complaint)
+    # Mercedes/BMW class naming: NHTSA decodes "C-Class" / "E-Class" / "GLC-Class"
+    # but Tekmetric stores the trim ("C300", "E350", "GLC300"). The class token
+    # ("class") never appears in the trim, so token overlap misses a car Sergio
+    # has clearly serviced. Extract the series prefix (C / E / GLC) and also
+    # accept a corpus model that starts with it followed by a digit.
+    m_series = re.match(r"^([a-z]{1,3})[\s-]*class\b", (model or "").lower())
+    series_prefix = m_series.group(1) if m_series else None
 
     best = None
     best_base = 0.0
@@ -414,6 +421,10 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
         if q_model_toks:
             hits = sum(1 for t in q_model_toks if t in r_model)
             model_score = hits / len(q_model_toks)
+            # Series-prefix fallback for "<letter>-Class" ↔ trim ("C-Class"↔"C300").
+            if model_score == 0 and series_prefix and \
+                    re.match(rf"^{series_prefix}\d", r_model):
+                model_score = 0.8
         else:
             model_score = 0.5
         if year and r["year"]:
