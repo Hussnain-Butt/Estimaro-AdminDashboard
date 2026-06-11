@@ -8,6 +8,7 @@ Run as a systemd service `estimaro-agent.service`.
 import asyncio
 import base64
 import os
+import re
 import socket
 import sys
 import time
@@ -854,6 +855,36 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
     }
 
 
+def _clean_hist_labor_desc(desc: str) -> str:
+    """Strip the technician credit Tekmetric appends to a labor description
+    (e.g. 'REPLACED COOLANT (Tech: CHRISTIAN GARCIA)') — it's the tech who did
+    the work, not part of the customer-facing service description. Handles a
+    truncated/unclosed '(Tech: NAME' too."""
+    return re.sub(r"\s*\(\s*Tech\s*:[^)]*\)?\s*$", "", desc or "", flags=re.IGNORECASE).strip()
+
+
+def _clean_hist_part_desc(desc: str) -> str:
+    """Strip a leading vendor LINE-CODE (letters+digits, e.g. 'WORL001' =
+    Worldpac's catalogue code) so the part reads 'Brake Pad Set' not
+    'WORL001 Brake Pad Set'. Real alphabetic brand abbreviations (MAN, NGK,
+    OES, Bosch) have no digits and are KEPT — they're useful brand info."""
+    return re.sub(r"^[A-Z]{2,6}\d{2,4}\s+", "", (desc or "").strip()).strip()
+
+
+def _clean_hist_partno(pn) -> Optional[str]:
+    """Null out a 'part number' that's really a Tekmetric stock STATUS
+    ('Inventory', 'Needed', 'Quoted', 'All 7 Received') — those parts simply
+    carry no OEM number in the source, and showing the status as a part # is
+    misleading."""
+    if not pn:
+        return None
+    s = str(pn).strip()
+    if re.fullmatch(r"(Inventory|Needed|Quoted|Received|All\s+\d+\s+Received)",
+                    s, flags=re.IGNORECASE):
+        return None
+    return s or None
+
+
 def _build_historical_result_payload(job: dict, vehicle, match: dict,
                                      elapsed: float, recalls: list | None = None) -> dict:
     """Phase C — shape a JobResult from a matched HISTORICAL RO.
@@ -881,7 +912,7 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
             if total is None and hrs is not None:
                 total = round(float(hrs) * float(rate), 2)
             labor_lines.append({
-                "description": lab.get("description") or job_name,
+                "description": _clean_hist_labor_desc(lab.get("description") or job_name),
                 "hours": hrs, "rate": rate, "total": total or 0.0,
                 "source": f"Historical RO #{ro}", "skill": None,
                 "extractionScreenshot": None,
@@ -904,8 +935,8 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
             if total is None:
                 total = round(unit * qty, 2)
             parts_lines.append({
-                "description": pt.get("description") or "",
-                "partNumber": pt.get("part_number"),
+                "description": _clean_hist_part_desc(pt.get("description") or ""),
+                "partNumber": _clean_hist_partno(pt.get("part_number")),
                 "quantity": qty,
                 "cost": unit,
                 "markup": 0.0,
