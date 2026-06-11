@@ -57,6 +57,9 @@ class TekmetricPushRequest(BaseModel):
     breakdown: dict = Field(default_factory=dict)
     odometer: Optional[int] = None
     estimateId: Optional[str] = None
+    # Original customer complaint — the worker ingests the approved estimate
+    # into the historical corpus after a successful push, indexed by this.
+    serviceRequest: Optional[str] = None
 
 
 class TekmetricJobSubmitResponse(BaseModel):

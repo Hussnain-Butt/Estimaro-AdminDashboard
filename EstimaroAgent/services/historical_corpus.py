@@ -276,22 +276,31 @@ def ingest(records: list[dict], db_path: str = DB_DEFAULT) -> dict:
 
 def ingest_worker_result(vin: Optional[str], year: Optional[int],
                          make: Optional[str], model: Optional[str],
-                         complaint: str, result: dict,
+                         complaint: str, result: dict, *,
+                         ro_number: Optional[str] = None,
                          db_path: str = DB_DEFAULT) -> Optional[str]:
-    """Phase E — add a freshly worker-built estimate to the corpus so a repeat
-    (vehicle, service) query matches it INSTANTLY next time (continuous
-    learning). Stored under a synthetic 'EST-' key so it's distinguishable from
-    a real paid Tekmetric RO. No-op for empty / $0 estimates."""
+    """Phase E — add an APPROVED estimate to the corpus so a repeat (vehicle,
+    service) query matches it instantly (continuous learning).
+
+    Call this ONLY for advisor-approved estimates (the Tekmetric-push path) —
+    raw auto-builds must never enter the corpus, or an over-stuffed draft comes
+    back as a high-confidence "historical match" on the next identical query.
+    `ro_number`: the real Tekmetric RO# when known; falls back to a synthetic
+    'EST-' key. No-op for empty / $0 estimates."""
     labor_items = result.get("laborItems") or []
     parts_items = result.get("partsItems") or []
     bd = result.get("breakdown") or {}
-    total = bd.get("total")
-    if not labor_items or not (total and float(total) > 0):
+    try:
+        total = float(bd.get("total") or 0)  # FE sends string totals
+    except (TypeError, ValueError):
+        total = 0.0
+    if not labor_items or total <= 0:
         return None
 
-    vin8 = re.sub(r"[^A-Za-z0-9]", "", (vin or "anon"))[-8:].upper() or "ANON"
-    svc_key = _norm(complaint)[:10] or "svc"
-    ro_number = f"EST-{vin8}-{svc_key}"
+    if not ro_number:
+        vin8 = re.sub(r"[^A-Za-z0-9]", "", (vin or "anon"))[-8:].upper() or "ANON"
+        svc_key = _norm(complaint)[:10] or "svc"
+        ro_number = f"EST-{vin8}-{svc_key}"
     make_model = " ".join(x for x in [make, model] if x).strip()
     jobs = [{
         "name": (complaint or "")[:100], "category": None, "approved_on": None,
@@ -312,8 +321,9 @@ def ingest_worker_result(vin: Optional[str], year: Optional[int],
            model, make_model, vin, date_posted, odometer, labor_rate, total,
            labor_total, parts_total, service_names, jobs_json, raw_json)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (ro_number, None, year, make, model, make_model, vin, None, None, None,
-         float(total), bd.get("laborTotal"), bd.get("partsTotal"),
+        (ro_number, None, int(year) if year else None, make, model, make_model,
+         vin, None, None, None, total,
+         _f(str(bd.get("laborTotal") or "")), _f(str(bd.get("partsTotal") or "")),
          service_names, json.dumps(jobs, ensure_ascii=False),
          json.dumps(result, ensure_ascii=False)),
     )

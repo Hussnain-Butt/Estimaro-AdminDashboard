@@ -1372,7 +1372,12 @@ const NewEstimate = () => {
         phone: formData.customerPhone,
         email: formData.customerEmail,
       },
-      vehicleInfo: formData.vehicleInfo,
+      // Carry the VIN inside vehicleInfo and the original complaint along —
+      // the worker ingests this APPROVED estimate into the historical corpus
+      // after the push succeeds (approval = ground truth), and the corpus
+      // needs (vin, vehicle, serviceRequest) to index it.
+      vehicleInfo: { ...formData.vehicleInfo, vin: formData.vin },
+      serviceRequest: formData.serviceRequest,
       laborItems: formData.laborItems,
       partsItems: formData.partsItems,
       breakdown: calculatedTotals,

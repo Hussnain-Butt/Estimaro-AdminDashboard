@@ -931,11 +931,16 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
             # 'total' is retail × qty — displaying cost as the unit price made
             # "qty × $40.10 = $142" look broken. Prefer retail; else derive the
             # unit from total/qty; else fall back to cost.
+            # Derive the unit from the BILLED line total first — it's the only
+            # value guaranteed consistent with what the customer actually paid
+            # (qty × unit == total by construction). 'retail' can be a list/MSRP
+            # reference that disagrees with the billed total (seen as
+            # "1 × $117.00 = $51.93" in the UI). Fall back retail → cost.
             retail = pt.get("retail")
-            if retail is not None:
-                unit = round(float(retail), 2)
-            elif total is not None and qty:
+            if total is not None and qty:
                 unit = round(float(total) / qty, 2)
+            elif retail is not None:
+                unit = round(float(retail), 2)
             else:
                 unit = round(float(pt.get("cost") or 0.0), 2)
             if total is None:
@@ -1434,19 +1439,13 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
             f"{elapsed:.1f}s"
         )
 
-        # Phase E — auto-ingest this freshly-built estimate into the historical
-        # corpus so a repeat (vehicle, service) query matches it instantly next
-        # time (continuous learning). Non-fatal — a corpus write must never fail
-        # a job that already posted its result. Only runs on the live-build
-        # path; a historical match returned earlier and is never re-ingested.
-        try:
-            from services.historical_corpus import ingest_worker_result
-            est_key = ingest_worker_result(
-                vin, vehicle.year, vehicle.make, vehicle.model, complaint, result)
-            if est_key:
-                logger.info(f"[{job_id}] auto-ingested estimate into corpus as {est_key}")
-        except Exception as e:
-            logger.warning(f"[{job_id}] corpus auto-ingest failed (non-fatal): {e}")
+        # Phase E NOTE: raw auto-generated estimates are deliberately NOT
+        # ingested into the historical corpus here. An unreviewed build can be
+        # over-stuffed (ALLDATA lists conditional parts like calipers), and
+        # ingesting it made that draft come back as a high-confidence
+        # "historical match" on the next identical query — garbage promoted to
+        # ground truth. Ingest now happens in _process_tekmetric_job AFTER the
+        # advisor approves and pushes the estimate (approval = ground truth).
 
     except Exception as e:
         import traceback
@@ -1567,6 +1566,27 @@ async def _process_tekmetric_job(client: httpx.AsyncClient, job: dict) -> None:
         logger.info(f"[{job_id}] Tekmetric DONE  RO#{payload['ro_number']}")
     except Exception as e:
         logger.warning(f"[{job_id}] tek result post failed: {e}")
+
+    # Phase E — ingest the APPROVED estimate into the historical corpus, under
+    # the REAL Tekmetric RO number the push just produced. This is the only
+    # ingest point: the advisor reviewed and pushed it, so it's ground truth
+    # (raw auto-builds are never ingested — see _process_job). Non-fatal.
+    try:
+        from services.historical_corpus import ingest_worker_result
+        vi = estimate.get("vehicleInfo") or {}
+        ing_key = ingest_worker_result(
+            vi.get("vin") or estimate.get("vin"),
+            vi.get("year"), vi.get("make"), vi.get("model"),
+            estimate.get("serviceRequest") or "",
+            {"laborItems": estimate.get("laborItems") or [],
+             "partsItems": estimate.get("partsItems") or [],
+             "breakdown": estimate.get("breakdown") or {}},
+            ro_number=str(result.get("ro_number") or "") or None,
+        )
+        if ing_key:
+            logger.info(f"[{job_id}] approved estimate ingested into corpus as {ing_key}")
+    except Exception as e:
+        logger.warning(f"[{job_id}] corpus ingest after push failed (non-fatal): {e}")
 
 
 async def main_loop():
