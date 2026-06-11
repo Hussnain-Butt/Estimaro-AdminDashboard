@@ -48,6 +48,12 @@ SEL_VEHICLE_DESC = ".vehicle-description"
 SEL_YEAR_TAB = "#year-tab"
 SEL_MAKE_TAB = "#make-tab"
 SEL_MODEL_TAB = "#model-tab"
+# SpeedDIAL 2.0's vehicle picker DOES have a VIN field (`<input id="vin">`) —
+# the old "Worldpac has no VIN input" note was outdated. Filling it + Enter sets
+# the exact vehicle, far more reliably than the Year/Make/Model drill (whose
+# model grid is flaky and whose labels — "C300" — don't match NHTSA's
+# "C-Class"). We use VIN as the PRIMARY path and keep Y/M/M as a fallback.
+SEL_VIN_INPUT = "#vin"
 
 # Customer-complaint vocabulary → the canonical part-type label Worldpac's
 # catalog lists in its right-side "Part Type" panel. Keys are matched
@@ -334,6 +340,35 @@ async def _drill_ymm(page, vehicle) -> Optional[str]:
     return f"model_pick_failed :: {type(last_err).__name__ if last_err else 'NoMatch'}"
 
 
+async def _set_vehicle_by_vin(page, vehicle) -> Optional[str]:
+    """Set the catalog vehicle by typing the VIN into the picker's VIN field
+    and pressing Enter. Returns None on success-ish (caller verifies the pill),
+    or a short reason string when the VIN path isn't usable."""
+    vin = (getattr(vehicle, "vin", "") or "").strip()
+    if len(vin) < 11:
+        return "no_vin"
+    try:
+        # The VIN field lives inside the picker; open it only if not already shown.
+        if await page.locator(SEL_VIN_INPUT).count() == 0:
+            try:
+                await page.locator(SEL_VEHICLE_PILL).first.click(timeout=5000)
+                await asyncio.sleep(2)
+            except Exception:
+                pass
+        vin_in = page.locator(SEL_VIN_INPUT).first
+        if await vin_in.count() == 0:
+            return "no_vin_field"
+        await vin_in.scroll_into_view_if_needed(timeout=3000)
+        await vin_in.fill("")
+        await vin_in.fill(vin)
+        await vin_in.press("Enter")
+        await asyncio.sleep(3.5)
+        return None
+    except Exception as e:
+        logger.warning(f"[{PORTAL_NAME}] VIN set failed: {e}")
+        return f"vin_set_error :: {type(e).__name__}: {str(e)[:80]}"
+
+
 async def _ensure_vehicle(page, vehicle) -> Optional[str]:
     """Make sure Worldpac's current vehicle matches `vehicle`. Returns None
     on success or a categorised error string."""
@@ -353,6 +388,26 @@ async def _ensure_vehicle(page, vehicle) -> Optional[str]:
         await asyncio.sleep(2)
     except Exception:
         pass
+
+    # PRIMARY: set by VIN (reliable). A VIN uniquely identifies the vehicle, so
+    # the resulting pill only needs to agree on YEAR + MAKE — we must NOT apply
+    # the full model check here, because NHTSA decodes the model as a class
+    # ("C-Class") while Worldpac's pill shows the trim ("C300"), so
+    # _vehicle_matches would wrongly reject a correct VIN result.
+    vin_err = await _set_vehicle_by_vin(page, vehicle)
+    if vin_err is None:
+        new = await _read_current_vehicle(page)
+        if (new and str(vehicle.year) in new
+                and _normalize_make(vehicle.make) in _normalize_make(new)):
+            logger.info(f"[{PORTAL_NAME}] vehicle switched via VIN → {new!r}")
+            return None
+        logger.info(f"[{PORTAL_NAME}] VIN set didn't match (got {new!r}); "
+                    f"falling back to history / Y-M-M")
+    else:
+        logger.info(f"[{PORTAL_NAME}] VIN path unavailable ({vin_err}); "
+                    f"falling back to history / Y-M-M")
+
+    # FALLBACK: open the picker and use history match or the Year/Make/Model drill.
     try:
         await page.locator(SEL_VEHICLE_PILL).first.click(timeout=5000)
     except Exception as e:

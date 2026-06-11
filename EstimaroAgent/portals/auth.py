@@ -64,6 +64,19 @@ PORTALS: dict[str, dict] = {
         "url": "https://speeddial.worldpac.com/#/login",
         "match": "worldpac.com",
         "user": "WORLDPAC_USERNAME", "passwd": "WORLDPAC_PASSWORD",
+        # SpeedDIAL 2.0's "password" field is <input type="text" name="password">
+        # (it has a show/hide eye, so it's NOT type=password). The generic
+        # password-field heuristic therefore finds NO form and wrongly reports
+        # "already logged in", so auto-login never runs. Authoritative signals:
+        #   * logged out  -> the SPA route is "#/login"
+        #   * logged in   -> URL no longer contains "/login"
+        # and pin the username/password fields by name.
+        "logged_out_url_marker": "/login",
+        "logged_in_url_excludes": "/login",
+        "fields": {
+            "user":   "input[name='username']",
+            "passwd": "input[name='password']",
+        },
     },
     "tekmetric": {
         # Hit the admin shell so the login redirect fires when the session is
@@ -195,11 +208,22 @@ async def _do_login(page: Page, cfg: dict) -> bool:
                      f"— add them to .env on the VPS")
         return False
 
-    pw_field = await _password_field(page)
-    if pw_field is None:
-        return True  # already logged in
-
     fields = cfg.get("fields") or {}
+    # Detect whether a login form is present. Prefer the portal's explicit
+    # password selector — some forms (Worldpac) use <input type="text"
+    # name="password">, which the generic type=password probe never sees, so
+    # the old `pw_field is None -> already logged in` bail skipped login.
+    pw_field = await _password_field(page)
+    explicit_pw_sel = fields.get("passwd")
+    if explicit_pw_sel:
+        try:
+            form_present = await page.locator(explicit_pw_sel).count() > 0
+        except Exception:
+            form_present = pw_field is not None
+    else:
+        form_present = pw_field is not None
+    if not form_present:
+        return True  # already logged in
     # React-controlled MUI forms (Tekmetric) keep the submit button
     # disabled until the input's React state matches what's in the DOM.
     # Playwright's .fill() only updates the DOM. When `react_form` is set,

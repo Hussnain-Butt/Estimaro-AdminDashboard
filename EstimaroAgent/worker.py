@@ -854,6 +854,114 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
     }
 
 
+def _build_historical_result_payload(job: dict, vehicle, match: dict,
+                                     elapsed: float, recalls: list | None = None) -> dict:
+    """Phase C — shape a JobResult from a matched HISTORICAL RO.
+
+    The labor lines, part numbers and prices come straight from an estimate
+    Sergio built and the customer PAID, so it's ground-truth for this shop.
+    Flagged `source: "historical"` with the RO number + match confidence so the
+    FE can render a "Matched from your RO #X" banner instead of the live-build
+    flow. No ALLDATA / vendor calls run on this path — that's the whole point
+    (instant result vs the 4-7 min pipeline). Prices are the historical billed
+    prices; a future enhancement can refresh them live from the vendors.
+    """
+    default_rate = float(job.get("laborRate") or match.get("labor_rate") or 150.0)
+    tax_rate = float(job.get("taxRate") or 0.0925)
+    ro = match["ro_number"]
+
+    labor_lines: list[dict] = []
+    parts_lines: list[dict] = []
+    for jb in match.get("jobs") or []:
+        job_name = jb.get("name") or ""
+        for lab in jb.get("labor") or []:
+            hrs = lab.get("hours")
+            rate = lab.get("rate") or default_rate
+            total = lab.get("total")
+            if total is None and hrs is not None:
+                total = round(float(hrs) * float(rate), 2)
+            labor_lines.append({
+                "description": lab.get("description") or job_name,
+                "hours": hrs, "rate": rate, "total": total or 0.0,
+                "source": f"Historical RO #{ro}", "skill": None,
+                "extractionScreenshot": None,
+            })
+        for pt in jb.get("parts") or []:
+            qty = int(pt.get("qty") or 1)
+            cost = pt.get("cost")
+            total = pt.get("total")
+            if total is None and cost is not None:
+                total = round(float(cost) * qty, 2)
+            parts_lines.append({
+                "description": pt.get("description") or "",
+                "partNumber": pt.get("part_number"),
+                "quantity": qty,
+                "cost": cost if cost is not None else (pt.get("retail") or 0.0),
+                "markup": 0.0,
+                "total": total if total is not None else 0.0,
+                "vendor": pt.get("vendor") or "Historical",
+                "source": f"Historical RO #{ro}",
+            })
+
+    labor_total = round(float(match.get("labor_total") or
+                              sum(l["total"] for l in labor_lines)), 2)
+    parts_total = round(float(match.get("parts_total") or
+                              sum(p["total"] for p in parts_lines)), 2)
+    subtotal = round(labor_total + parts_total, 2)
+    stored_total = match.get("total")
+    if stored_total and float(stored_total) > subtotal:
+        grand_total = round(float(stored_total), 2)
+        tax_amount = round(grand_total - subtotal, 2)
+    else:
+        tax_amount = round(subtotal * tax_rate, 2)
+        grand_total = round(subtotal + tax_amount, 2)
+
+    conf = float(match.get("confidence") or 0.0)
+    tier = "auto" if conf >= 0.85 else "advisor_review"
+    return {
+        "vehicleInfo": {
+            "year": vehicle.year, "make": vehicle.make, "model": vehicle.model,
+            "trim": vehicle.trim, "engine": vehicle.engine,
+        },
+        # Banner data — the FE shows "✨ Built from your historical RO #X".
+        "source": "historical",
+        "historicalMatch": {
+            "roNumber": ro,
+            "matchedVehicle": match.get("vehicle"),
+            "datePosted": match.get("date_posted"),
+            "odometer": match.get("odometer"),
+            "confidence": round(conf, 3),
+            "vehicleScore": match.get("vehicle_score"),
+            "serviceScore": match.get("service_score"),
+            "services": match.get("service_names"),
+        },
+        "laborItems": labor_lines,
+        "partsItems": parts_lines,
+        "breakdown": {
+            "laborTotal": labor_total, "partsTotal": parts_total,
+            "subtotal": subtotal, "taxAmount": tax_amount, "total": grand_total,
+        },
+        "elapsed_sec": round(elapsed, 1),
+        "vendorQuotes": [],
+        "vendorComparison": {},
+        "consensus": {},
+        "confidence": {
+            "score": round(conf, 3),
+            "tier": tier,
+            "label": f"Historical Match · RO #{ro} · {round(conf * 100)}%",
+            "breakdown": {
+                "vehicle_match": match.get("vehicle_score"),
+                "service_match": match.get("service_score"),
+                "sourcing_note": "historical_ro",
+            },
+        },
+        "recalls": list(recalls or []),
+        "suggestedAddOns": [],
+        "serviceSkeleton": None,
+        "repairProcedure": {"items": [], "scan_status": "skipped_historical"},
+    }
+
+
 def _build_skeleton_coverage(
     skeleton: dict | None,
     parts_lines: list[dict],
@@ -1017,6 +1125,38 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
             )
             logger.error(f"[{job_id}] {err}")
             await _post_failure(client, job_id, err)
+            return
+
+        # 2d. Phase C — HISTORICAL RO corpus check. Before spending 4-7 min on
+        # ALLDATA + vendors, see if Sergio already built (and got paid for) an
+        # estimate on this vehicle + service. A confident match returns the
+        # shop's own past work INSTANTLY (< 1s) with a "Matched from your RO #X"
+        # banner. Conservative — only fires on a strong (vehicle × service)
+        # score; otherwise we fall straight through to the live pipeline below.
+        try:
+            from services.historical_corpus import match_job
+            hist = match_job(vehicle.year, vehicle.make, vehicle.model, complaint)
+        except Exception as e:
+            logger.warning(f"[{job_id}] corpus match error (non-fatal): {e}")
+            hist = None
+        if hist:
+            logger.info(
+                f"[{job_id}] HISTORICAL MATCH RO#{hist['ro_number']} "
+                f"conf={hist['confidence']} (veh={hist['vehicle_score']} "
+                f"svc={hist['service_score']}) — instant result, skipping ALLDATA"
+            )
+            await _post_progress(
+                client, job_id,
+                f"Matched your historical RO #{hist['ro_number']}", 90)
+            try:
+                recalls = await _get_recalls(vehicle.make, vehicle.model, vehicle.year)
+            except Exception:
+                recalls = []
+            result = _build_historical_result_payload(
+                job, vehicle, hist, time.time() - t0, recalls=recalls)
+            await _post_result(client, job_id, result)
+            logger.info(f"[{job_id}] DONE (historical RO#{hist['ro_number']}) "
+                        f"in {time.time() - t0:.1f}s")
             return
 
         # 3. Ensure the ALLDATA session is alive (transparent auto-relogin)
@@ -1223,6 +1363,20 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
             f"parts={len(result['partsItems'])}  total=${result['breakdown']['total']:.2f}  "
             f"{elapsed:.1f}s"
         )
+
+        # Phase E — auto-ingest this freshly-built estimate into the historical
+        # corpus so a repeat (vehicle, service) query matches it instantly next
+        # time (continuous learning). Non-fatal — a corpus write must never fail
+        # a job that already posted its result. Only runs on the live-build
+        # path; a historical match returned earlier and is never re-ingested.
+        try:
+            from services.historical_corpus import ingest_worker_result
+            est_key = ingest_worker_result(
+                vin, vehicle.year, vehicle.make, vehicle.model, complaint, result)
+            if est_key:
+                logger.info(f"[{job_id}] auto-ingested estimate into corpus as {est_key}")
+        except Exception as e:
+            logger.warning(f"[{job_id}] corpus auto-ingest failed (non-fatal): {e}")
 
     except Exception as e:
         import traceback

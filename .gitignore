@@ -23,3 +23,8 @@ Estimaro-Credentials-Master.xlsx
 
 # Solution docs are tracked separately
 # Estimaro-Solution-Proposal.pdf  (keep tracked)
+
+# session-local — never commit (passwords / customer PII / DBs)
+.handoff_context.md
+EstimaroAgent/data/
+*.db

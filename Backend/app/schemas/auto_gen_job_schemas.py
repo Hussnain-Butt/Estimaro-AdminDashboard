@@ -60,6 +60,9 @@ class PartLine(BaseModel):
     auto_added: bool = False
     auto_added_kind: Optional[str] = None      # "supply" | "inspection"
     auto_added_reason: Optional[str] = None
+    # Phase C — set to "Historical RO #<n>" when the line came from a matched
+    # past estimate rather than a live ALLDATA/vendor lookup.
+    source: Optional[str] = None
 
 
 class VehicleInfo(BaseModel):
@@ -96,10 +99,19 @@ class ConfidenceSummary(BaseModel):
     score: float = 0.0
     tier: str = "manual_review"
     breakdown: ConfidenceBreakdown = Field(default_factory=ConfidenceBreakdown)
+    # Optional pre-formatted badge label, e.g. "Historical Match · RO #49442 · 88%".
+    label: Optional[str] = None
 
 
 class JobResult(BaseModel):
     vehicleInfo: VehicleInfo = Field(default_factory=VehicleInfo)
+    # Phase C — historical RO mining. When the worker answered this job from
+    # Sergio's own past paid estimate (instead of the live ALLDATA + vendor
+    # pipeline), `source` is "historical" and `historicalMatch` carries the
+    # matched RO number, confidence and matched-vehicle so the FE shows a
+    # "Built from your RO #X" banner. Both None on the normal live path.
+    source: Optional[str] = None
+    historicalMatch: Optional[Dict[str, Any]] = None
     # ALLDATA's banner often shows a more specific sub-model than NHTSA
     # decoded (NHTSA: "VOLVO V70"; ALLDATA: "Volvo XC70 L5-2.4L Turbo"). Same
     # chassis, different label. Surfaced so the UI can show both and the

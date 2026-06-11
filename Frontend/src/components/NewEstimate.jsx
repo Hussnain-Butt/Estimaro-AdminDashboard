@@ -701,6 +701,31 @@ const PreviewStep = ({ data, calculatedTotals, onSendApproval, isSending }) => {
         </div>
       )}
 
+      {data.source === 'historical' && data.historicalMatch && (
+        <div className="bg-success/10 p-4 rounded-lg border border-success/40">
+          <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+            <h3 className="font-semibold text-success">
+              ✨ Built from your historical RO #{data.historicalMatch.roNumber}
+            </h3>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-success/40 bg-success/15 text-success text-xs font-medium">
+              {data.confidence?.label ||
+                `Historical Match · ${Math.round((data.historicalMatch.confidence || 0) * 100)}%`}
+            </span>
+          </div>
+          <p className="text-xs text-text-secondary">
+            Matched from {data.historicalMatch.matchedVehicle}
+            {data.historicalMatch.datePosted ? ` · posted ${data.historicalMatch.datePosted}` : ''}.
+            {' '}Labor &amp; parts come from this shop's own past paid estimate —
+            prices may need a live refresh.
+          </p>
+          {data.historicalMatch.services && (
+            <p className="text-[10px] text-text-secondary/70 mt-1 truncate">
+              Services: {data.historicalMatch.services}
+            </p>
+          )}
+        </div>
+      )}
+
       {Array.isArray(data.recalls) && data.recalls.length > 0 && (
         <div className="bg-background p-4 rounded-lg border border-warning/40">
           <div className="flex items-center justify-between mb-2">
@@ -1148,6 +1173,11 @@ const NewEstimate = () => {
     // matched, and so the advisor sees ALLDATA's exact procedure-language
     // hits (with the context phrase) rather than just the merged coverage.
     const repairProcedure = r.repairProcedure || null
+    // Phase C/D — historical RO match metadata, for the "Built from your
+    // RO #X" banner. Null on the normal live-build path.
+    const source = r.source || null
+    const historicalMatch = r.historicalMatch || null
+    const confidence = r.confidence || null
 
     const mergedData = {
       vin: formData.vin,
@@ -1164,6 +1194,9 @@ const NewEstimate = () => {
       suggestedAddOns,
       serviceSkeleton,
       repairProcedure,
+      source,
+      historicalMatch,
+      confidence,
     }
 
     setFormData((prev) => ({
@@ -1176,6 +1209,9 @@ const NewEstimate = () => {
       suggestedAddOns,
       serviceSkeleton,
       repairProcedure,
+      source,
+      historicalMatch,
+      confidence,
     }))
 
     const bd = r.breakdown || {}

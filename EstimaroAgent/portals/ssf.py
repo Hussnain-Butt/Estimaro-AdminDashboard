@@ -32,6 +32,16 @@ SEL_PT_DROPDOWN_BTN = "#partTypeDropdownFromKeywordId"
 _QUALIFIER_WORDS = {"front", "rear", "left", "right", "lh", "rh",
                     "driver", "passenger", "side", "upper", "lower"}
 
+# A keyword like "oil filter" maps to several SSF part types, MOST of which are
+# tools/accessories ("Engine Oil Filter Wrench Set", "Crusher Stand", "Drain
+# Tool") rather than the actual replacement part ("Engine Oil Filter Kit").
+# Plain word-overlap scores them all equally, so we penalise tool/accessory
+# words to let the real part win. NB: "kit"/"set" are NOT here — they name real
+# parts too (e.g. "Brake Pad Set").
+_TOOL_WORDS = {"tool", "tools", "wrench", "crusher", "stand", "socket",
+               "pliers", "clamp", "remover", "installer", "gauge", "drain",
+               "housing", "adapter", "puller", "holder"}
+
 
 def _normalize_keyword(part_type: str) -> str:
     tokens = [t for t in part_type.lower().split() if t not in _QUALIFIER_WORDS]
@@ -50,9 +60,21 @@ been submitted. The page should be showing the SEARCH RESULTS LIST for
 YOUR ONLY JOB: read the visible results and emit the extraction JSON.{hint}
 
 WHAT YOU MAY SEE:
-  A. A results table / list of part rows — each row has brand/line, part
-     number, description, price, and an availability / stock indicator.
-     EXTRACT these rows (up to 6).
+  A. A results list grouped by part number. Each PART NUMBER block shows a
+     "POSITION (QTY)" line (e.g. "Front (1)" or "Rear (1)") and then one row
+     PER BRAND, each with: brand/MFG, RETAIL price, YOUR PRICE (the buy price
+     we want), and TWO stock columns — "STOCK IN <branch>" (an on-hand number
+     or "Out") and "ALTERNATE Locations" ("In Stock" / "Out").
+     EXTRACT one result per brand row (up to 6), and:
+       - price = the YOUR PRICE value (NOT retail).
+       - in_stock = true if EITHER the branch column shows a number OR the
+         alternate column says "In Stock"; false only if BOTH say "Out".
+       - availability = a clean summary like "Oakland: 2, alt: In Stock"
+         or "Oakland: Out, alt: Out" — do not mash the two columns together.
+       - Include the POSITION (Front/Rear) in the description if shown.
+     FILTER to the position the request asks for: the request is
+     "{part_type}". If it says "front", keep only Front rows; if "rear",
+     keep only Rear rows; if neither, keep all. Skip the opposite position.
   B. A "Select Part Type" or "Part Type" dropdown asking you to refine the
      keyword (SSF sometimes maps a keyword to several part types — e.g.
      "brake pads" → "Brake Pad Set (Front)", "Brake Pad Set (Rear)"). If so,
@@ -87,32 +109,6 @@ CRITICAL RULES:
   * Capture up to the first 6 result rows.
   * Only use action="ask_human" if you cannot reach a results list after
     genuinely trying both (B) and (C).
-
-OUTPUT: action="extract" with value as a JSON STRING of EXACTLY this schema:
-  {{
-    "vehicle": "<vehicle text shown>",
-    "part_type": "{part_type}",
-    "results": [
-      {{
-        "brand": "<brand / line>",
-        "part_number": "<part number>",
-        "description": "<row description>",
-        "price": <number or null>,
-        "availability": "<raw stock text>",
-        "in_stock": <true|false|null>
-      }}
-    ]
-  }}
-Then action="done".
-
-CRITICAL RULES:
-  * Report only rows actually visible in the results — never invent prices.
-  * price = numeric your/buy price if shown, else null.
-  * in_stock = true if availability clearly indicates stock on hand, false if out
-    of stock / special order, null if unclear.
-  * Capture up to the first 6 result rows.
-  * Only use action="ask_human" if you cannot resolve the vehicle or reach the
-    part category after genuinely trying.
 """
 
 
@@ -124,6 +120,13 @@ async def _prep_search(vehicle, part_type: str) -> Optional[str]:
     try:
         async with ChromeDebugBrowser() as browser:
             page = await browser.open_or_focus(PORTAL_URL, url_match="ssfautoparts")
+            # Force a CLEAN Catalog page. SSF keeps the previous lookup's results
+            # AND its part-type filter on screen; without a reset, a new keyword
+            # search bleeds the prior part's rows into this one (observed: an
+            # "oil filter" search returning the prior "brake pads" results).
+            # SSF auth is cookie-based (unlike Tekmetric's in-memory session), so
+            # a reload is safe and re-validated by ensure_logged_in() upstream.
+            await page.goto(PORTAL_URL, wait_until="domcontentloaded")
             await page.wait_for_selector(SEL_VIN_INPUT, timeout=15_000)
 
             current_vin = (await page.input_value(SEL_VIN_INPUT)).strip().upper()
@@ -146,18 +149,26 @@ async def _prep_search(vehicle, part_type: str) -> Optional[str]:
             if "no part type found" in body.lower():
                 return f"no_part_type :: SSF keyword vocabulary has no match for {keyword!r}"
 
-            # If the part-type dropdown still says "Part Type" (unselected) and
-            # no prices are visible, multiple part types matched the keyword —
-            # pick the option whose text best matches the requested part_type.
+            # If the part-type dropdown still reads "Part Type" (unselected),
+            # SSF has NOT resolved the keyword to a single part type yet — pick
+            # the option best matching the request. Do NOT gate on "are prices
+            # visible": STALE results from a previous lookup (a different part)
+            # routinely stay on screen and would wrongly suppress the pick. The
+            # unselected dropdown is the authoritative "not done yet" signal.
             btn_text = await page.evaluate(
                 f"() => (document.querySelector('{SEL_PT_DROPDOWN_BTN}')?.innerText || '').trim()"
             )
-            has_prices = "$" in body and any(c.isdigit() for c in body)
-            if btn_text.lower() == "part type" and not has_prices:
+            if btn_text.lower() == "part type":
                 picked = await _pick_part_type(page, part_type)
                 if picked is None:
-                    return "part_type_pick_failed :: dropdown opened but no option matched"
-                await asyncio.sleep(5)
+                    # Don't abort: hand the unselected dropdown to the vision
+                    # agent (its prompt case B picks from the option list). A
+                    # noisy keyword that maps only to tools lands here.
+                    logger.info(f"[{PORTAL_NAME}] no deterministic part-type match "
+                                f"for {part_type!r}; leaving dropdown for the agent")
+                else:
+                    logger.info(f"[{PORTAL_NAME}] picked part type {picked!r} for {part_type!r}")
+                    await asyncio.sleep(5)
     except Exception as e:
         logger.error(f"[{PORTAL_NAME}] prep_search failed: {type(e).__name__}: {e}")
         return f"prep_failed :: {type(e).__name__}: {str(e)[:160]}"
@@ -179,33 +190,35 @@ async def _pick_part_type(page, requested: str) -> Optional[str]:
     prefer_rear = "rear" in req_lower
     req_words = [w for w in req_lower.split() if w not in _QUALIFIER_WORDS]
 
+    # Target SSF's REAL part-type option elements: `<li name="partType"
+    # ng-click="ctrl.setPartType(...)">`. Clicking one fires the Angular handler
+    # that loads results. The previous generic a/li/button/div+y>160 heuristic
+    # could click look-alike text (a heading, the keyword echo) that has no
+    # ng-click — the dropdown "picked" but no results ever loaded.
     picked = await page.evaluate(
-        """([reqWords, preferFront, preferRear]) => {
-  const cand = [];
-  document.querySelectorAll('a,li,button,div').forEach(el => {
-    const r = el.getBoundingClientRect();
-    if (r.width < 5 || r.height < 5 || r.height > 60) return;
-    const t = (el.innerText || '').trim();
-    if (!t || t.length > 80) return;
-    // dropdown options live below the keyword button (y > 160 in our viewport)
-    if (r.y < 160) return;
-    cand.push({el, t, y: r.y});
-  });
-  if (!cand.length) return null;
-  const score = c => {
-    const tl = c.t.toLowerCase();
+        """([reqWords, toolWords, preferFront, preferRear]) => {
+  // Query ALL options (no visibility filter): they live in the DOM even when
+  // the dropdown is visually collapsed (0-size), and el.click() fires the
+  // Angular ng-click handler regardless of paint state.
+  const opts = Array.from(document.querySelectorAll('li[name="partType"]'));
+  if (!opts.length) return null;
+  const score = el => {
+    const tl = (el.innerText || '').toLowerCase();
+    const words = tl.split(/[^a-z0-9]+/).filter(Boolean);
     let s = reqWords.reduce((acc, w) => acc + (tl.includes(w) ? 1 : 0), 0);
-    if (preferFront && /front/i.test(c.t)) s += 0.5;
-    if (preferRear && /rear/i.test(c.t)) s += 0.5;
+    s -= words.reduce((acc, w) => acc + (toolWords.includes(w) ? 1 : 0), 0);
+    if (preferFront && /front/i.test(tl)) s += 0.5;
+    if (preferRear && /rear/i.test(tl)) s += 0.5;
     return s;
   };
-  cand.sort((a, b) => score(b) - score(a) || a.y - b.y);
-  const best = cand[0];
-  if (score(best) === 0) return null;
-  best.el.click();
-  return best.t;
+  opts.sort((a, b) => score(b) - score(a));
+  const best = opts[0];
+  if (score(best) <= 0) return null;
+  const txt = (best.innerText || '').trim().replace(/\\s+/g, ' ');
+  best.click();
+  return txt;
 }""",
-        [req_words, prefer_front, prefer_rear],
+        [req_words, sorted(_TOOL_WORDS), prefer_front, prefer_rear],
     )
     return picked
 
