@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { gsap } from 'gsap'
 import { ExclamationCircleIcon, TrashIcon, PlusIcon, SparklesIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline'
-import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, pushToTekmetric, pollTekmetricJob, generateApprovalLink, createDraftEstimate, updateEstimate } from '../services/api'
+import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, getAutoGenJob, pushToTekmetric, pollTekmetricJob, generateApprovalLink, createDraftEstimate, updateEstimate } from '../services/api'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import VendorCompareStep from './estimate-steps/VendorCompareStep'
@@ -1072,6 +1072,21 @@ const NewEstimate = () => {
     }
 
     const jobId = submit.data.job_id
+    // Persist the active job + intake so a page refresh can RESUME polling or
+    // restore the finished result instead of dropping a 10-minute job on the
+    // floor (the backend keeps the result; only the FE was forgetting it).
+    const intakeSnapshot = {
+      vin: formData.vin,
+      serviceRequest: formData.serviceRequest,
+      customerName: formData.customerName,
+      customerEmail: formData.customerEmail,
+      customerPhone: formData.customerPhone,
+      odometer: formData.odometer,
+    }
+    try {
+      localStorage.setItem('estimaro_active_job',
+        JSON.stringify({ jobId, intake: intakeSnapshot }))
+    } catch { /* storage full/blocked — resume just won't work */ }
     setAgentProgress({
       jobId,
       status: submit.data.status,
@@ -1079,10 +1094,12 @@ const NewEstimate = () => {
       progress_pct: submit.data.progress_pct,
     })
 
-    // 2. Poll until terminal
+    // 2. Poll until terminal. 25 min — a fresh ALLDATA run + vendor agents can
+    // exceed the old 10-min cap (observed 12 min), which left the progress
+    // card stuck on RUNNING while the job actually completed.
     const poll = await pollAutoGenJob(jobId, {
       intervalMs: 2500,
-      timeoutMs: 600000,
+      timeoutMs: 1500000,
       onProgress: (job) =>
         setAgentProgress({
           jobId: job.job_id,
@@ -1099,13 +1116,23 @@ const NewEstimate = () => {
     }
 
     const job = poll.data
+    try { localStorage.removeItem('estimaro_active_job') } catch { /* noop */ }
 
     if (job.status === 'failed') {
       toast.error(job.error || 'Agent failed to complete the estimate', 'Generation Failed')
       setIsGenerating(false)
+      setAgentProgress(null)
       return
     }
 
+    await applyJobResult(job, intakeSnapshot)
+  }
+
+  // Populate all estimate state from a completed auto-gen job. Shared by the
+  // live submit path and the refresh-recovery path (restoring a job whose
+  // result the backend held while the page was reloaded).
+  const applyJobResult = async (job, intake) => {
+    const iv = intake || formData
     // 3. Success — populate state from the agent result
     const r = job.result || {}
     const veh = r.vehicleInfo || {}
@@ -1186,12 +1213,12 @@ const NewEstimate = () => {
     const confidence = r.confidence || null
 
     const mergedData = {
-      vin: formData.vin,
-      serviceRequest: formData.serviceRequest,
-      customerName: formData.customerName,
-      customerEmail: formData.customerEmail,
-      customerPhone: formData.customerPhone,
-      odometer: formData.odometer,
+      vin: iv.vin,
+      serviceRequest: iv.serviceRequest,
+      customerName: iv.customerName,
+      customerEmail: iv.customerEmail,
+      customerPhone: iv.customerPhone,
+      odometer: iv.odometer,
       vehicleInfo: veh,
       alldataMatchedVehicle,
       laborItems,
@@ -1207,6 +1234,14 @@ const NewEstimate = () => {
 
     setFormData((prev) => ({
       ...prev,
+      // Re-assert the intake fields too: on the refresh-recovery path the
+      // form state starts empty, so the result must bring its intake along.
+      vin: iv.vin ?? prev.vin,
+      serviceRequest: iv.serviceRequest ?? prev.serviceRequest,
+      customerName: iv.customerName ?? prev.customerName,
+      customerEmail: iv.customerEmail ?? prev.customerEmail,
+      customerPhone: iv.customerPhone ?? prev.customerPhone,
+      odometer: iv.odometer ?? prev.odometer,
       vehicleInfo: veh,
       alldataMatchedVehicle,
       laborItems,
@@ -1669,6 +1704,63 @@ const NewEstimate = () => {
   useEffect(() => {
     animateStep()
   }, [currentStep])
+
+  // Refresh recovery — if a generation job was in flight (or finished) when
+  // the page reloaded, pick it back up from localStorage instead of showing
+  // an empty form while the backend silently holds a completed estimate.
+  useEffect(() => {
+    let saved
+    try { saved = localStorage.getItem('estimaro_active_job') } catch { return }
+    if (!saved) return
+    let parsed
+    try { parsed = JSON.parse(saved) } catch {
+      try { localStorage.removeItem('estimaro_active_job') } catch { /* noop */ }
+      return
+    }
+    const { jobId, intake } = parsed || {}
+    if (!jobId) return
+    ;(async () => {
+      const first = await getAutoGenJob(jobId)
+      if (!first.success) return // backend unreachable — leave the key for next load
+      const job = first.data
+      if (job.status === 'failed') {
+        try { localStorage.removeItem('estimaro_active_job') } catch { /* noop */ }
+        toast.error(job.error || 'Your last generation failed', 'Previous job')
+        return
+      }
+      if (job.status === 'success') {
+        try { localStorage.removeItem('estimaro_active_job') } catch { /* noop */ }
+        await applyJobResult(job, intake)
+        toast.success('Recovered your completed estimate from the last session', 'Restored')
+        return
+      }
+      // Still running — restore the intake form and resume polling.
+      if (intake) setFormData((prev) => ({ ...prev, ...intake }))
+      setIsGenerating(true)
+      setAgentProgress({ jobId, status: job.status, progress: job.progress,
+                         progress_pct: job.progress_pct })
+      const poll = await pollAutoGenJob(jobId, {
+        intervalMs: 2500,
+        timeoutMs: 1500000,
+        onProgress: (j) => setAgentProgress({
+          jobId: j.job_id, status: j.status,
+          progress: j.progress, progress_pct: j.progress_pct,
+        }),
+      })
+      try { localStorage.removeItem('estimaro_active_job') } catch { /* noop */ }
+      if (poll.success && poll.data.status === 'success') {
+        await applyJobResult(poll.data, intake)
+      } else {
+        setIsGenerating(false)
+        setAgentProgress(null)
+        toast.error(
+          poll.success ? (poll.data.error || 'Generation failed') : (poll.error || 'Polling failed'),
+          'Previous job',
+        )
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const renderStepContent = () => {
     switch (currentStep) {
