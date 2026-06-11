@@ -907,10 +907,16 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
         job_name = jb.get("name") or ""
         for lab in jb.get("labor") or []:
             hrs = lab.get("hours")
-            rate = lab.get("rate") or default_rate
-            total = lab.get("total")
-            if total is None and hrs is not None:
-                total = round(float(hrs) * float(rate), 2)
+            # Use the shop's CURRENT labor rate × the historical HOURS. The hours
+            # are the transferable signal (Sergio's labor time for the job); the
+            # old RO's rate may be years stale, which made the displayed total
+            # disagree with the "@ $150/h" header. If hours are missing, keep the
+            # historically-billed total as a fallback.
+            rate = default_rate
+            if hrs is not None:
+                total = round(float(hrs) * rate, 2)
+            else:
+                total = lab.get("total")
             labor_lines.append({
                 "description": _clean_hist_labor_desc(lab.get("description") or job_name),
                 "hours": hrs, "rate": rate, "total": total or 0.0,

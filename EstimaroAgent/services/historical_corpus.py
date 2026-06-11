@@ -341,6 +341,9 @@ _COMPLAINT_STOP = {
     "says", "i", "when", "has", "have", "had", "this", "that", "at", "be",
     "would", "like", "get", "getting", "do", "done", "doing", "want", "wants",
     "client", "their", "there", "its", "are", "was", "were", "im", "id",
+    # 'service'/'repair' are too generic — nearly every job name contains one,
+    # so they'd keep unrelated "oil service"/"ac repair" lines in a brake job.
+    "service", "repair", "replace", "remove", "check", "inspect", "system",
 }
 # Light stemming so a complaint "brakes" matches a job "Brake Pad Set".
 _SVC_SYNONYMS = {
@@ -356,9 +359,14 @@ _SVC_SYNONYMS = {
 # even if it doesn't match the complaint directly — they accompany most jobs
 # (a brake job's cleaner, a service's gasket). Battery/bulb/tire are NOT here,
 # so they get filtered out of an unrelated request.
-_SUPPLY_WORDS = {"cleaner", "kit", "fluid", "grease", "lubricant", "lube",
-                 "hardware", "clip", "shim", "sealer", "seal", "gasket",
-                 "washer", "additive"}
+# NOTE: 'kit' is deliberately NOT here — it names real parts ("Oil Filter Kit",
+# "Timing Kit") and would leak an oil filter into a brake job. 'cleaning' /
+# 'lubrication' keep the shop's cleaning-kit supply without that side effect.
+_SUPPLY_WORDS = {"cleaner", "cleaning", "fluid", "grease", "lubricant", "lube",
+                 "lubrication", "hardware", "clip", "shim", "sealer", "seal",
+                 "gasket", "washer", "additive"}
+# Largest year gap allowed between the query vehicle and a historical RO.
+_MAX_YEAR_GAP = 8
 # Position qualifiers — disambiguate (front vs rear pads) but carry no service
 # meaning on their own, so a line matching ONLY a qualifier isn't relevant.
 _QUALIFIER_WORDS = {"front", "rear", "left", "right", "upper", "lower",
@@ -415,6 +423,12 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
     best_sort = -1.0
     for r in rows:
         if _norm(r["make"]) != make_n and make_n not in _norm(r["make"]):
+            continue
+        # Hard year-gap cap: a 2023 car must NOT match a 1999 one of the same
+        # nameplate — different generation, different part numbers entirely.
+        # 8 years keeps same/adjacent generations (where parts still apply) and
+        # rejects cross-generation matches outright.
+        if year and r["year"] and abs(int(year) - int(r["year"])) > _MAX_YEAR_GAP:
             continue
         # Vehicle score: model-family overlap + year proximity.
         r_model = (r["model"] or "").lower()
