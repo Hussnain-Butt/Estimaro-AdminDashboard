@@ -934,6 +934,12 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
             "vehicleScore": match.get("vehicle_score"),
             "serviceScore": match.get("service_score"),
             "services": match.get("service_names"),
+            # When the source RO bundled extra services, we kept only the jobs
+            # relevant to this request — surface that so the advisor knows the
+            # estimate is a filtered subset of RO #X, not the full visit.
+            "filtered": match.get("filtered", False),
+            "jobsUsed": match.get("jobs_used"),
+            "jobsInRO": match.get("jobs_in_ro"),
         },
         "laborItems": labor_lines,
         "partsItems": parts_lines,

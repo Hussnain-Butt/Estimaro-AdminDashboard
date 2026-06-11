@@ -391,7 +391,8 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
     q_svc = _svc_words(complaint)
 
     best = None
-    best_score = 0.0
+    best_base = 0.0
+    best_sort = -1.0
     for r in rows:
         if _norm(r["make"]) != make_n and make_n not in _norm(r["make"]):
             continue
@@ -413,29 +414,69 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
         names = _svc_words(r["service_names"] or "")
         svc_score = (len(q_svc & names) / len(q_svc)) if q_svc else 0.0
 
-        score = round(veh_score * svc_score, 4)
-        if score > best_score:
-            best_score, best = score, (r, veh_score, svc_score)
+        base = round(veh_score * svc_score, 4)
+        if base < threshold:
+            continue
+        # Tiebreaker: when scores tie, prefer the MORE FOCUSED RO (fewer jobs) —
+        # a 23-job Sprinter visit that happens to include brakes is a worse
+        # source for a "front brake pads" query than a dedicated brake RO. Cheap
+        # (no job-JSON parse): count the pipe-separated service names.
+        n_services = (r["service_names"] or "").count("|")
+        sort_score = base - 0.0005 * n_services
+        if sort_score > best_sort:
+            best_sort, best_base, best = sort_score, base, (r, veh_score, svc_score)
 
-    if not best or best_score < threshold:
+    if not best:
         return None
     r, veh_score, svc_score = best
     try:
-        jobs = json.loads(r["jobs_json"]) if r["jobs_json"] else []
+        all_jobs = json.loads(r["jobs_json"]) if r["jobs_json"] else []
     except json.JSONDecodeError:
-        jobs = []
+        all_jobs = []
+
+    # JOB-LEVEL FILTER — return only the jobs relevant to the request. The RO
+    # may bundle many services (oil, brakes, suspension…) from one visit; a
+    # "front brake pads" query must show ONLY the brake jobs, not the whole
+    # $11k visit. A job is relevant if its name or any labor line shares a
+    # service word with the complaint.
+    def _job_relevant(job: dict) -> bool:
+        words = _svc_words(job.get("name") or "")
+        for lab in job.get("labor") or []:
+            words |= _svc_words(lab.get("description") or "")
+        return bool(words & q_svc)
+
+    relevant = [j for j in all_jobs if _job_relevant(j)] if q_svc else all_jobs
+    filtered = bool(relevant) and len(relevant) < len(all_jobs)
+    used_jobs = relevant if relevant else all_jobs
+
+    if filtered:
+        # Recompute from the kept jobs; total=None so the payload re-adds tax.
+        def _sum(js, kind):
+            return round(sum(float(ln.get("total") or 0)
+                             for j in js for ln in (j.get(kind) or [])), 2)
+        labor_total = _sum(used_jobs, "labor")
+        parts_total = _sum(used_jobs, "parts")
+        grand_total = None
+    else:
+        labor_total = r["labor_total"]
+        parts_total = r["parts_total"]
+        grand_total = r["total"]
+
     return {
         "ro_number": r["ro_number"],
         "vehicle": f"{r['year']} {r['make_model']}",
         "year": r["year"], "make": r["make"], "model": r["model"],
-        "total": r["total"], "labor_total": r["labor_total"],
-        "parts_total": r["parts_total"], "labor_rate": r["labor_rate"],
+        "total": grand_total, "labor_total": labor_total,
+        "parts_total": parts_total, "labor_rate": r["labor_rate"],
         "date_posted": r["date_posted"], "odometer": r["odometer"],
-        "confidence": best_score,
+        "confidence": best_base,
         "vehicle_score": round(veh_score, 3),
         "service_score": round(svc_score, 3),
         "service_names": r["service_names"],
-        "jobs": jobs,
+        "jobs": used_jobs,
+        "filtered": filtered,
+        "jobs_used": len(used_jobs),
+        "jobs_in_ro": len(all_jobs),
     }
 
 

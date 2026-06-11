@@ -718,7 +718,14 @@ const PreviewStep = ({ data, calculatedTotals, onSendApproval, isSending }) => {
             {' '}Labor &amp; parts come from this shop's own past paid estimate —
             prices may need a live refresh.
           </p>
-          {data.historicalMatch.services && (
+          {data.historicalMatch.filtered && (
+            <p className="text-[10px] text-warning/90 mt-1">
+              Showing the {data.historicalMatch.jobsUsed} job
+              {data.historicalMatch.jobsUsed === 1 ? '' : 's'} relevant to this request
+              {data.historicalMatch.jobsInRO ? ` (RO #${data.historicalMatch.roNumber} also covered ${data.historicalMatch.jobsInRO - data.historicalMatch.jobsUsed} other service${(data.historicalMatch.jobsInRO - data.historicalMatch.jobsUsed) === 1 ? '' : 's'})` : ''}.
+            </p>
+          )}
+          {!data.historicalMatch.filtered && data.historicalMatch.services && (
             <p className="text-[10px] text-text-secondary/70 mt-1 truncate">
               Services: {data.historicalMatch.services}
             </p>
