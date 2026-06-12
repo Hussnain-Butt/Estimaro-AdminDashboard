@@ -551,6 +551,60 @@ def _find_cheapest_vendor_match(part: dict, vendor_comparison: dict | None) -> d
     return best[0] if best else None
 
 
+_AXLE_QUALIFIERS = {"front", "rear", "left", "right", "upper", "lower"}
+
+
+def _partition_parts_by_skeleton(parts: list[dict],
+                                 skeleton: dict) -> tuple[list[dict], list[dict]]:
+    """Split ALLDATA-extracted parts into (billed, conditional) per the service
+    skeleton — Sergio's SOP for the classified service type.
+
+    ROOT CAUSE this fixes: ALLDATA's parts-and-labor article lists EVERY
+    related/conditional component (calipers, flex hoses, backing plates, the
+    other axle's pads). Billing them all inflated a $1,000 front-brake job to
+    $2,165 on the FIRST build of every new VIN, which the advisor then had to
+    strip by hand each time. The skeleton already encodes what the service
+    actually includes — so bill only parts matching a skeleton component and
+    surface the rest as suggested add-ons the advisor can opt into.
+
+    Matching: each component's display_name/alldata_keywords/vendor_search_terms
+    with axle qualifiers stripped, substring-matched against the part name.
+    A part naming the OPPOSITE axle is always conditional. If nothing matches
+    (unusual article wording), all parts stay billed — never ship an empty
+    estimate because the SOP vocabulary missed.
+    """
+    stype = (skeleton.get("service_type") or "").lower()
+    opposite = "rear" if "front" in stype else ("front" if "rear" in stype else None)
+
+    phrases: list[str] = []
+    for c in skeleton.get("components", []):
+        cands = ([c.get("display_name", "")] +
+                 list(c.get("alldata_keywords") or []) +
+                 list(c.get("vendor_search_terms") or []))
+        for t in cands:
+            words = [w for w in re.split(r"[^a-z0-9]+", (t or "").lower())
+                     if w and w not in _AXLE_QUALIFIERS]
+            ph = " ".join(words).strip()
+            if len(ph) > 2:
+                phrases.append(ph)
+
+    billed: list[dict] = []
+    conditional: list[dict] = []
+    for p in parts:
+        en = (p.get("name") or "").lower()
+        en_words = set(re.split(r"[^a-z0-9]+", en))
+        if opposite and opposite in en_words:
+            conditional.append(p)
+            continue
+        if any(ph in en for ph in phrases):
+            billed.append(p)
+        else:
+            conditional.append(p)
+    if not billed:
+        return parts, []
+    return billed, conditional
+
+
 def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
                           vendor_quotes: list | None = None,
                           vendor_comparison: dict | None = None,
@@ -604,6 +658,19 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
     # Dedup BEFORE pricing so the same OEM doesn't get billed twice when
     # ALLDATA listed it under multiple wheel-size / option labels.
     deduped_parts = _dedup_parts(meta.get("parts") or [])
+    # SOP gate — bill only the parts the service skeleton declares for this
+    # service type; everything else (ALLDATA's conditional rows: calipers,
+    # flex hoses, the other axle) moves to suggested add-ons below.
+    conditional_parts: list[dict] = []
+    if service_skeleton:
+        deduped_parts, conditional_parts = _partition_parts_by_skeleton(
+            deduped_parts, service_skeleton)
+        if conditional_parts:
+            logger.info(
+                f"[payload] SOP gate ({service_skeleton.get('service_type')}): "
+                f"billing {len(deduped_parts)} part(s), moved "
+                f"{len(conditional_parts)} conditional to suggested add-ons: "
+                + ", ".join((p.get('name') or '?')[:30] for p in conditional_parts[:6]))
     for p in deduped_parts:
         alldata_cost = float(p.get("price") or 0.0)
         vendor_match = _find_cheapest_vendor_match(p, vendor_comparison)
@@ -765,6 +832,22 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
                     "auto_added": True,
                     "auto_added_reason": reason,
                 })
+
+    # Surface SOP-gated conditional parts as opt-in suggestions (with their
+    # ALLDATA reference price) instead of silently billing or dropping them.
+    if conditional_parts:
+        suggested_addons = list(suggested_addons or [])
+        sop_name = (service_skeleton or {}).get("display_name") or "this service"
+        for p in conditional_parts:
+            suggested_addons.append({
+                "name": p.get("name") or "",
+                "kind": "conditional_part",
+                "reason": (f"Listed by ALLDATA for this job but not part of the "
+                           f"standard {sop_name} — add only if inspection shows "
+                           f"it's needed"),
+                "cost": p.get("price"),
+                "oem_number": p.get("oem_number"),
+            })
 
     subtotal = round(labor_total + parts_total, 2)
     tax_amount = round(subtotal * tax_rate, 2)
