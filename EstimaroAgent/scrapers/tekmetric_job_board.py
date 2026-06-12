@@ -186,7 +186,28 @@ async def _switch_board(page: Page, target: str) -> None:
     if await selector.count() == 0:
         if await _is_signed_out(page):
             raise SessionLostError("signed out; board selector unavailable")
-        raise RuntimeError(f"board selector not found on {page.url} — not on Job Board list")
+        # Recovery: after a very long run the board view can degrade to an empty
+        # render (nav chrome only, no columns/selector) even though the session
+        # is still valid. An in-app nav click does NOT re-render it; a hard
+        # reload of the RO-list URL does — and (verified 2026-06-12) the session
+        # now survives that reload. The _is_signed_out guard catches the rare
+        # case where it doesn't, surfacing a clean "re-login via noVNC".
+        logger.info("[switch_board] selector missing — reloading RO list to recover")
+        try:
+            await page.goto(RO_LIST_URL, wait_until="domcontentloaded")
+        except Exception:
+            pass
+        for _ in range(15):
+            await asyncio.sleep(1.5)
+            if "redirect=" not in page.url:
+                break
+        await asyncio.sleep(3)
+        await _dismiss_overlays(page)
+        selector = page.locator('button:has(svg[data-testid="ArrowDropDownIcon"])').first
+        if await selector.count() == 0:
+            if await _is_signed_out(page):
+                raise SessionLostError("signed out; board selector unavailable")
+            raise RuntimeError(f"board selector not found on {page.url} after recovery")
     current = (await selector.inner_text()).strip()
     if current == target:
         logger.info(f"board already on '{target}'")
