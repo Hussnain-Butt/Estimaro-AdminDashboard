@@ -424,15 +424,21 @@ def classify_text(text: str) -> Optional[str]:
             return "brake_fluid_service"
         side = "rear" if "rear" in t else "front"
         return f"brake_{side}_full"
-    if "oil" in t and ("change" in t or "service" in t or "filter" in t
-                       or "lubricat" in t or re.search(r"\beos\b", t)):
+    # Transmission BEFORE oil: "transmission oil service" / "trans oil pan"
+    # must classify as transmission — the oil branch would otherwise grab it
+    # on the words "oil service" and an oil-change query would pull
+    # transmission work.
+    _is_trans = "transmission" in t or re.search(r"\btrans\b|\batf\b", t)
+    if _is_trans and ("fluid" in t or "service" in t or "oil" in t
+                      or "filter" in t or "gasket" in t or "pan" in t):
+        return "transmission_fluid_service"
+    if "oil" in t and not _is_trans and (
+            "change" in t or "service" in t or "filter" in t
+            or "lubricat" in t or re.search(r"\beos\b", t)):
         return "oil_change_standard"
     if "shock" in t or "strut" in t or "suspension" in t:
         side = "rear" if "rear" in t else "front"
         return f"shocks_{side}"
-    if ("transmission" in t or re.search(r"\batf?\b", t)) and \
-            ("fluid" in t or "service" in t):
-        return "transmission_fluid_service"
     if "spark" in t or "ignition coil" in t:
         return "spark_plugs"
     if "battery" in t:
@@ -481,6 +487,75 @@ def _model_token_score(q_model_toks: set[str], series_prefix: Optional[str],
     return score
 
 
+def _extract_relevant_jobs(all_jobs: list[dict], q_type: Optional[str],
+                           q_svc: set[str]) -> tuple[list[dict], bool]:
+    """Pull only the labor/parts lines relevant to the requested service out of
+    an RO's jobs. Returns (kept_jobs, filtered).
+
+    Deterministic-first, mirroring the matcher tiers: when the request has a
+    canonical type, every decision is made by classify_text — a line/job is
+    kept when IT classifies to the requested type (or is type-neutral inside a
+    dedicated job). The old keyword+supply-word line filter let generic words
+    ("fluid", "gasket") drag a transmission service into an "oil change" and an
+    oil-cooler job into "front brake pads". Supply lines (cleaning kit etc.)
+    ride along ONLY inside a job we already kept for the right reason.
+
+    No keep-all fallback: if the RO holds no content for the requested
+    service, kept_jobs comes back empty and the CALLER must reject the match
+    (next candidate / live pipeline) — never return the wrong service.
+    """
+    kept: list[dict] = []
+    removed = 0
+    q_family = q_type.split("_")[0] if q_type else None
+
+    def _same_family(t: Optional[str]) -> bool:
+        # brake_front_full / brake_fluid_service are siblings — a dedicated
+        # brake job legitimately mixes both (bleed + pads).
+        return bool(t) and t.split("_")[0] == q_family
+
+    for j in all_jobs:
+        jn = j.get("name") or ""
+        labor = j.get("labor") or []
+        parts = j.get("parts") or []
+        if q_type:
+            jtype = classify_text(jn)
+            if jtype == q_type or _same_family(jtype):
+                # Dedicated job — keep type-neutral + same-family lines; drop
+                # lines of a DIFFERENT service family (the bundled battery).
+                fl = [l for l in labor
+                      if (lt := classify_text(l.get("description") or "")) is None
+                      or _same_family(lt)]
+                fp = [p for p in parts
+                      if (pt := classify_text(p.get("description") or "")) is None
+                      or _same_family(pt)]
+            else:
+                # Mixed/unrelated job — only lines that THEMSELVES classify to
+                # the requested family, plus supplies if a real line was kept.
+                fl = [l for l in labor
+                      if _same_family(classify_text(l.get("description") or ""))]
+                fp = [p for p in parts
+                      if _same_family(classify_text(p.get("description") or ""))]
+                if fl or fp:
+                    fp += [p for p in parts if p not in fp and
+                           (_svc_words(p.get("description") or "") & _SUPPLY_WORDS)]
+        else:
+            # Keyword path (no canonical type): a line must share a concrete
+            # service noun with the complaint; supplies only ride along.
+            def _kw_ok(desc: str) -> bool:
+                hits = (_svc_words(desc) & q_svc) - _QUALIFIER_WORDS
+                return bool(hits & _SERVICE_NOUNS)
+            fl = [l for l in labor if _kw_ok(l.get("description") or "")
+                  or _kw_ok(jn)]
+            fp = [p for p in parts if _kw_ok(p.get("description") or "")]
+            if fl or fp:
+                fp += [p for p in parts if p not in fp and
+                       (_svc_words(p.get("description") or "") & _SUPPLY_WORDS)]
+        removed += (len(labor) - len(fl)) + (len(parts) - len(fp))
+        if fl or fp:
+            kept.append({**j, "labor": fl, "parts": fp})
+    return kept, (removed > 0 or len(kept) < len(all_jobs))
+
+
 def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
               complaint: str, *, vin: Optional[str] = None,
               db_path: str = DB_DEFAULT, threshold: float = 0.55) -> Optional[dict]:
@@ -522,7 +597,7 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
     m_series = re.match(r"^([a-z]{1,3})[\s-]*class\b", (model or "").lower())
     series_prefix = m_series.group(1) if m_series else None
 
-    best = None          # (tier_rank, sort_key, r, veh, svc, conf)
+    candidates: list[tuple] = []
     for r in rows:
         if _norm(r["make"]) != make_n and make_n not in _norm(r["make"]):
             continue
@@ -565,59 +640,49 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
         n_services = names_blob.count("|")
         sort_key = (-tier_rank, conf, _parse_posted(r["date_posted"]),
                     -n_services)
-        if best is None or sort_key > best[1]:
-            best = (tier_rank, sort_key, r, veh_score, svc_score, conf, year_gap)
+        candidates.append((sort_key, tier_rank, r, veh_score, svc_score, conf, year_gap))
 
-    if not best:
+    if not candidates:
         return None
-    tier_rank, _, r, veh_score, svc_score, best_base, year_gap = best
-    match_tier = ("exact_vin", "service_type", "keyword")[tier_rank]
-    try:
-        all_jobs = json.loads(r["jobs_json"]) if r["jobs_json"] else []
-    except json.JSONDecodeError:
-        all_jobs = []
-    try:
-        all_jobs = json.loads(r["jobs_json"]) if r["jobs_json"] else []
-    except json.JSONDecodeError:
-        all_jobs = []
 
-    # LINE-ITEM FILTER — keep only the labor/part LINES relevant to the request.
-    # A single Tekmetric RO/job often bundles unrelated work from one visit
-    # (e.g. "front brakes" plus a battery + a bulb on the same ticket). Job- or
-    # RO-level filtering can't separate those, so we filter individual lines: a
-    # line is relevant if its OWN description shares a service word with the
-    # complaint, or names a generic service supply (cleaner/kit/fluid/…).
-    def _line_relevant(desc: str, fallback: str = "") -> bool:
-        words = _svc_words(desc) or _svc_words(fallback)
-        # A match on a QUALIFIER alone (front/rear/left/…) doesn't count — it
-        # would wrongly keep "tire pressure FRONT 47" for a "front brake" query.
-        # Require a real service noun (brake/pad/rotor/…) or a supply word.
-        svc_hits = (words & q_svc) - _QUALIFIER_WORDS
-        return bool(svc_hits) or bool(words & _SUPPLY_WORDS)
-
-    used_jobs = all_jobs
-    filtered = False
-    if q_svc or q_type:
-        kept_jobs: list[dict] = []
-        removed = 0
-        for j in all_jobs:
-            jn = j.get("name") or ""
-            # A job whose NAME classifies to the requested canonical type is
-            # the dedicated job for this service — keep it whole (its lines
-            # are what Sergio actually billed for exactly this work).
-            if q_type and classify_text(jn) == q_type:
-                kept_jobs.append(j)
+    # Try candidates best-first; ACCEPT the first whose RO actually contains
+    # content for the requested service. A high-scoring RO can still be wrong
+    # in the flesh — e.g. its only brake-classified job is a $0 inspection
+    # while its real lines are oil-cooler work. Verifying extracted CONTENT
+    # (not just the name blob) before accepting is what stops "front brake
+    # pads" returning an oil-cooler estimate.
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    for _sort, tier_rank, r, veh_score, svc_score, best_base, year_gap in candidates[:10]:
+        try:
+            all_jobs = json.loads(r["jobs_json"]) if r["jobs_json"] else []
+        except json.JSONDecodeError:
+            continue
+        used_jobs, filtered = _extract_relevant_jobs(all_jobs, q_type, q_svc)
+        if not any((j.get("labor") or j.get("parts")) for j in used_jobs):
+            continue  # no real content for this service — next candidate
+        if q_type:
+            # At least ONE kept line must ITSELF classify to the requested
+            # family — a brake-named job whose lines are all vent-hose work
+            # (type-neutral) is the wrong content, not a brake estimate.
+            fam = q_type.split("_")[0]
+            def _line_fam(ln):
+                t = classify_text(ln.get("description") or "")
+                return bool(t) and t.split("_")[0] == fam
+            if not any(_line_fam(ln) for j in used_jobs
+                       for ln in (j.get("labor") or []) + (j.get("parts") or [])):
                 continue
-            fl = [l for l in (j.get("labor") or [])
-                  if _line_relevant(l.get("description") or "", jn)]
-            fp = [p for p in (j.get("parts") or [])
-                  if _line_relevant(p.get("description") or "")]
-            removed += (len(j.get("labor") or []) - len(fl)) + \
-                       (len(j.get("parts") or []) - len(fp))
-            if fl or fp:
-                kept_jobs.append({**j, "labor": fl, "parts": fp})
-        if kept_jobs and (removed > 0 or len(kept_jobs) < len(all_jobs)):
-            used_jobs, filtered = kept_jobs, True
+        # Value floor: an RO whose relevant lines sum to pocket change ($0
+        # comp'd lines, courtesy top-offs) is not a usable estimate — a $3.50
+        # "oil change" match must fall through to a candidate with real
+        # content, or to the live pipeline.
+        kept_value = sum(float(ln.get("total") or 0) for j in used_jobs
+                         for ln in (j.get("labor") or []) + (j.get("parts") or []))
+        if kept_value < 50.0:
+            continue
+        match_tier = ("exact_vin", "service_type", "keyword")[tier_rank]
+        break
+    else:
+        return None
 
     if filtered:
         # Recompute from the kept lines; total=None so the payload re-adds tax.
