@@ -1191,6 +1191,32 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
     tax_amount = round(subtotal * tax_rate, 2)
     grand_total = round(subtotal + tax_amount, 2)
 
+    # Flat-fee headline — same policy as the live build: for a flat-fee service
+    # (oil/brakes/plugs/trans) the shop charges a near-fixed price per vehicle
+    # class, so the corpus median becomes the headline and the matched RO's
+    # matrix-priced lines stay as the itemized reference. Without this, the SAME
+    # brake job priced one way on a historical hit and another on a live build.
+    flat_fee = None
+    if service_skeleton and service_skeleton.get("flat_fee"):
+        try:
+            from services.historical_corpus import service_flat_fee
+            ff = service_flat_fee(service_skeleton.get("service_type"),
+                                  vehicle.year, vehicle.make, vehicle.model)
+        except Exception as e:
+            logger.warning(f"[hist] flat-fee lookup failed: {e}")
+            ff = None
+        if ff:
+            fee_sub = ff["median"]
+            fee_tax = round(fee_sub * tax_rate, 2)
+            flat_fee = {
+                "applied": True,
+                "subtotal": fee_sub, "taxAmount": fee_tax,
+                "total": round(fee_sub + fee_tax, 2),
+                "low": ff["low"], "high": ff["high"], "n": ff["n"],
+                "basis": ff.get("basis"),
+                "computedSubtotal": subtotal, "computedTotal": grand_total,
+            }
+
     conf = float(match.get("confidence") or 0.0)
     # Honest tier routing: "auto" ONLY when the match is essentially certain —
     # the same physical car came back (exact VIN), or a near-identical vehicle
@@ -1288,9 +1314,10 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
         "recalls": list(recalls or []),
         "suggestedAddOns": [],
         "serviceSkeleton": coverage,
-        # Historical matches already carry the shop's real billed price (itself a
-        # de-facto flat fee), so the matched total stays the headline.
-        "flatFee": None,
+        # Flat-fee headline for flat-fee services (oil/brakes/plugs/trans) — the
+        # matrix-priced lines above stay as the itemized reference. None on
+        # variable-priced services (shocks, etc.).
+        "flatFee": flat_fee,
         "repairProcedure": {"items": [], "scan_status": "skipped_historical"},
     }
 
