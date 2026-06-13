@@ -835,6 +835,21 @@ def _extract_relevant_jobs(all_jobs: list[dict], q_type: Optional[str],
             fp = [p for p in parts if _kw_ok(p.get("description") or "")]
             if fl or fp:
                 fp += [p for p in parts if p not in fp and _supply_ok(p)]
+        # Side guard — for a sided service (front/rear brakes or shocks), drop a
+        # kept line whose text names the OPPOSITE axle. A "front brake service"
+        # must not carry a "Rear Brake Pad Set" that shared the same RO job, and
+        # vice versa. Lines naming neither side, or both, ride along.
+        want = ("front" if q_type and "front" in q_type
+                else "rear" if q_type and "rear" in q_type else None)
+        if want:
+            other = "rear" if want == "front" else "front"
+
+            def _ok_side(desc: str) -> bool:
+                t = (desc or "").lower()
+                return not (other in t and want not in t)
+            fl = [l for l in fl if _ok_side(l.get("description"))]
+            fp = [p for p in fp if _ok_side(p.get("description"))]
+
         removed += (len(labor) - len(fl)) + (len(parts) - len(fp))
         if fl or fp:
             kept.append({**j, "labor": fl, "parts": fp})

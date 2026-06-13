@@ -1010,6 +1010,36 @@ def _clean_hist_labor_desc(desc: str) -> str:
     return re.sub(r"\s*\(\s*Tech\s*:[^)]*\)?\s*$", "", desc or "", flags=re.IGNORECASE).strip()
 
 
+# Some corpus labor lines carry a NOTE instead of the operation ("RESET SERVICE
+# INDICATOR AS NEEDED", bare "Labor", "Torque Wheels to Specification") — the
+# meaningful label is the JOB name ("FBS Front Brake Service"). Detect a
+# whole-string note and fall back to a cleaned job label so the estimate doesn't
+# show a brake job as "Reset Service Indicator".
+_NOISE_LABOR_RE = re.compile(
+    r"^(reset\b.*indicator.*|labou?r|as needed|if needed|see notes?|n/?a|"
+    r"misc(ellaneous)?|front tires?\b.*|rear tires?\b.*|torque wheels?\b.*)\.?$",
+    re.IGNORECASE)
+
+
+def _clean_job_label(name: str) -> str:
+    """Customer-facing label from a corpus job name: drop leading dashes/asterisks,
+    a leading service CODE ('FBS '/'EOS '/'RBS '), and trailing advisory notes
+    ('... **highly advised', '(inside pad at 3-4 mm)')."""
+    s = re.sub(r"^[-–—\s*]+", "", (name or "").strip())
+    s = re.split(r"\s*[*(]", s, 1)[0].strip()            # drop ** / ( notes
+    s = re.sub(r"^[A-Z]{2,4}\s+(?=[A-Z])", "", s)        # leading FBS/EOS/RBS code
+    return s.strip()
+
+
+def _labor_display_desc(desc: str, job_name: str) -> str:
+    """Prefer the labor line's own description; fall back to the job name when the
+    description is a note/placeholder rather than the actual operation."""
+    d = _clean_hist_labor_desc(desc or "")
+    if not d or len(d) < 4 or _NOISE_LABOR_RE.match(d):
+        return _clean_job_label(job_name) or d or "Service Labor"
+    return d
+
+
 def _clean_hist_part_desc(desc: str) -> str:
     """Strip a leading vendor LINE-CODE (letters+digits, e.g. 'WORL001' =
     Worldpac's catalogue code) so the part reads 'Brake Pad Set' not
@@ -1073,7 +1103,7 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
                 base = round(float(hrs) * rate, 2)
                 mult = labor_multiplier_for_hours(hrs)
                 labor_lines.append({
-                    "description": _clean_hist_labor_desc(lab.get("description") or job_name),
+                    "description": _labor_display_desc(lab.get("description"), job_name),
                     "hours": hrs, "rate": rate, "total": round(base * mult, 2),
                     "baseAmount": base, "laborMultiplier": mult,
                     "laborMarkupPct": round((mult - 1.0) * 100.0, 2),
@@ -1082,7 +1112,7 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
                 })
             else:
                 labor_lines.append({
-                    "description": _clean_hist_labor_desc(lab.get("description") or job_name),
+                    "description": _labor_display_desc(lab.get("description"), job_name),
                     "hours": hrs, "rate": rate, "total": lab.get("total") or 0.0,
                     "source": f"Historical RO #{ro}", "skill": None,
                     "extractionScreenshot": None,
