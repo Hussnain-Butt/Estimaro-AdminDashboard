@@ -1068,13 +1068,48 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
                 "source": f"Historical RO #{ro}",
             })
 
+    # Recent-price refresh — a matched RO can be years old, and the shop's parts
+    # pricing spiked recently (Sergio June 12: "last 5 years the biggest spike").
+    # Replace each part's stale unit price with the most recent price the shop
+    # billed for the SAME part anywhere in the corpus. Guarded: only a STRICTLY
+    # newer price, within a 0.34x–3x band, so a generic-SKU identity collision
+    # can't inject a wild number. Fully transparent — the original price + the
+    # source RO/date come along so the UI can show "$X (2021) → $Y (2026)".
+    from services.historical_corpus import latest_corpus_price, _parse_posted
+    ro_ord = _parse_posted(match.get("date_posted"))
+    refreshed_count = 0
+    for line in parts_lines:
+        fresh = latest_corpus_price(line.get("partNumber"), line.get("description"))
+        if not fresh:
+            continue
+        if ro_ord and fresh["date_ordinal"] <= ro_ord:
+            continue  # the matched RO is already as fresh
+        old_unit = float(line.get("cost") or 0.0)
+        new_unit = float(fresh["unit"])
+        if old_unit <= 0 or not (0.34 <= new_unit / old_unit <= 3.0):
+            continue  # implausible swing → likely a wrong identity, skip
+        qty = int(line.get("quantity") or 1)
+        line["originalCost"] = old_unit
+        line["originalTotal"] = line.get("total")
+        line["cost"] = new_unit
+        line["total"] = round(new_unit * qty, 2)
+        line["priceRefreshed"] = True
+        line["priceDate"] = fresh["date"]
+        line["priceSourceRO"] = fresh["ro_number"]
+        refreshed_count += 1
+
     labor_total = round(float(match.get("labor_total") or
                               sum(l["total"] for l in labor_lines)), 2)
-    parts_total = round(float(match.get("parts_total") or
-                              sum(p["total"] for p in parts_lines)), 2)
+    # When any line was refreshed the stored aggregate is stale — recompute from
+    # the (now-updated) lines and don't defer to the old billed grand total.
+    if refreshed_count:
+        parts_total = round(sum(float(p["total"]) for p in parts_lines), 2)
+    else:
+        parts_total = round(float(match.get("parts_total") or
+                                  sum(p["total"] for p in parts_lines)), 2)
     subtotal = round(labor_total + parts_total, 2)
     stored_total = match.get("total")
-    if stored_total and float(stored_total) > subtotal:
+    if stored_total and float(stored_total) > subtotal and not refreshed_count:
         grand_total = round(float(stored_total), 2)
         tax_amount = round(grand_total - subtotal, 2)
     else:
@@ -1151,6 +1186,9 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
             # auto-approval above.
             "coverageComplete": coverage_complete,
             "missingComponents": missing_components,
+            # How many part lines had their price refreshed to the shop's most
+            # recent corpus price for that part (0 = all prices already current).
+            "pricesRefreshed": refreshed_count,
         },
         "laborItems": labor_lines,
         "partsItems": parts_lines,
@@ -1382,12 +1420,17 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
                 job, vehicle, hist, time.time() - t0, recalls=recalls,
                 service_skeleton=service_skeleton)
             cov = (result.get("serviceSkeleton") or {})
-            miss = result.get("historicalMatch", {}).get("missingComponents") or []
+            hm = result.get("historicalMatch", {})
+            miss = hm.get("missingComponents") or []
             if miss:
                 logger.info(
                     f"[{job_id}] historical RO#{hist['ro_number']} coverage "
                     f"{cov.get('coverage_pct')}% — missing {len(miss)} expected "
                     f"component(s): {', '.join(miss)} → advisor_review")
+            if hm.get("pricesRefreshed"):
+                logger.info(
+                    f"[{job_id}] refreshed {hm['pricesRefreshed']} part price(s) "
+                    f"to the shop's most recent corpus pricing")
             await _post_result(client, job_id, result)
             logger.info(f"[{job_id}] DONE (historical RO#{hist['ro_number']}) "
                         f"in {time.time() - t0:.1f}s")

@@ -61,6 +61,15 @@ class PartLine(BaseModel):
     # when no substitution happened.
     list_price: Optional[float] = None
     savings_vs_list: Optional[float] = None
+    # Recent-price refresh (historical path) — when the matched RO's billed
+    # price was older than the shop's most recent corpus price for the same
+    # part, the line is repriced to the fresher value. originalCost/Total carry
+    # the matched RO's price so the UI can show "$X (old) → $Y (priceDate)".
+    priceRefreshed: bool = False
+    originalCost: Optional[float] = None
+    originalTotal: Optional[float] = None
+    priceDate: Optional[str] = None
+    priceSourceRO: Optional[str] = None
     # Task #14 — skeleton-driven auto-add (cleaning kit, multi-point
     # inspection). Set to True when the worker injected the line from
     # the service skeleton's addons rather than extracting it from

@@ -567,6 +567,96 @@ def _parse_posted(s: Optional[str]) -> float:
     return 0.0
 
 
+# ----------------------------------------------------------- recent-price refresh
+# A matched RO can be old; even the freshest MATCHING RO may carry part prices
+# from a year or two back, and the shop's parts pricing has spiked recently
+# (Sergio June 12: "the last 5 years have been the biggest spike in pricing").
+# So for each part we expose the MOST RECENT price the shop billed for that SAME
+# part anywhere in the corpus — "recheck the fresh price from the old data".
+# Identity is (normalized part_number + normalized description): part_number
+# ALONE is unsafe because the corpus reuses generic SKUs ("INVENTORY", "5W-40",
+# "05CL") across unrelated items at wildly different prices. Cached per db_path,
+# built on first use (the corpus only changes on re-ingest, which restarts the
+# worker, so a process-lifetime cache can't go stale).
+
+_PRICE_INDEX: dict[str, dict[tuple[str, str], tuple[float, float, str, str]]] = {}
+
+# Generic non-part SKUs — never an identity to refresh on, even with a desc.
+_JUNK_PN = {
+    "INVENTORY", "SUPPLIES", "SHOPSUPPLIES", "SHOP", "MISC", "NA", "NONE",
+    "SUBLET", "FREIGHT", "CORE", "DISPOSAL", "FEE", "HAZMAT", "EPA", "SHOPFEE",
+}
+
+
+def _norm_pn(pn) -> Optional[str]:
+    if pn is None:
+        return None
+    s = re.sub(r"[^A-Za-z0-9]", "", str(pn)).upper()
+    return s or None
+
+
+def _norm_desc_key(desc) -> str:
+    return re.sub(r"\s+", " ", (desc or "").strip().lower())[:40]
+
+
+def _build_price_index(db_path: str) -> dict:
+    """Scan the corpus once → {(norm_pn, norm_desc): (date_ordinal, unit, ro, date_str)}
+    keeping only the most-recent priced occurrence of each identity."""
+    conn = init_db(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT ro_number, date_posted, jobs_json FROM ros").fetchall()
+    conn.close()
+    idx: dict[tuple[str, str], tuple[float, float, str, str]] = {}
+    for r in rows:
+        d_str = r["date_posted"]
+        d_ord = _parse_posted(d_str)
+        if not d_ord:
+            continue
+        try:
+            jobs = json.loads(r["jobs_json"]) if r["jobs_json"] else []
+        except Exception:
+            continue
+        for jb in jobs:
+            for p in (jb.get("parts") or []):
+                pn = _norm_pn(p.get("part_number"))
+                if not pn or pn in _JUNK_PN or len(pn) < 4:
+                    continue
+                desc = _norm_desc_key(p.get("description"))
+                if not desc:
+                    continue
+                try:
+                    unit = round(float(p.get("total")) / (int(p.get("qty") or 1) or 1), 2)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    continue
+                if unit <= 0:
+                    continue
+                key = (pn, desc)
+                prev = idx.get(key)
+                if prev is None or d_ord > prev[0]:
+                    idx[key] = (d_ord, unit, r["ro_number"], d_str)
+    return idx
+
+
+def latest_corpus_price(part_number, description,
+                        *, db_path: str = DB_DEFAULT) -> Optional[dict]:
+    """Most-recent unit price the shop billed for this exact (part_number,
+    description) across the whole corpus. Returns
+    {unit, date_ordinal, date, ro_number} or None when the part can't be
+    confidently identified (junk/short SKU, missing description)."""
+    pn = _norm_pn(part_number)
+    desc = _norm_desc_key(description)
+    if not pn or pn in _JUNK_PN or len(pn) < 4 or not desc:
+        return None
+    if db_path not in _PRICE_INDEX:
+        _PRICE_INDEX[db_path] = _build_price_index(db_path)
+    hit = _PRICE_INDEX[db_path].get((pn, desc))
+    if not hit:
+        return None
+    d_ord, unit, ro, d_str = hit
+    return {"unit": unit, "date_ordinal": d_ord, "date": d_str, "ro_number": ro}
+
+
 def _model_token_score(q_model_toks: set[str], series_prefix: Optional[str],
                        r_model: str) -> float:
     """Word-boundary model matching. Substring matching was a wrong-map source:

@@ -464,6 +464,19 @@ const PartsStep = ({ data }) => {
                       {part.reasonBadge}
                     </span>
                   )}
+                  {part.priceRefreshed && (
+                    <span
+                      className="inline-block mt-1 ml-2 px-2 py-0.5 bg-warning/15 text-warning text-xs rounded border border-warning/30"
+                      title={`Repriced from the matched RO's ${part.originalCost != null ? '$' + part.originalCost.toFixed(2) : 'older price'} to the shop's most recent price for this part${part.priceSourceRO ? ` (RO #${part.priceSourceRO})` : ''}`}
+                    >
+                      ↻ Price updated{part.priceDate ? ` · ${part.priceDate}` : ''}
+                      {part.originalCost != null && (
+                        <span className="text-text-secondary ml-1">
+                          (was ${part.originalCost.toFixed(2)})
+                        </span>
+                      )}
+                    </span>
+                  )}
                   <div className="mt-2 flex items-center gap-2 text-sm">
                     <span className="text-text-secondary">Qty: {part.quantity}</span>
                     <span className="text-text-secondary">×</span>
@@ -1168,6 +1181,11 @@ const NewEstimate = () => {
       // Task #14 — labor addons (e.g. Wheel Alignment for suspension).
       auto_added: !!item.auto_added,
       auto_added_reason: item.auto_added_reason ?? null,
+      // Pricing matrix — hours-tiered labor markup. Null on the historical /
+      // flat-pricing paths (LaborStep then just shows hours × rate).
+      baseAmount: item.baseAmount ?? null,
+      laborMultiplier: item.laborMultiplier ?? null,
+      laborMarkupPct: item.laborMarkupPct ?? null,
     }))
     const partsItems = (r.partsItems || []).map((item, idx) => ({
       id: idx + 1,
@@ -1199,6 +1217,14 @@ const NewEstimate = () => {
       auto_added: !!item.auto_added,
       auto_added_kind: item.auto_added_kind ?? null,
       auto_added_reason: item.auto_added_reason ?? null,
+      // Recent-price refresh (historical path) — line repriced to the shop's
+      // most recent corpus price for this part. PartsStep shows a "Price
+      // updated" chip with the original price.
+      priceRefreshed: !!item.priceRefreshed,
+      originalCost: item.originalCost ?? null,
+      originalTotal: item.originalTotal ?? null,
+      priceDate: item.priceDate ?? null,
+      priceSourceRO: item.priceSourceRO ?? null,
     }))
 
     // ALLDATA's banner shows a more specific trim than NHTSA usually does
