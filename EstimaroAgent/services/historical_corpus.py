@@ -184,6 +184,59 @@ def _clean_make_model(mm: Optional[str]) -> Optional[str]:
                   flags=re.IGNORECASE).strip()
 
 
+# Make canonicalization. Old Tekmetric RO headings truncate ("MERCEDES-BEN"),
+# abbreviate ("VW"), split two-word makes ("Land Rover" → make "Land"), and
+# misspell ("CRHYSLER", "PORCHE", "BWM"). match_job's make gate compares
+# _norm(make) by equality / substring, so these never match a clean query make
+# ("mercedesben" ≠ "mercedesbenz", "vw" ⊄ "volkswagen", "land" ⊄ "landrover").
+# (Pure case variants — AUDI vs Audi — already match because _norm lowercases.)
+# Re-ingesting after a code change applies this to every row.
+_MULTIWORD_MAKES = ("Mercedes-Benz", "Land Rover", "Rolls-Royce", "Alfa Romeo")
+_MAKE_ALIASES = {  # normalized (lowercase-alnum) key → canonical display name
+    "bmw": "BMW", "bwm": "BMW", "528bmw": "BMW",
+    "mercedesbenz": "Mercedes-Benz", "mercedesben": "Mercedes-Benz",
+    "mercedes": "Mercedes-Benz", "mb": "Mercedes-Benz",
+    "audi": "Audi",
+    "volkswagen": "Volkswagen", "vw": "Volkswagen", "volkswagon": "Volkswagen",
+    "golf": "Volkswagen",
+    "porsche": "Porsche", "porche": "Porsche",
+    "mini": "Mini", "toyota": "Toyota", "volvo": "Volvo", "honda": "Honda",
+    "ford": "Ford", "nissan": "Nissan", "lexus": "Lexus",
+    "landrover": "Land Rover", "land": "Land Rover", "rover": "Land Rover",
+    "chevrolet": "Chevrolet", "chevy": "Chevrolet",
+    "dodge": "Dodge", "acura": "Acura", "jeep": "Jeep", "saab": "Saab",
+    "jaguar": "Jaguar", "subaru": "Subaru", "infiniti": "Infiniti",
+    "hyundai": "Hyundai", "fiat": "Fiat", "cadillac": "Cadillac",
+    "mazda": "Mazda", "mitsubishi": "Mitsubishi", "gmc": "GMC",
+    "chrysler": "Chrysler", "crhysler": "Chrysler",
+    "saturn": "Saturn", "smart": "Smart", "kia": "Kia", "buick": "Buick",
+    "freightliner": "Freightliner", "pontiac": "Pontiac", "mercury": "Mercury",
+    "maserati": "Maserati", "bentley": "Bentley",
+    "alfa": "Alfa Romeo", "alfaromeo": "Alfa Romeo",
+    "ram": "Ram", "plymouth": "Plymouth", "lincoln": "Lincoln",
+    "tesla": "Tesla", "suzuki": "Suzuki", "oldsmobile": "Oldsmobile",
+    "lotus": "Lotus", "isuzu": "Isuzu",
+    "rollsroyce": "Rolls-Royce", "rolls": "Rolls-Royce",
+    "mclaren": "McLaren", "hummer": "Hummer", "ferrari": "Ferrari",
+    "komatsu": "Komatsu", "borgward": "Borgward",
+}
+
+
+def _canonical_make(raw: Optional[str]) -> Optional[str]:
+    """Map a raw make token to a canonical display name. Unknown makes are
+    title-cased (ALLCAPS/lowercase scrape artifacts) but otherwise preserved,
+    so a new/rare make degrades gracefully instead of being silently dropped."""
+    if not raw:
+        return raw
+    t = raw.strip()
+    key = re.sub(r"[^a-z0-9]", "", t.lower())
+    if not key:
+        return None
+    if key in _MAKE_ALIASES:
+        return _MAKE_ALIASES[key]
+    return t.title() if (t.isupper() or t.islower()) else t
+
+
 def normalize_record(rec: dict) -> dict:
     """Turn a scraper record into a corpus row: header fields + parsed jobs."""
     jobs = [parse_job(j["text"]) for j in rec.get("jobs", []) if j.get("text")]
@@ -235,8 +288,17 @@ CREATE INDEX IF NOT EXISTS idx_ros_vehicle ON ros (year, make, model);
 def _split_make_model(make_model: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     if not make_model:
         return None, None
-    parts = make_model.split(" ", 1)
-    return parts[0], (parts[1] if len(parts) > 1 else None)
+    mm = make_model.strip()
+    low = mm.lower()
+    # Two-word makes must split AFTER the make — a naive first-space split turns
+    # "Land Rover Range Rover Sport" into make="Land" (drops the match) with a
+    # duplicated model. Match the canonical multi-word spelling first.
+    for mk in _MULTIWORD_MAKES:
+        mkl = mk.lower()
+        if low == mkl or low.startswith(mkl + " "):
+            return mk, (mm[len(mk):].strip() or None)
+    parts = mm.split(" ", 1)
+    return _canonical_make(parts[0]), (parts[1] if len(parts) > 1 else None)
 
 
 def init_db(db_path: str = DB_DEFAULT) -> sqlite3.Connection:
@@ -301,6 +363,7 @@ def ingest_worker_result(vin: Optional[str], year: Optional[int],
         vin8 = re.sub(r"[^A-Za-z0-9]", "", (vin or "anon"))[-8:].upper() or "ANON"
         svc_key = _norm(complaint)[:10] or "svc"
         ro_number = f"EST-{vin8}-{svc_key}"
+    make = _canonical_make(make)  # keep approved-estimate makes canonical too
     make_model = " ".join(x for x in [make, model] if x).strip()
     jobs = [{
         "name": (complaint or "")[:100], "category": None, "approved_on": None,
