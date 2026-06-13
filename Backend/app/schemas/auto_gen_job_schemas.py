@@ -27,6 +27,14 @@ class LaborLine(BaseModel):
     # added for suspension jobs).
     auto_added: bool = False
     auto_added_reason: Optional[str] = None
+    # Pricing matrix — the shop's Tekmetric Labor Matrix marks labor up by an
+    # hours-tiered multiplier (3% under 1h, ramping to a 19% plateau, easing to
+    # 15% on long jobs). `baseAmount` is hours×rate before markup; `total`
+    # already includes it. Optional so the historical / flat-pricing paths
+    # (which carry no labor markup) don't break.
+    baseAmount: Optional[float] = None
+    laborMultiplier: Optional[float] = None
+    laborMarkupPct: Optional[float] = None
 
 
 class PartLine(BaseModel):

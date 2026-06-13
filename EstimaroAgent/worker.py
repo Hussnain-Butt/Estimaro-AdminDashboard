@@ -626,10 +626,30 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
     parts_markup_pct = float(job.get("partsMarkup") or 30.0)
     tax_rate = float(job.get("taxRate") or 0.0925)
 
+    # Pricing matrices — mirror the shop's Tekmetric Parts/Labor matrices so the
+    # estimate lands on the number their own software would bill (cost-bracket
+    # parts markup + hours-tiered labor markup) instead of a flat placeholder.
+    # On by default; a job can opt back to the legacy flat behaviour with
+    # pricingMatrix=False (then partsMarkup% for parts, no labor markup).
+    from services.pricing_matrix import (
+        parts_markup_pct_for_cost, labor_multiplier_for_hours)
+    use_matrix = job.get("pricingMatrix", True) is not False
+
+    def _part_markup_pct(cost: float, no_markup: bool = False) -> float:
+        if no_markup:
+            return 0.0
+        return parts_markup_pct_for_cost(cost) if use_matrix else parts_markup_pct
+
+    def _labor_line(hours, rate: float) -> tuple[float, float, float]:
+        """(base = hours×rate, multiplier, marked-up line total)."""
+        base = round((hours or 0.0) * rate, 2)
+        mult = labor_multiplier_for_hours(hours) if use_matrix else 1.0
+        return base, mult, round(base * mult, 2)
+
     labor_lines = []
     labor_total = 0.0
     if labor:
-        line_total = round(labor.hours * labor_rate, 2)
+        base_amount, labor_mult, line_total = _labor_line(labor.hours, labor_rate)
         labor_total += line_total
         # Embed the extraction-time screenshot as a data URL so the FE can
         # render a "View source" panel without a second round-trip. The
@@ -645,6 +665,9 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
             "hours": labor.hours,
             "rate": labor_rate,
             "total": line_total,
+            "baseAmount": base_amount,
+            "laborMultiplier": labor_mult,
+            "laborMarkupPct": round((labor_mult - 1.0) * 100.0, 2),
             "source": "ALLDATA",
             "skill": (labor.vehicle_match or {}).get("skill"),
             "extractionScreenshot": _load_screenshot_b64(labor.screenshot_path),
@@ -696,7 +719,8 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
             cost = alldata_cost
             vendor_label = (p.get("vendor") or "ALLDATA").strip() or "ALLDATA"
 
-        markup_dollars = round(cost * parts_markup_pct / 100.0, 2)
+        markup_pct = _part_markup_pct(cost)
+        markup_dollars = round(cost * markup_pct / 100.0, 2)
         qty = int(p.get("qty") or p.get("quantity") or 1)
         line_total = round((cost + markup_dollars) * qty, 2)
         parts_total += line_total
@@ -706,7 +730,7 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
             "partNumber": p.get("oem_number"),
             "quantity": qty,
             "cost": cost,
-            "markup": parts_markup_pct,
+            "markup": markup_pct,
             "total": line_total,
             "vendor": vendor_label,
         }
@@ -755,7 +779,8 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
             if brand:
                 vendor_label = f"{vendor_label} · {brand}"
             description = best.get("matched_part_name") or requested_part
-            markup_dollars = round(cost * parts_markup_pct / 100.0, 2)
+            markup_pct = _part_markup_pct(cost)
+            markup_dollars = round(cost * markup_pct / 100.0, 2)
             qty = 1
             line_total = round((cost + markup_dollars) * qty, 2)
             parts_total += line_total
@@ -764,7 +789,7 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
                 "partNumber": best.get("oem_number"),
                 "quantity": qty,
                 "cost": cost,
-                "markup": parts_markup_pct,
+                "markup": markup_pct,
                 "total": line_total,
                 "vendor": vendor_label,
             })
@@ -795,7 +820,7 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
                     cost = float(default_cost) if default_cost is not None else 0.0
                 except (TypeError, ValueError):
                     cost = 0.0
-                markup_pct = 0.0 if no_markup else parts_markup_pct
+                markup_pct = _part_markup_pct(cost, no_markup=no_markup)
                 markup_dollars = round(cost * markup_pct / 100.0, 2)
                 line_total = round((cost + markup_dollars) * qty, 2)
                 parts_total += line_total
@@ -819,13 +844,16 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
                 # Labor add-ons (e.g. Wheel Alignment for suspension) go
                 # in labor_lines, not parts_lines.
                 hours = float(addon.get("hours") or addon.get("default_qty") or 1.0)
-                line_total = round(hours * labor_rate, 2)
+                base_amount, labor_mult, line_total = _labor_line(hours, labor_rate)
                 labor_total += line_total
                 labor_lines.append({
                     "description": display_name,
                     "hours": hours,
                     "rate": labor_rate,
                     "total": line_total,
+                    "baseAmount": base_amount,
+                    "laborMultiplier": labor_mult,
+                    "laborMarkupPct": round((labor_mult - 1.0) * 100.0, 2),
                     "source": "Skeleton (auto-added)",
                     "skill": None,
                     "extractionScreenshot": None,
@@ -969,7 +997,8 @@ def _clean_hist_partno(pn) -> Optional[str]:
 
 
 def _build_historical_result_payload(job: dict, vehicle, match: dict,
-                                     elapsed: float, recalls: list | None = None) -> dict:
+                                     elapsed: float, recalls: list | None = None,
+                                     service_skeleton: dict | None = None) -> dict:
     """Phase C — shape a JobResult from a matched HISTORICAL RO.
 
     The labor lines, part numbers and prices come straight from an estimate
@@ -1060,9 +1089,34 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
     # trust than one extra review click.
     match_tier = match.get("match_tier") or "keyword"
     year_gap = match.get("year_gap")
+
+    # Reconcile the matched RO against the service skeleton. A paid RO can be an
+    # INCOMPLETE record of the standard service — e.g. an old front-brake RO
+    # billed pads only, missing rotors / wear sensor / carrier bolts (exactly the
+    # gap the client flagged on the June 12 call). Surface the missing components
+    # so the advisor sees them instead of shipping a thin estimate, and never
+    # AUTO-approve a match that doesn't carry every always-required component.
+    coverage = _build_skeleton_coverage(service_skeleton, parts_lines,
+                                        include_addons=False)
+    missing_components: list[str] = []
+    coverage_complete = True
+    if coverage:
+        # Gate on missing PARTS only — the always-required physical components
+        # (pads/rotors/carrier bolts). Supply/inspection add-ons (cleaning kit,
+        # multi-point) are auto-added at send time and aren't itemised on a paid
+        # RO, so their absence must NOT demote an otherwise-complete match. Wear
+        # sensors etc. are if-equipped (always_required=False) — also non-gating.
+        missing_components = [
+            c.get("display_name") for c in coverage.get("components", [])
+            if (c.get("kind") or "part") == "part"
+            and c.get("always_required", True)
+            and not c.get("found_in_extraction")
+        ]
+        coverage_complete = not missing_components
+
     if match_tier == "exact_vin" or (conf >= 0.9 and isinstance(year_gap, int)
                                      and year_gap <= 2):
-        tier = "auto"
+        tier = "auto" if coverage_complete else "advisor_review"
     else:
         tier = "advisor_review"
     return {
@@ -1091,6 +1145,12 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
             # service_type (canonical classification) / keyword (fallback).
             "matchTier": match_tier,
             "yearGap": year_gap,
+            # Skeleton reconciliation — what the standard service expects vs what
+            # this RO actually carried. Non-empty `missingComponents` means the
+            # advisor should add those lines before sending; it also blocks
+            # auto-approval above.
+            "coverageComplete": coverage_complete,
+            "missingComponents": missing_components,
         },
         "laborItems": labor_lines,
         "partsItems": parts_lines,
@@ -1114,7 +1174,7 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
         },
         "recalls": list(recalls or []),
         "suggestedAddOns": [],
-        "serviceSkeleton": None,
+        "serviceSkeleton": coverage,
         "repairProcedure": {"items": [], "scan_status": "skipped_historical"},
     }
 
@@ -1123,6 +1183,7 @@ def _build_skeleton_coverage(
     skeleton: dict | None,
     parts_lines: list[dict],
     repair_procedure: dict | None = None,
+    include_addons: bool = True,
 ) -> dict | None:
     """Compare the static skeleton against what ALLDATA actually extracted.
 
@@ -1138,7 +1199,14 @@ def _build_skeleton_coverage(
     if not skeleton:
         return None
 
-    expected = (skeleton.get("components") or []) + (skeleton.get("addons") or [])
+    # Live path counts add-ons (cleaning kit, multi-point) because the worker
+    # auto-injects them as part lines — so they SHOULD be found. The historical
+    # path doesn't inject them (the matched RO is the shop's real billed work),
+    # so counting them would falsely read the coverage down; callers pass
+    # include_addons=False there to score against physical components only.
+    expected = list(skeleton.get("components") or [])
+    if include_addons:
+        expected += (skeleton.get("addons") or [])
     extracted_names = [
         (p.get("description") or "").lower() for p in (parts_lines or [])
     ]
@@ -1311,7 +1379,15 @@ async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dic
             except Exception:
                 recalls = []
             result = _build_historical_result_payload(
-                job, vehicle, hist, time.time() - t0, recalls=recalls)
+                job, vehicle, hist, time.time() - t0, recalls=recalls,
+                service_skeleton=service_skeleton)
+            cov = (result.get("serviceSkeleton") or {})
+            miss = result.get("historicalMatch", {}).get("missingComponents") or []
+            if miss:
+                logger.info(
+                    f"[{job_id}] historical RO#{hist['ro_number']} coverage "
+                    f"{cov.get('coverage_pct')}% — missing {len(miss)} expected "
+                    f"component(s): {', '.join(miss)} → advisor_review")
             await _post_result(client, job_id, result)
             logger.info(f"[{job_id}] DONE (historical RO#{hist['ro_number']}) "
                         f"in {time.time() - t0:.1f}s")

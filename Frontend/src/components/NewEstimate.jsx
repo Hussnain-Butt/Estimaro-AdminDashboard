@@ -339,6 +339,17 @@ const LaborStep = ({ data }) => {
                     <span className="text-text-primary font-semibold">{item.hours}h</span>
                     <span className="text-text-secondary">×</span>
                     <span className="text-text-primary font-semibold">${item.rate}/hr</span>
+                    {item.laborMarkupPct > 0 && (
+                      <>
+                        <span className="text-text-secondary">×</span>
+                        <span
+                          className="text-text-secondary"
+                          title={`Labor matrix: +${item.laborMarkupPct}% markup for ${item.hours}h (${item.laborMultiplier}×)`}
+                        >
+                          {item.laborMultiplier}×
+                        </span>
+                      </>
+                    )}
                     <span className="text-text-secondary">=</span>
                     <span className="text-accent font-bold">${item.total}</span>
                   </div>
