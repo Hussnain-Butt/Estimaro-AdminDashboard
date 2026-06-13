@@ -626,10 +626,19 @@ def _build_price_index(db_path: str) -> dict:
                 desc = _norm_desc_key(p.get("description"))
                 if not desc:
                     continue
+                # Index the WHOLESALE cost (the unit the parts matrix marks up),
+                # not the billed retail — the refresh updates cost, then re-applies
+                # the matrix. Fall back to retail unit only if no cost recorded.
+                cost = p.get("cost")
                 try:
-                    unit = round(float(p.get("total")) / (int(p.get("qty") or 1) or 1), 2)
-                except (TypeError, ValueError, ZeroDivisionError):
-                    continue
+                    unit = round(float(cost), 2) if cost not in (None, "") else 0.0
+                except (TypeError, ValueError):
+                    unit = 0.0
+                if unit <= 0:
+                    try:
+                        unit = round(float(p.get("total")) / (int(p.get("qty") or 1) or 1), 2)
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        continue
                 if unit <= 0:
                     continue
                 key = (pn, desc)
@@ -641,9 +650,9 @@ def _build_price_index(db_path: str) -> dict:
 
 def latest_corpus_price(part_number, description,
                         *, db_path: str = DB_DEFAULT) -> Optional[dict]:
-    """Most-recent unit price the shop billed for this exact (part_number,
-    description) across the whole corpus. Returns
-    {unit, date_ordinal, date, ro_number} or None when the part can't be
+    """Most-recent WHOLESALE cost the shop paid for this exact (part_number,
+    description) across the whole corpus (the unit the parts matrix marks up).
+    Returns {unit, date_ordinal, date, ro_number} or None when the part can't be
     confidently identified (junk/short SKU, missing description)."""
     pn = _norm_pn(part_number)
     desc = _norm_desc_key(description)

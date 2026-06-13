@@ -1042,9 +1042,17 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
     Flagged `source: "historical"` with the RO number + match confidence so the
     FE can render a "Matched from your RO #X" banner instead of the live-build
     flow. No ALLDATA / vendor calls run on this path — that's the whole point
-    (instant result vs the 4-7 min pipeline). Prices are the historical billed
-    prices; a future enhancement can refresh them live from the vendors.
+    (instant result vs the 4-7 min pipeline).
+
+    Pricing policy (Sergio June 13: "take part prices from the matrix so they
+    stay accurate as rates rise"): parts are repriced as the WHOLESALE cost ×
+    the shop's current parts matrix (the old billed retail was inconsistent —
+    2x–4.5x across ROs), and labor as hours × current rate × the labor matrix.
+    The recent-price refresh below first updates each part's cost to the freshest
+    cost the shop paid anywhere in the corpus, then the matrix is applied.
     """
+    from services.pricing_matrix import (
+        parts_markup_pct_for_cost, labor_multiplier_for_hours)
     default_rate = float(job.get("laborRate") or match.get("labor_rate") or 150.0)
     tax_rate = float(job.get("taxRate") or 0.0925)
     ro = match["ro_number"]
@@ -1062,55 +1070,64 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
             # historically-billed total as a fallback.
             rate = default_rate
             if hrs is not None:
-                total = round(float(hrs) * rate, 2)
+                base = round(float(hrs) * rate, 2)
+                mult = labor_multiplier_for_hours(hrs)
+                labor_lines.append({
+                    "description": _clean_hist_labor_desc(lab.get("description") or job_name),
+                    "hours": hrs, "rate": rate, "total": round(base * mult, 2),
+                    "baseAmount": base, "laborMultiplier": mult,
+                    "laborMarkupPct": round((mult - 1.0) * 100.0, 2),
+                    "source": f"Historical RO #{ro}", "skill": None,
+                    "extractionScreenshot": None,
+                })
             else:
-                total = lab.get("total")
-            labor_lines.append({
-                "description": _clean_hist_labor_desc(lab.get("description") or job_name),
-                "hours": hrs, "rate": rate, "total": total or 0.0,
-                "source": f"Historical RO #{ro}", "skill": None,
-                "extractionScreenshot": None,
-            })
+                labor_lines.append({
+                    "description": _clean_hist_labor_desc(lab.get("description") or job_name),
+                    "hours": hrs, "rate": rate, "total": lab.get("total") or 0.0,
+                    "source": f"Historical RO #{ro}", "skill": None,
+                    "extractionScreenshot": None,
+                })
         for pt in jb.get("parts") or []:
             qty = int(pt.get("qty") or 1)
-            total = pt.get("total")
-            # Show the per-unit RETAIL price Sergio billed, so qty × unit == the
-            # line total. The corpus 'cost' is the shop's WHOLESALE cost while
-            # 'total' is retail × qty — displaying cost as the unit price made
-            # "qty × $40.10 = $142" look broken. Prefer retail; else derive the
-            # unit from total/qty; else fall back to cost.
-            # Derive the unit from the BILLED line total first — it's the only
-            # value guaranteed consistent with what the customer actually paid
-            # (qty × unit == total by construction). 'retail' can be a list/MSRP
-            # reference that disagrees with the billed total (seen as
-            # "1 × $117.00 = $51.93" in the UI). Fall back retail → cost.
-            retail = pt.get("retail")
-            if total is not None and qty:
-                unit = round(float(total) / qty, 2)
-            elif retail is not None:
-                unit = round(float(retail), 2)
+            # Price via the shop's parts matrix on the WHOLESALE cost — the unit
+            # we mark up. The corpus 'cost' is wholesale; 'retail'/'total' were
+            # billed under whatever matrix applied at the time (inconsistent
+            # 2x–4.5x), so re-pricing cost × current matrix gives uniform,
+            # rate-current pricing. If no wholesale cost was recorded, fall back
+            # to the billed unit and skip markup (can't improve it).
+            raw_cost = pt.get("cost")
+            try:
+                unit = round(float(raw_cost), 2) if raw_cost not in (None, "") else 0.0
+            except (TypeError, ValueError):
+                unit = 0.0
+            if unit > 0:
+                markup_pct = parts_markup_pct_for_cost(unit)
             else:
-                unit = round(float(pt.get("cost") or 0.0), 2)
-            if total is None:
-                total = round(unit * qty, 2)
+                # No wholesale cost — best-effort fall back to billed retail unit.
+                billed, retail = pt.get("total"), pt.get("retail")
+                if billed is not None and qty:
+                    unit = round(float(billed) / qty, 2)
+                elif retail is not None:
+                    unit = round(float(retail), 2)
+                markup_pct = 0.0
             parts_lines.append({
                 "description": _clean_hist_part_desc(pt.get("description") or ""),
                 "partNumber": _clean_hist_partno(pt.get("part_number")),
                 "quantity": qty,
                 "cost": unit,
-                "markup": 0.0,
-                "total": round(float(total), 2),
+                "markup": markup_pct,
+                "total": round(unit * (1 + markup_pct / 100.0) * qty, 2),
                 "vendor": pt.get("vendor") or "Historical",
                 "source": f"Historical RO #{ro}",
             })
 
     # Recent-price refresh — a matched RO can be years old, and the shop's parts
-    # pricing spiked recently (Sergio June 12: "last 5 years the biggest spike").
-    # Replace each part's stale unit price with the most recent price the shop
-    # billed for the SAME part anywhere in the corpus. Guarded: only a STRICTLY
-    # newer price, within a 0.34x–3x band, so a generic-SKU identity collision
-    # can't inject a wild number. Fully transparent — the original price + the
-    # source RO/date come along so the UI can show "$X (2021) → $Y (2026)".
+    # COST has risen recently (Sergio: "rates keep rising"). Update each part's
+    # wholesale cost to the freshest cost the shop paid for the SAME part anywhere
+    # in the corpus, then re-apply the matrix. Guarded: only a STRICTLY newer
+    # cost, within a 0.34x–3x band, so a generic-SKU identity collision can't
+    # inject a wild number. Transparent — the original cost + source RO/date ride
+    # along so the UI can show "$X → $Y (2026)".
     from services.historical_corpus import latest_corpus_price, _parse_posted
     ro_ord = _parse_posted(match.get("date_posted"))
     refreshed_count = 0
@@ -1121,36 +1138,28 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
         if ro_ord and fresh["date_ordinal"] <= ro_ord:
             continue  # the matched RO is already as fresh
         old_unit = float(line.get("cost") or 0.0)
-        new_unit = float(fresh["unit"])
+        new_unit = float(fresh["unit"])  # freshest wholesale cost
         if old_unit <= 0 or not (0.34 <= new_unit / old_unit <= 3.0):
             continue  # implausible swing → likely a wrong identity, skip
         qty = int(line.get("quantity") or 1)
+        markup_pct = parts_markup_pct_for_cost(new_unit)
         line["originalCost"] = old_unit
         line["originalTotal"] = line.get("total")
         line["cost"] = new_unit
-        line["total"] = round(new_unit * qty, 2)
+        line["markup"] = markup_pct
+        line["total"] = round(new_unit * (1 + markup_pct / 100.0) * qty, 2)
         line["priceRefreshed"] = True
         line["priceDate"] = fresh["date"]
         line["priceSourceRO"] = fresh["ro_number"]
         refreshed_count += 1
 
-    labor_total = round(float(match.get("labor_total") or
-                              sum(l["total"] for l in labor_lines)), 2)
-    # When any line was refreshed the stored aggregate is stale — recompute from
-    # the (now-updated) lines and don't defer to the old billed grand total.
-    if refreshed_count:
-        parts_total = round(sum(float(p["total"]) for p in parts_lines), 2)
-    else:
-        parts_total = round(float(match.get("parts_total") or
-                                  sum(p["total"] for p in parts_lines)), 2)
+    # Totals come from the (matrix-priced) lines, not the old billed aggregates —
+    # those reflected the inconsistent historical pricing we just replaced.
+    labor_total = round(sum(l["total"] for l in labor_lines), 2)
+    parts_total = round(sum(float(p["total"]) for p in parts_lines), 2)
     subtotal = round(labor_total + parts_total, 2)
-    stored_total = match.get("total")
-    if stored_total and float(stored_total) > subtotal and not refreshed_count:
-        grand_total = round(float(stored_total), 2)
-        tax_amount = round(grand_total - subtotal, 2)
-    else:
-        tax_amount = round(subtotal * tax_rate, 2)
-        grand_total = round(subtotal + tax_amount, 2)
+    tax_amount = round(subtotal * tax_rate, 2)
+    grand_total = round(subtotal + tax_amount, 2)
 
     conf = float(match.get("confidence") or 0.0)
     # Honest tier routing: "auto" ONLY when the match is essentially certain —
