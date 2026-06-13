@@ -86,6 +86,7 @@ SERVICE_SKELETONS: dict[str, dict[str, Any]] = {
     "brake_front_full": {
         "service_type": "brake_front_full",
         "display_name": "Front Brake Service",
+        "flat_fee": True,  # priced as a flat shop fee (Sergio June 12)
         # Task #15 — deterministic labor-row selection. The agent is told
         # to ALWAYS try labor_preferred first; only fall back to ordered
         # labor_keywords if the preferred row literally doesn't exist on
@@ -144,6 +145,7 @@ SERVICE_SKELETONS: dict[str, dict[str, Any]] = {
     "brake_rear_full": {
         "service_type": "brake_rear_full",
         "display_name": "Rear Brake Service",
+        "flat_fee": True,
         "labor_preferred": "Rear Pads",
         "labor_default_hours": 1.2,
         "labor_keywords": [
@@ -184,6 +186,7 @@ SERVICE_SKELETONS: dict[str, dict[str, Any]] = {
     "oil_change_standard": {
         "service_type": "oil_change_standard",
         "display_name": "Oil Change",
+        "flat_fee": True,
         "labor_preferred": "Oil Change",
         "labor_default_hours": 0.5,
         "labor_keywords": [
@@ -307,6 +310,7 @@ SERVICE_SKELETONS: dict[str, dict[str, Any]] = {
     "transmission_fluid_service": {
         "service_type": "transmission_fluid_service",
         "display_name": "Transmission Fluid Service",
+        "flat_fee": True,
         "labor_preferred": "Transmission Fluid",
         "labor_default_hours": 1.0,
         "labor_keywords": [
@@ -333,6 +337,7 @@ SERVICE_SKELETONS: dict[str, dict[str, Any]] = {
     "spark_plugs": {
         "service_type": "spark_plugs",
         "display_name": "Spark Plug Replacement",
+        "flat_fee": True,
         "labor_preferred": "Spark Plug",
         "labor_default_hours": 1.0,
         "labor_keywords": [

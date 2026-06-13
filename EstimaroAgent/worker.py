@@ -881,6 +881,40 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
     tax_amount = round(subtotal * tax_rate, 2)
     grand_total = round(subtotal + tax_amount, 2)
 
+    # Flat-fee services (oil change, brakes, plugs, trans fluid) are sold at a
+    # near-fixed price per vehicle class, not a parts+labor buildup. When the
+    # skeleton flags flat_fee and the corpus has enough comparable jobs, the
+    # shop's MEDIAN past charge becomes the headline price (the itemized buildup
+    # stays below as reference) — replacing a possibly-wrong live total with the
+    # number the shop actually charges. Falls through silently when too sparse.
+    flat_fee = None
+    if service_skeleton and service_skeleton.get("flat_fee"):
+        try:
+            from services.historical_corpus import service_flat_fee
+            ff = service_flat_fee(service_skeleton.get("service_type"),
+                                  vehicle.year, vehicle.make, vehicle.model)
+        except Exception as e:
+            logger.warning(f"[payload] flat-fee lookup failed: {e}")
+            ff = None
+        if ff:
+            fee_sub = ff["median"]
+            fee_tax = round(fee_sub * tax_rate, 2)
+            flat_fee = {
+                "applied": True,
+                "subtotal": fee_sub,
+                "taxAmount": fee_tax,
+                "total": round(fee_sub + fee_tax, 2),
+                "low": ff["low"], "high": ff["high"], "n": ff["n"],
+                "basis": ff.get("basis"),
+                # The itemized buildup, kept for the advisor to compare against.
+                "computedSubtotal": subtotal,
+                "computedTotal": grand_total,
+            }
+            logger.info(
+                f"[payload] flat fee for {service_skeleton.get('service_type')}: "
+                f"${fee_sub} (median of {ff['n']} {ff.get('basis')} jobs) — "
+                f"headline replaces computed ${grand_total}")
+
     verification = meta.get("verification") or {}
     agent_run = meta.get("agent_run") or {}
 
@@ -926,6 +960,8 @@ def _build_result_payload(job: dict, vehicle, labor, meta, elapsed: float,
             "taxAmount": tax_amount,
             "total": grand_total,
         },
+        # Flat-fee headline for flat-fee services — None on variable-priced jobs.
+        "flatFee": flat_fee,
         "section_path": meta.get("section_path"),
         "extraction_confidence": float(meta.get("extraction_confidence") or 0.0),
         "verification_match": bool(verification.get("match", False)),
@@ -1213,6 +1249,9 @@ def _build_historical_result_payload(job: dict, vehicle, match: dict,
         "recalls": list(recalls or []),
         "suggestedAddOns": [],
         "serviceSkeleton": coverage,
+        # Historical matches already carry the shop's real billed price (itself a
+        # de-facto flat fee), so the matched total stays the headline.
+        "flatFee": None,
         "repairProcedure": {"items": [], "scan_status": "skipped_historical"},
     }
 

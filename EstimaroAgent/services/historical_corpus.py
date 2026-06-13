@@ -30,6 +30,7 @@ import argparse
 import json
 import re
 import sqlite3
+import statistics
 from pathlib import Path
 from typing import Any, Optional
 
@@ -655,6 +656,89 @@ def latest_corpus_price(part_number, description,
         return None
     d_ord, unit, ro, d_str = hit
     return {"unit": unit, "date_ordinal": d_ord, "date": d_str, "ro_number": ro}
+
+
+# --------------------------------------------------------------- flat-fee pricing
+# Some standard services are sold at a near-fixed price per vehicle class rather
+# than a parts+labor buildup (Sergio June 12: "brake services, it's a flat fee …
+# dial in the basic stuff like oil changes into flat fees"). For those, the most
+# honest price is the one the shop ACTUALLY charged — the median of past ROs for
+# the same service on a comparable vehicle. This replaces a possibly-wrong live
+# buildup (the "$494 should be $200–300" case) with the shop's real number.
+
+_FLAT_FEE_MIN_SAMPLES = 4  # below this the median isn't representative
+
+
+def _money(v) -> float:
+    """Coerce a corpus total (str '1,234.50' / '$120' or a number) to float."""
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).replace(",", "").replace("$", "").strip())
+    except ValueError:
+        return 0.0
+
+
+def service_flat_fee(service_type: Optional[str], year: Optional[int],
+                     make: Optional[str], model: Optional[str] = None,
+                     *, db_path: str = DB_DEFAULT) -> Optional[dict]:
+    """Shop's typical FLAT price (pre-tax) for a standard service on a comparable
+    vehicle, from the corpus. For every same-make RO, classify each job; for jobs
+    whose canonical type == service_type, take the job's pre-tax total (labor +
+    parts). Prefer samples within the year window; fall back to make-wide if too
+    few. Returns {median, low, high, n, basis} or None when too sparse to trust."""
+    if not service_type or not make:
+        return None
+    make_n = _norm(make)
+    conn = init_db(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT year, make, jobs_json FROM ros").fetchall()
+    conn.close()
+
+    totals_year: list[float] = []
+    totals_make: list[float] = []
+    for r in rows:
+        if _norm(r["make"]) != make_n and make_n not in _norm(r["make"]):
+            continue
+        ygap = None
+        if year and r["year"]:
+            try:
+                ygap = abs(int(year) - int(r["year"]))
+            except (TypeError, ValueError):
+                ygap = None
+        try:
+            jobs = json.loads(r["jobs_json"]) if r["jobs_json"] else []
+        except Exception:
+            continue
+        for jb in jobs:
+            if classify_text(jb.get("name") or "") != service_type:
+                continue
+            jt = round(sum(_money(l.get("total")) for l in (jb.get("labor") or []))
+                       + sum(_money(p.get("total")) for p in (jb.get("parts") or [])), 2)
+            if jt <= 0:
+                continue
+            totals_make.append(jt)
+            if ygap is not None and ygap <= _MAX_YEAR_GAP:
+                totals_year.append(jt)
+
+    if len(totals_year) >= _FLAT_FEE_MIN_SAMPLES:
+        totals, basis = totals_year, f"{_canonical_make(make)} ±{_MAX_YEAR_GAP}yr"
+    elif len(totals_make) >= _FLAT_FEE_MIN_SAMPLES:
+        totals, basis = totals_make, f"all {_canonical_make(make)}"
+    else:
+        return None
+
+    q1, _med, q3 = statistics.quantiles(totals, n=4)
+    return {
+        "service_type": service_type,
+        "median": round(statistics.median(totals), 2),
+        "low": round(q1, 2),
+        "high": round(q3, 2),
+        "n": len(totals),
+        "basis": basis,
+    }
 
 
 def _model_token_score(q_model_toks: set[str], series_prefix: Optional[str],

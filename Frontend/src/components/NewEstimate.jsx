@@ -995,8 +995,25 @@ const ActionsStep = ({ data, calculatedTotals, onDownloadPDF, onSaveDraft, onPus
                 <span className="text-text-secondary">Parts Items:</span>
                 <span className="text-text-primary font-semibold">{data.partsItems.length}</span>
               </div>
+              {calculatedTotals.flatFee && (
+                <div className="flex justify-between items-start pt-2 border-t border-border">
+                  <span className="text-text-secondary flex items-center gap-2">
+                    Pricing
+                    <span className="px-2 py-0.5 bg-accent/15 text-accent text-xs rounded border border-accent/30">
+                      Flat fee
+                    </span>
+                  </span>
+                  <span className="text-text-secondary text-xs text-right">
+                    Shop median of {calculatedTotals.flatFee.n} past jobs
+                    {calculatedTotals.flatFee.basis ? ` · ${calculatedTotals.flatFee.basis}` : ''}<br />
+                    range ${calculatedTotals.flatFee.low}–${calculatedTotals.flatFee.high} · itemized buildup ${calculatedTotals.flatFee.computedTotal}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between pt-2 border-t border-border">
-                <span className="text-text-primary font-bold">Total Amount:</span>
+                <span className="text-text-primary font-bold">
+                  Total Amount{calculatedTotals.flatFee ? ' (flat fee)' : ''}:
+                </span>
                 <span className="text-accent font-bold text-lg">${calculatedTotals.total}</span>
               </div>
             </div>
@@ -1238,6 +1255,8 @@ const NewEstimate = () => {
     // Task #12 — service-type skeleton + coverage. Null when worker didn't
     // recognise the service type; FE hides the panel in that case.
     const serviceSkeleton = r.serviceSkeleton || null
+    // Flat-fee headline (oil/brakes/plugs/trans fluid). Null on variable jobs.
+    const flatFee = r.flatFee || null
     // Task #13 — Repair-Procedure scan items. Surfaced separately so the
     // FE can show the raw renew/replace list even when no skeleton was
     // matched, and so the advisor sees ALLDATA's exact procedure-language
@@ -1263,6 +1282,7 @@ const NewEstimate = () => {
       recalls,
       suggestedAddOns,
       serviceSkeleton,
+      flatFee,
       repairProcedure,
       source,
       historicalMatch,
@@ -1286,6 +1306,7 @@ const NewEstimate = () => {
       recalls,
       suggestedAddOns,
       serviceSkeleton,
+      flatFee,
       repairProcedure,
       source,
       historicalMatch,
@@ -1293,13 +1314,19 @@ const NewEstimate = () => {
     }))
 
     const bd = r.breakdown || {}
+    // Flat-fee services replace the HEADLINE (subtotal/tax/total) with the
+    // shop's median past charge; the labor/parts rows stay as the computed
+    // itemized buildup (shown for reference). `flatFee` rides along so the UI
+    // can badge the total and explain why the rows don't sum to it.
+    const ff = r.flatFee && r.flatFee.applied ? r.flatFee : null
     setCalculatedTotals({
       laborTotal: (bd.laborTotal ?? 0).toFixed(2),
       partsTotal: (bd.partsTotal ?? 0).toFixed(2),
-      subtotal: (bd.subtotal ?? 0).toFixed(2),
-      taxAmount: (bd.taxAmount ?? 0).toFixed(2),
+      subtotal: ((ff ? ff.subtotal : bd.subtotal) ?? 0).toFixed(2),
+      taxAmount: ((ff ? ff.taxAmount : bd.taxAmount) ?? 0).toFixed(2),
       cleaningKit: null,
-      total: (bd.total ?? 0).toFixed(2),
+      total: ((ff ? ff.total : bd.total) ?? 0).toFixed(2),
+      flatFee: ff,
     })
 
     setConfidenceScore({

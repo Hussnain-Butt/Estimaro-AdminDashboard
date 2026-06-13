@@ -169,6 +169,13 @@ class JobResult(BaseModel):
     # `coverage_pct` over always-required components — the headline
     # number for advisor sanity-checking.
     serviceSkeleton: Optional[Dict[str, Any]] = None
+    # Flat-fee services (oil change, brakes, plugs, trans fluid) — the shop's
+    # median past charge for this service+vehicle, which becomes the headline
+    # price instead of the parts+labor buildup. None on variable-priced jobs and
+    # on historical matches (those already carry the real billed price). Loose
+    # dict: {applied, subtotal, taxAmount, total, low, high, n, basis,
+    # computedSubtotal, computedTotal}.
+    flatFee: Optional[Dict[str, Any]] = None
     # Task #13 — Repair-Procedure (R-cell) scan output. `items` is a
     # list of {action, component_key, component_phrase, quantity,
     # occurrences, contexts}. `scan_status` reports why a scan didn't
