@@ -420,7 +420,21 @@ def classify_text(text: str) -> Optional[str]:
     change" query can never bind to an "oil leak diagnostics" RO."""
     t = (text or "").lower()
     if "brake" in t or "squeak" in t or "squeal" in t or "grind" in t:
-        if "fluid" in t and "brake" in t:
+        # Pad/rotor signal — what a "front/rear brake service" actually is.
+        has_pad = any(w in t for w in
+                      ("pad", "rotor", "disc", "shoe", "caliper"))
+        # Brake ELECTRONICS / diagnostics — ABS, booster, control-unit/module
+        # coding, wheel-speed sensor faults, warning lights. They share the
+        # word "brake" but are NOT a pad/rotor job and must never bind a
+        # "front brake service" request to an ABS/booster RO (RO#47076
+        # mis-map: a 2017 Audi A4 booster-sensor + ABS-module RO came back as a
+        # "front brake" match — Sergio June 13). \babs\b avoids "absorber".
+        has_diag = bool(re.search(r"\babs\b", t)) or any(w in t for w in (
+            "booster", "module", "control unit", "hydraulic unit",
+            "wheel speed", "diagnos", "fault", "warning light", "coding"))
+        if has_diag and not has_pad:
+            return None
+        if "fluid" in t and "brake" in t and not has_pad:
             return "brake_fluid_service"
         side = "rear" if "rear" in t else "front"
         return f"brake_{side}_full"
@@ -456,6 +470,24 @@ def classify_text(text: str) -> Optional[str]:
     if "alternator" in t or "starter" in t:
         return "charging_starting"
     return None
+
+
+def _type_compatible(lt: Optional[str], q_type: Optional[str]) -> bool:
+    """Is a line/job classified as `lt` part of the requested service `q_type`?
+
+    Tighter than a raw family ('brake') match: a brake FLUID flush is its own
+    service and must NOT fold into a pad/rotor brake job — the shop does not
+    flush brake fluid as part of a front/rear brake service (Sergio June 13:
+    'brake fluid is on there but we are not doing a flush'). Without this,
+    'fluid' (a supply word, and a brake-family classification) leaks the flush
+    line back into every brake estimate."""
+    if not lt or not q_type:
+        return False
+    if lt.split("_")[0] != q_type.split("_")[0]:
+        return False
+    if q_type in ("brake_front_full", "brake_rear_full") and lt == "brake_fluid_service":
+        return False
+    return True
 
 
 def _parse_posted(s: Optional[str]) -> float:
@@ -506,12 +538,19 @@ def _extract_relevant_jobs(all_jobs: list[dict], q_type: Optional[str],
     """
     kept: list[dict] = []
     removed = 0
-    q_family = q_type.split("_")[0] if q_type else None
 
-    def _same_family(t: Optional[str]) -> bool:
-        # brake_front_full / brake_fluid_service are siblings — a dedicated
-        # brake job legitimately mixes both (bleed + pads).
-        return bool(t) and t.split("_")[0] == q_family
+    def _supply_ok(p: dict) -> bool:
+        # A supply line (cleaning kit, grease, shim) rides along only if it is
+        # type-NEUTRAL or compatible — never an incompatible sibling. 'fluid'
+        # is a supply word AND classifies brake fluid to brake_fluid_service,
+        # so without this guard a flush line rides back into a pad job through
+        # the supply path even after the family filter drops it.
+        if not (_svc_words(p.get("description") or "") & _SUPPLY_WORDS):
+            return False
+        if not q_type:
+            return True  # keyword mode: original supply ride-along
+        pt = classify_text(p.get("description") or "")
+        return pt is None or _type_compatible(pt, q_type)
 
     for j in all_jobs:
         jn = j.get("name") or ""
@@ -519,25 +558,26 @@ def _extract_relevant_jobs(all_jobs: list[dict], q_type: Optional[str],
         parts = j.get("parts") or []
         if q_type:
             jtype = classify_text(jn)
-            if jtype == q_type or _same_family(jtype):
-                # Dedicated job — keep type-neutral + same-family lines; drop
-                # lines of a DIFFERENT service family (the bundled battery).
+            if jtype == q_type or _type_compatible(jtype, q_type):
+                # Dedicated job — keep type-neutral + compatible lines; drop
+                # lines of a DIFFERENT service (bundled battery) or an
+                # incompatible sibling (brake-fluid flush in a pad job).
                 fl = [l for l in labor
                       if (lt := classify_text(l.get("description") or "")) is None
-                      or _same_family(lt)]
+                      or _type_compatible(lt, q_type)]
                 fp = [p for p in parts
                       if (pt := classify_text(p.get("description") or "")) is None
-                      or _same_family(pt)]
+                      or _type_compatible(pt, q_type)]
             else:
-                # Mixed/unrelated job — only lines that THEMSELVES classify to
-                # the requested family, plus supplies if a real line was kept.
+                # Mixed/unrelated job — only lines that THEMSELVES classify
+                # compatible, plus compatible/neutral supplies if a real line
+                # was kept.
                 fl = [l for l in labor
-                      if _same_family(classify_text(l.get("description") or ""))]
+                      if _type_compatible(classify_text(l.get("description") or ""), q_type)]
                 fp = [p for p in parts
-                      if _same_family(classify_text(p.get("description") or ""))]
+                      if _type_compatible(classify_text(p.get("description") or ""), q_type)]
                 if fl or fp:
-                    fp += [p for p in parts if p not in fp and
-                           (_svc_words(p.get("description") or "") & _SUPPLY_WORDS)]
+                    fp += [p for p in parts if p not in fp and _supply_ok(p)]
         else:
             # Keyword path (no canonical type): a line must share a concrete
             # service noun with the complaint; supplies only ride along.
@@ -548,8 +588,7 @@ def _extract_relevant_jobs(all_jobs: list[dict], q_type: Optional[str],
                   or _kw_ok(jn)]
             fp = [p for p in parts if _kw_ok(p.get("description") or "")]
             if fl or fp:
-                fp += [p for p in parts if p not in fp and
-                       (_svc_words(p.get("description") or "") & _SUPPLY_WORDS)]
+                fp += [p for p in parts if p not in fp and _supply_ok(p)]
         removed += (len(labor) - len(fl)) + (len(parts) - len(fp))
         if fl or fp:
             kept.append({**j, "labor": fl, "parts": fp})
@@ -661,14 +700,12 @@ def match_job(year: Optional[int], make: Optional[str], model: Optional[str],
         if not any((j.get("labor") or j.get("parts")) for j in used_jobs):
             continue  # no real content for this service — next candidate
         if q_type:
-            # At least ONE kept line must ITSELF classify to the requested
-            # family — a brake-named job whose lines are all vent-hose work
-            # (type-neutral) is the wrong content, not a brake estimate.
-            fam = q_type.split("_")[0]
-            def _line_fam(ln):
-                t = classify_text(ln.get("description") or "")
-                return bool(t) and t.split("_")[0] == fam
-            if not any(_line_fam(ln) for j in used_jobs
+            # At least ONE kept line must ITSELF classify COMPATIBLE with the
+            # requested service — a brake-named job whose lines are all
+            # vent-hose work (type-neutral) or only a fluid flush (incompatible
+            # sibling) is the wrong content, not a pad/rotor brake estimate.
+            if not any(_type_compatible(classify_text(ln.get("description") or ""), q_type)
+                       for j in used_jobs
                        for ln in (j.get("labor") or []) + (j.get("parts") or [])):
                 continue
         # Value floor: an RO whose relevant lines sum to pocket change ($0
