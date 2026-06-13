@@ -189,11 +189,17 @@ class JobResult(BaseModel):
 
 
 class RefreshPartInput(BaseModel):
-    """One estimate line the advisor wants repriced from current vendor stock."""
+    """One estimate line the advisor wants repriced from current vendor stock.
+    The existing cost/markup/total/vendor ride along so a line with no current
+    vendor match is echoed back UNCHANGED (re-deriving it would double-mark-up a
+    historical line whose `cost` is already a retail price)."""
     description: str = ""
     partNumber: Optional[str] = None
     quantity: int = 1
-    cost: Optional[float] = None   # current unit cost — kept when no vendor match
+    cost: Optional[float] = None
+    markup: Optional[float] = None
+    total: Optional[float] = None
+    vendor: Optional[str] = None
 
 
 class PriceRefreshRequest(BaseModel):

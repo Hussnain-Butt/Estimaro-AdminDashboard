@@ -1459,12 +1459,22 @@ async def _process_price_refresh(client: httpx.AsyncClient, job: dict) -> None:
                 })
                 refreshed += 1
             else:
-                # No current vendor match — keep the line's existing price.
-                markup_pct = parts_markup_pct_for_cost(old_cost) if old_cost else 0.0
+                # No current vendor match — echo the line back UNCHANGED. Don't
+                # re-derive the total: a historical line's `cost` is already a
+                # retail price, so applying the matrix markup here would double
+                # it. Prefer the line's own total; fall back to cost only when
+                # the caller didn't send one.
+                old_markup = p.get("markup")
+                old_total = p.get("total")
+                if old_total is None:
+                    mk = old_markup if old_markup is not None else (
+                        parts_markup_pct_for_cost(old_cost) if old_cost else 0.0)
+                    old_total = round(old_cost * (1 + mk / 100.0) * qty, 2)
                 parts_lines.append({
                     "description": desc, "partNumber": pn, "quantity": qty,
-                    "cost": old_cost, "markup": markup_pct,
-                    "total": round(old_cost * (1 + markup_pct / 100.0) * qty, 2),
+                    "cost": old_cost,
+                    "markup": old_markup if old_markup is not None else 0.0,
+                    "total": round(float(old_total), 2),
                     "vendor": p.get("vendor") or "—",
                     "priceRefreshed": False,
                 })
