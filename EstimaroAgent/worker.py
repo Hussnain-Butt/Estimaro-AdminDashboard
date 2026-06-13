@@ -1956,8 +1956,12 @@ async def _process_tekmetric_job(client: httpx.AsyncClient, job: dict) -> None:
     else:
         await _progress("Opening Tekmetric in Chrome", 20)
         try:
+            # Tekmetric write-back is a longer flow than a read job (RO create +
+            # customer + vehicle + per-line entry). push_estimate caps its own
+            # vision agent at 600s; give the outer wait_for a 60s buffer over
+            # that so the inner timeout (which returns a clean error) fires first.
             ok, result = await asyncio.wait_for(
-                tek_portal.push_estimate(estimate), timeout=JOB_TIMEOUT,
+                tek_portal.push_estimate(estimate), timeout=660,
             )
         except asyncio.TimeoutError:
             await _fail(f"Tekmetric push timed out after {JOB_TIMEOUT}s")

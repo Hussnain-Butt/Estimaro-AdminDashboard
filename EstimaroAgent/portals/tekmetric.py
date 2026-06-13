@@ -175,9 +175,25 @@ NAVIGATION PLAN (use the numbered overlays in the screenshots):
           in the same modal session — assume the value is still there
           unless a red validation message says otherwise.
 
-  4. VEHICLE — once the RO is associated with the customer, search by VIN
-     "{vin}".
-       a. If a matching vehicle row appears, select it.
+  4. VEHICLE — once the RO is associated with the customer, add the vehicle.
+       0. FIRST click the "+ Add Vehicle" / "Add Vehicle" button to OPEN the
+          vehicle modal. The VIN search field is DISABLED until that modal is
+          open — if typing the VIN fails or the field looks greyed out, you have
+          NOT opened the modal yet; click "Add Vehicle" and wait for it.
+       Then, inside the modal, use the "Lookup by License Plate or VIN" tab, type
+       the VIN "{vin}", and click "Search".
+       a. After Search runs, a RESULT CARD appears showing the decoded vehicle —
+          e.g. "{veh_year} {veh_make} {veh_model}" with Engine / Body Type /
+          Drivetrain listed underneath, and usually a line like "1 vehicle(s)
+          found". THAT CARD IS THE SELECTOR: click directly on the vehicle-name
+          text in the result card to select it and attach it to the RO. This is
+          the ONLY remaining action once a result is showing — do NOT re-type the
+          VIN or click Search again. If clicking the name does nothing, click
+          elsewhere on the same result row, or a "Select" / "Add" / "Use this
+          vehicle" button if the card shows one. After selecting, the modal
+          should close or advance to the RO — if it does, the vehicle step is
+          DONE; move to labor. If after 2 clicks on the result the modal has not
+          advanced, action="ask_human" rather than looping.
        b. If no match, click "+ New Vehicle" / "Create Vehicle". Type the
           VIN "{vin}" — Tekmetric will auto-decode year/make/model. Verify
           the decode matches "{veh_year} {veh_make} {veh_model}"; if any
@@ -191,7 +207,26 @@ NAVIGATION PLAN (use the numbered overlays in the screenshots):
           use action="find" with value "Odometer" or value "Save" — that
           scrolls the requested element into view inside the modal.
 
-  5. LABOR LINES — for EACH labor line listed above:
+  4.5 CREATE THE REPAIR ORDER — CRITICAL. The ".../repair-orders/create" page is
+     only a SETUP form: it has NO "+ Add Labor" button and you CANNOT add labor
+     here. Labor lines can only be added AFTER the repair order itself exists.
+     Do NOT scroll looking for "Add Labor" on this page — it does not exist here.
+     Instead, on the create page do exactly:
+       a. Click the "Add Concern" button and type the first labor line's
+          description (from the LABOR list above) as the customer concern — this
+          seeds a Job on the order. Confirm/save the concern if a small field or
+          dialog appears.
+       b. Click the "Create Repair Order" button (it may render as "Create
+          Repair Order Alt +"). This commits the order and navigates to the new
+          RO's detail page — the URL changes from ".../create" to
+          ".../repair-orders/<NUMBER>". That <NUMBER> is the RO# — capture it.
+       c. NEVER click "Cancel" on the create page — it discards everything.
+       d. Only AFTER the URL shows ".../repair-orders/<number>" (not "/create")
+          are you on the RO detail page where labor is added. Proceed to step 5.
+
+  5. LABOR LINES — you must now be on the RO DETAIL page (URL
+     ".../repair-orders/<number>", NOT ".../create"). For EACH labor line listed
+     above:
 
        a. Locate the "+ Add Labor" / "Add Labor" button. On the Tekmetric
           estimate / RO page it sits inside the "Jobs" or "Labor" section,
@@ -264,14 +299,35 @@ CRITICAL RULES — DO NOT VIOLATE:
 """
 
 
+_RO_LIST_URL = "https://shop.tekmetric.com/admin/shop/1846/repair-orders?board=ACTIVE&page=0"
+
+
 async def _ensure_clean_entry() -> Optional[str]:
-    """Open the Tekmetric tab and force-navigate to the RO list so the agent
-    starts from a known state. Returns None on success or a categorised
-    error string."""
+    """Force the Tekmetric tab to a FRESH repair-orders list before each run.
+
+    `open_or_focus` only FOCUSES an existing tekmetric tab — if a prior run left
+    it on a half-filled ".../repair-orders/create" form (customer phone still
+    typed, vehicle half-selected), the next run starts on that dirty form and the
+    customer/vehicle steps loop or misfire. So we always navigate the tab to the
+    RO list, auto-accepting any "Leave without saving?" prompt to discard the
+    stale draft. The agent's step 2 then opens a clean New RO."""
     try:
         async with ChromeDebugBrowser() as browser:
-            await browser.open_or_focus(PORTAL_URL, url_match="tekmetric.com")
+            page = await browser.open_or_focus(PORTAL_URL, url_match="tekmetric.com")
+
+            async def _accept_dialog(dialog):
+                try:
+                    await dialog.accept()  # "Leave" the dirty draft
+                except Exception:
+                    pass
+            page.on("dialog", _accept_dialog)
+
+            try:
+                await page.goto(_RO_LIST_URL, wait_until="domcontentloaded", timeout=25000)
+            except Exception as e:
+                logger.warning(f"[{PORTAL_NAME}] clean-entry nav warning (continuing): {e}")
             await asyncio.sleep(2)
+            logger.info(f"[{PORTAL_NAME}] clean entry — tab at {page.url}")
     except Exception as e:
         logger.error(f"[{PORTAL_NAME}] _ensure_clean_entry failed: {type(e).__name__}: {e}")
         return f"prep_failed :: {type(e).__name__}: {str(e)[:160]}"
@@ -281,8 +337,8 @@ async def _ensure_clean_entry() -> Optional[str]:
 async def push_estimate(
     estimate: dict,
     *,
-    max_steps: int = 35,
-    timeout: int = 420,
+    max_steps: int = 45,
+    timeout: int = 600,
 ) -> Tuple[bool, dict]:
     """Drive the Tekmetric write-back vision agent.
 
