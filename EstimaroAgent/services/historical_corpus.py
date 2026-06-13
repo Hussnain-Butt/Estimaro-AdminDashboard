@@ -802,6 +802,19 @@ def _extract_relevant_jobs(all_jobs: list[dict], q_type: Optional[str],
         jn = j.get("name") or ""
         labor = j.get("labor") or []
         parts = j.get("parts") or []
+        # Job-level side gate — for a sided service (front/rear brakes or shocks),
+        # skip a job whose NAME names the OPPOSITE axle ("Rear Brake Service" for a
+        # front request). classify_text() defaults a generic, side-less "Brake
+        # Service" to front, which would otherwise make a rear request silently
+        # bind a front job (and vice versa). Generic jobs (no side word) still
+        # match either side; same-side jobs match.
+        if q_type and ("front" in q_type or "rear" in q_type):
+            want = "front" if "front" in q_type else "rear"
+            other = "rear" if want == "front" else "front"
+            jl = jn.lower()
+            if re.search(rf"\b{other}\b", jl) and not re.search(rf"\b{want}\b", jl):
+                removed += len(labor) + len(parts)
+                continue
         if q_type:
             jtype = classify_text(jn)
             if jtype == q_type or _type_compatible(jtype, q_type):
