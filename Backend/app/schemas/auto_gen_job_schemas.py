@@ -183,6 +183,28 @@ class JobResult(BaseModel):
     # Always present so the FE can display either the items or the
     # diagnostic, never silently empty.
     repairProcedure: Optional[Dict[str, Any]] = None
+    # On-demand vendor price refresh — {refreshed, checked, vendor} summary so
+    # the FE can toast "Refreshed N of M part prices from vendors".
+    priceRefreshSummary: Optional[Dict[str, Any]] = None
+
+
+class RefreshPartInput(BaseModel):
+    """One estimate line the advisor wants repriced from current vendor stock."""
+    description: str = ""
+    partNumber: Optional[str] = None
+    quantity: int = 1
+    cost: Optional[float] = None   # current unit cost — kept when no vendor match
+
+
+class PriceRefreshRequest(BaseModel):
+    """Advisor-triggered: reprice an existing estimate's parts against current
+    Worldpac/SSF stock. Carries the VIN (re-decoded worker-side for the vendor
+    vehicle context) + the parts to reprice. No ALLDATA run."""
+    vin: str = Field(..., min_length=11, max_length=17)
+    serviceRequest: str = ""
+    parts: List[RefreshPartInput] = Field(default_factory=list)
+    laborRate: Optional[float] = 150.0
+    taxRate: Optional[float] = 0.0925
 
 
 class JobSubmitRequest(BaseModel):
@@ -236,6 +258,10 @@ class WorkerClaimResponse(BaseModel):
     laborRate: float = 150.0
     partsMarkup: float = 30.0
     taxRate: float = 0.0925
+    # Job mode — "estimate" (full build) or "price_refresh" (vendor reprice of
+    # refresh_payload's parts only). The worker dispatches on this.
+    mode: str = "estimate"
+    refresh_payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkerProgressUpdate(BaseModel):

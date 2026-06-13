@@ -19,7 +19,9 @@ from app.models.auto_gen_job import (
 from app.schemas.auto_gen_job_schemas import (
     JobSubmitRequest, JobSubmitResponse, JobStatusResponse,
     WorkerClaimResponse, WorkerProgressUpdate, WorkerResultPayload, WorkerErrorPayload,
+    PriceRefreshRequest,
 )
+from app.models.auto_gen_job import JOB_MODE_REFRESH
 from app.services.auto_generate_service import auto_generate_service
 import traceback
 import os
@@ -188,6 +190,43 @@ async def submit_job(req: JobSubmitRequest):
     )
 
 
+@router.post(
+    "/jobs/refresh-prices",
+    response_model=JobSubmitResponse,
+    summary="Submit an on-demand vendor price-refresh job",
+    description="Advisor-triggered. Reprices an existing estimate's parts against "
+                "current Worldpac/SSF stock (no ALLDATA run). Poll GET /jobs/{job_id} "
+                "for the refreshed partsItems + breakdown.",
+)
+async def submit_price_refresh(req: PriceRefreshRequest):
+    if not req.parts:
+        raise HTTPException(status_code=400, detail="No parts to refresh")
+    job = AutoGenJob(
+        vin=req.vin.strip().upper(),
+        serviceRequest=req.serviceRequest.strip(),
+        laborRate=req.laborRate or 150.0,
+        taxRate=req.taxRate or 0.0925,
+        mode=JOB_MODE_REFRESH,
+        refresh_payload={
+            "vin": req.vin.strip().upper(),
+            "serviceRequest": req.serviceRequest.strip(),
+            "parts": [p.model_dump() for p in req.parts],
+            "laborRate": req.laborRate or 150.0,
+            "taxRate": req.taxRate or 0.0925,
+        },
+        progress="Queued — waiting for agent to refresh vendor prices",
+        progress_pct=5,
+    )
+    await job.insert()
+    return JobSubmitResponse(
+        job_id=job.job_id,
+        status=job.status,
+        progress=job.progress,
+        progress_pct=job.progress_pct,
+        created_at=job.created_at,
+    )
+
+
 @router.get(
     "/jobs/{job_id}",
     response_model=JobStatusResponse,
@@ -274,7 +313,8 @@ async def worker_claim_next(
     job.worker_id = worker_id
     job.attempts += 1
     job.started_at = datetime.utcnow()
-    job.progress = "Worker picked up — decoding VIN"
+    job.progress = ("Worker picked up — refreshing vendor prices"
+                    if job.mode == JOB_MODE_REFRESH else "Worker picked up — decoding VIN")
     job.progress_pct = 10
     await job.save()
     return WorkerClaimResponse(
@@ -284,6 +324,7 @@ async def worker_claim_next(
         customerName=job.customerName, customerEmail=job.customerEmail,
         customerPhone=job.customerPhone, odometer=job.odometer,
         laborRate=job.laborRate, partsMarkup=job.partsMarkup, taxRate=job.taxRate,
+        mode=job.mode, refresh_payload=job.refresh_payload,
     )
 
 

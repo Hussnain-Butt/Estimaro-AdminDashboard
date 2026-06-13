@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { gsap } from 'gsap'
 import { ExclamationCircleIcon, TrashIcon, PlusIcon, SparklesIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline'
-import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, getAutoGenJob, pushToTekmetric, pollTekmetricJob, generateApprovalLink, createDraftEstimate, updateEstimate } from '../services/api'
+import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, getAutoGenJob, submitPriceRefreshJob, pushToTekmetric, pollTekmetricJob, generateApprovalLink, createDraftEstimate, updateEstimate } from '../services/api'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import VendorCompareStep from './estimate-steps/VendorCompareStep'
@@ -385,7 +385,7 @@ const LaborStep = ({ data }) => {
   )
 }
 
-const PartsStep = ({ data }) => {
+const PartsStep = ({ data, onRefreshPrices, isRefreshingPrices }) => {
   // The parts breakdown is built from ALLDATA's OEM list (per labor article).
   // Real vendor prices live in the Vendor Compare step. The label below
   // honours that — saying "PartsLink24" here was a leftover lie since PL24
@@ -394,11 +394,24 @@ const PartsStep = ({ data }) => {
     (p) => !p.vendor || /alldata/i.test(p.vendor),
   )
   const sourceLabel = allFromAlldata ? 'ALLDATA OEM list' : 'OEM list + vendor matches'
+  const canRefresh = (data.partsItems || []).length > 0 && !!data.vin
   return (
     <div className="space-y-6">
-      <div className="flex items-baseline justify-between">
+      <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-2xl font-bold text-text-primary">Parts</h2>
-        <span className="text-xs text-text-secondary">Source: {sourceLabel}</span>
+        <div className="flex items-center gap-3">
+          {canRefresh && onRefreshPrices && (
+            <button
+              onClick={onRefreshPrices}
+              disabled={isRefreshingPrices}
+              title="Reprice these parts against current Worldpac/SSF stock. Takes ~30s per part."
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent/40 text-accent text-xs font-semibold hover:bg-accent/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isRefreshingPrices ? '↻ Refreshing…' : '↻ Refresh prices from vendors'}
+            </button>
+          )}
+          <span className="text-xs text-text-secondary">Source: {sourceLabel}</span>
+        </div>
       </div>
 
       {data.partsItems.length === 0 ? (
@@ -1036,6 +1049,7 @@ const NewEstimate = () => {
   const [isGenerating, setIsGenerating] = useState(false)
   const [isPushing, setIsPushing] = useState(false)
   const [isSending, setIsSending] = useState(false)
+  const [isRefreshingPrices, setIsRefreshingPrices] = useState(false)
   const contentRef = useRef(null)
 
   const [formData, setFormData] = useState({
@@ -1076,6 +1090,84 @@ const NewEstimate = () => {
   const [tekmetricResult, setTekmetricResult] = useState(null)
   // tekmetricResult shape: { ro_number, ro_url, customer_action, vehicle_action,
   //                          labor_lines_added, parts_lines_added, note }
+
+  // On-demand vendor price refresh (advisor button on the Parts step). Enqueues
+  // a price_refresh job (vendor lookup only, no ALLDATA), then merges the
+  // repriced part lines back into the estimate and recomputes the total. On a
+  // flat-fee estimate the headline stays the flat fee — only the itemized parts
+  // buildup updates.
+  const handleRefreshPrices = async () => {
+    const parts = formData.partsItems || []
+    if (!formData.vin || parts.length === 0) {
+      toast.error('Need a VIN and at least one part to refresh prices', 'Cannot refresh')
+      return
+    }
+    setIsRefreshingPrices(true)
+    try {
+      const submit = await submitPriceRefreshJob({
+        vin: formData.vin,
+        serviceRequest: formData.serviceRequest,
+        parts: parts.map((p) => ({
+          description: p.description,
+          partNumber: p.partNumber,
+          quantity: p.quantity,
+          cost: p.cost,
+        })),
+        laborRate: formData.laborRate,
+        taxRate: formData.taxRate,
+      })
+      if (!submit.success) {
+        toast.error(submit.error || 'Failed to start price refresh', 'Refresh failed')
+        return
+      }
+      const poll = await pollAutoGenJob(submit.data.job_id, { intervalMs: 2500, timeoutMs: 300000 })
+      const job = poll.data
+      if (!poll.success || !job || job.status !== 'success') {
+        toast.error(job?.error || poll.error || 'Vendor price refresh failed', 'Refresh failed')
+        return
+      }
+      const r = job.result || {}
+      const refreshedParts = (r.partsItems || []).map((item, idx) => ({
+        id: idx + 1,
+        description: item.description,
+        partNumber: item.partNumber,
+        quantity: item.quantity,
+        cost: item.cost,
+        markup: item.markup,
+        total: parseFloat(item.total).toFixed(2),
+        vendor: item.vendor || '—',
+        priceRefreshed: !!item.priceRefreshed,
+        originalCost: item.originalCost ?? null,
+      }))
+      const newPartsTotal = Number(
+        r.breakdown?.partsTotal ??
+          refreshedParts.reduce((a, b) => a + parseFloat(b.total || 0), 0),
+      )
+      setFormData((prev) => ({ ...prev, partsItems: refreshedParts }))
+      setCalculatedTotals((prev) => {
+        const laborTotal = parseFloat(prev.laborTotal || 0)
+        const subtotal = laborTotal + newPartsTotal
+        const taxAmount = subtotal * (Number(formData.taxRate) || 0.0925)
+        const ff = prev.flatFee // flat-fee headline must survive a parts reprice
+        return {
+          ...prev,
+          partsTotal: newPartsTotal.toFixed(2),
+          subtotal: (ff ? parseFloat(prev.subtotal) : subtotal).toFixed(2),
+          taxAmount: (ff ? parseFloat(prev.taxAmount) : taxAmount).toFixed(2),
+          total: (ff ? parseFloat(prev.total) : subtotal + taxAmount).toFixed(2),
+        }
+      })
+      const s = r.priceRefreshSummary || {}
+      toast.success(
+        `Refreshed ${s.refreshed ?? 0} of ${s.checked ?? refreshedParts.length} part prices from vendors`,
+        'Prices updated',
+      )
+    } catch (e) {
+      toast.error(e.message || 'Price refresh error', 'Refresh failed')
+    } finally {
+      setIsRefreshingPrices(false)
+    }
+  }
 
   // Auto-Generate Handler — NEW queue-based flow (frontend → backend → VPS agent)
   const handleAutoGenerate = async () => {
@@ -1838,7 +1930,7 @@ const NewEstimate = () => {
       case 1:
         return <LaborStep data={formData} />
       case 2:
-        return <PartsStep data={formData} />
+        return <PartsStep data={formData} onRefreshPrices={handleRefreshPrices} isRefreshingPrices={isRefreshingPrices} />
       case 3:
         return <VendorCompareStep vendorData={vendorData} />
       case 4:

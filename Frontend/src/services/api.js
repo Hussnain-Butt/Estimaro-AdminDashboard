@@ -264,6 +264,32 @@ export const submitAutoGenJob = async (intake) => {
   }
 };
 
+// On-demand vendor price refresh — reprice an existing estimate's parts against
+// current Worldpac/SSF stock. Returns a job_id; poll with pollAutoGenJob (same
+// /jobs/{id} endpoint). Result carries refreshed partsItems + breakdown.partsTotal.
+export const submitPriceRefreshJob = async ({ vin, serviceRequest, parts, laborRate, taxRate }) => {
+  try {
+    const response = await api.post('/auto-generate/jobs/refresh-prices', {
+      vin,
+      serviceRequest: serviceRequest || '',
+      parts: (parts || []).map((p) => ({
+        description: p.description || '',
+        partNumber: p.partNumber || null,
+        quantity: p.quantity || 1,
+        cost: p.cost != null ? Number(p.cost) : null,
+      })),
+      laborRate: laborRate ? Number(laborRate) : 150,
+      taxRate: taxRate ? Number(taxRate) : 0.0925,
+    });
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to submit price refresh',
+    };
+  }
+};
+
 export const getAutoGenJob = async (jobId) => {
   try {
     const response = await api.get(`/auto-generate/jobs/${jobId}`);

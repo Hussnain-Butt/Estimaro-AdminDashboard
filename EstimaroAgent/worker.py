@@ -1375,6 +1375,115 @@ def _build_skeleton_coverage(
     }
 
 
+async def _process_price_refresh(client: httpx.AsyncClient, job: dict) -> None:
+    """On-demand vendor price refresh (advisor button). Reprices an existing
+    estimate's parts against current Worldpac/SSF stock — no ALLDATA run. The
+    matched part SELECTION is kept; only each line's cost/total is refreshed to
+    the cheapest current in-stock vendor quote (then marked up per the parts
+    matrix). Lines with no vendor match keep their existing price untouched."""
+    job_id = job["job_id"]
+    payload = job.get("refresh_payload") or {}
+    vin = (payload.get("vin") or job.get("vin") or "").strip()
+    parts_in = payload.get("parts") or []
+    tax_rate = float(payload.get("taxRate") or 0.0925)
+    complaint = (payload.get("serviceRequest") or "").strip() or None
+    t0 = time.time()
+    logger.info(f"[{job_id}] PRICE REFRESH — {len(parts_in)} part(s)  VIN={vin}")
+    try:
+        if not parts_in:
+            await _post_failure(client, job_id, "No parts to refresh")
+            return
+        await _post_progress(client, job_id, "Decoding VIN for vendor lookup", 20)
+        try:
+            vehicle = await decode_vin(vin)
+        except Exception as e:
+            await _post_failure(client, job_id, f"VIN decode failed: {e}")
+            return
+        if not (vehicle.year and vehicle.make and vehicle.model):
+            await _post_failure(
+                client, job_id,
+                f"VIN decoded incompletely: '{vehicle.year} {vehicle.make} "
+                f"{vehicle.model}' — can't price across vendors")
+            return
+
+        from portals.vendors import gather_quotes, best_quote
+        from services.pricing_matrix import parts_markup_pct_for_cost
+        try:
+            from portals.auth import ensure_logged_in
+            await ensure_logged_in("worldpac")
+            await ensure_logged_in("ssf")
+        except Exception as e:
+            logger.warning(f"[{job_id}] vendor relogin (non-fatal): {e}")
+
+        parts_lines: list[dict] = []
+        refreshed = 0
+        n = len(parts_in)
+        for i, p in enumerate(parts_in):
+            desc = (p.get("description") or "").strip()
+            pn = p.get("partNumber")
+            qty = int(p.get("qty") or p.get("quantity") or 1)
+            old_cost = float(p.get("cost") or 0.0)
+            req_key = str(pn) if pn else desc
+            await _post_progress(
+                client, job_id,
+                f"Pricing '{desc[:38]}' across vendors ({i + 1}/{n})",
+                min(30 + (i * 60) // max(n, 1), 90))
+
+            new_unit, vendor_label = None, None
+            try:
+                vq = await gather_quotes(vehicle, desc,
+                                         oem_hint=(str(pn) if pn else None),
+                                         complaint=complaint)
+                bq = best_quote(vq, req_key) if vq else None
+                if bq is None and vq:  # fall back to cheapest priced of any row
+                    priced = [q for q in vq if q.price is not None]
+                    bq = min(priced, key=lambda q: q.price) if priced else None
+                if bq is not None and bq.price is not None:
+                    new_unit = round(float(bq.price), 2)
+                    vendor_label = bq.vendor or "Vendor"
+                    brand = (bq.brand or "").strip()
+                    if brand:
+                        vendor_label = f"{vendor_label} · {brand}"
+            except Exception as e:
+                logger.warning(f"[{job_id}] vendor lookup failed for '{desc}': {e}")
+
+            if new_unit is not None and new_unit > 0:
+                markup_pct = parts_markup_pct_for_cost(new_unit)
+                parts_lines.append({
+                    "description": desc, "partNumber": pn, "quantity": qty,
+                    "cost": new_unit, "markup": markup_pct,
+                    "total": round(new_unit * (1 + markup_pct / 100.0) * qty, 2),
+                    "vendor": vendor_label,
+                    "priceRefreshed": True,
+                    "originalCost": old_cost or None,
+                })
+                refreshed += 1
+            else:
+                # No current vendor match — keep the line's existing price.
+                markup_pct = parts_markup_pct_for_cost(old_cost) if old_cost else 0.0
+                parts_lines.append({
+                    "description": desc, "partNumber": pn, "quantity": qty,
+                    "cost": old_cost, "markup": markup_pct,
+                    "total": round(old_cost * (1 + markup_pct / 100.0) * qty, 2),
+                    "vendor": p.get("vendor") or "—",
+                    "priceRefreshed": False,
+                })
+
+        parts_total = round(sum(pl["total"] for pl in parts_lines), 2)
+        result = {
+            "partsItems": parts_lines,
+            "breakdown": {"partsTotal": parts_total},
+            "priceRefreshSummary": {"refreshed": refreshed, "checked": n,
+                                    "elapsed_sec": round(time.time() - t0, 1)},
+        }
+        await _post_result(client, job_id, result)
+        logger.info(f"[{job_id}] PRICE REFRESH DONE — {refreshed}/{n} repriced, "
+                    f"partsTotal=${parts_total} in {time.time() - t0:.1f}s")
+    except Exception as e:
+        logger.exception(f"[{job_id}] price refresh crashed")
+        await _post_failure(client, job_id, f"Price refresh error: {e}")
+
+
 async def _process_job(client: httpx.AsyncClient, hermes: HermesClient, job: dict) -> None:
     job_id = job["job_id"]
     vin = job["vin"]
@@ -1864,7 +1973,10 @@ async def main_loop():
 
             job = await _claim_next(client)
             if job:
-                await _process_job(client, hermes, job)
+                if job.get("mode") == "price_refresh":
+                    await _process_price_refresh(client, job)
+                else:
+                    await _process_job(client, hermes, job)
                 # Brief pause to let ALLDATA settle
                 await asyncio.sleep(2)
             else:

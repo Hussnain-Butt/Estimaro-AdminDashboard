@@ -11,6 +11,12 @@ JOB_RUNNING = "running"
 JOB_SUCCESS = "success"
 JOB_FAILED = "failed"
 
+# Job mode — a full estimate build, or an on-demand vendor price refresh of an
+# existing estimate's parts (advisor-triggered; runs the vendor lookup only,
+# never ALLDATA). Same queue / claim / progress / result lifecycle for both.
+JOB_MODE_ESTIMATE = "estimate"
+JOB_MODE_REFRESH = "price_refresh"
+
 
 class AutoGenJob(Document):
     job_id: str = Field(default_factory=lambda: f"job_{uuid.uuid4().hex[:12]}")
@@ -24,6 +30,11 @@ class AutoGenJob(Document):
     laborRate: float = 150.0
     partsMarkup: float = 30.0
     taxRate: float = 0.0925
+
+    # Job mode + payload for the price-refresh mode (the parts to reprice +
+    # vehicle context). Empty for normal estimate jobs.
+    mode: str = JOB_MODE_ESTIMATE
+    refresh_payload: dict = Field(default_factory=dict)
 
     status: str = JOB_QUEUED
     progress: str = "Queued"
