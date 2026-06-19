@@ -261,6 +261,26 @@ export const transcribeAudio = async (blob) => {
   }
 };
 
+// List advisor feedback (newest first), optionally filtered by status.
+export const getEstimateFeedback = async (status) => {
+  try {
+    const response = await api.get('/feedback', { params: status ? { status } : {} });
+    return { success: true, data: response.data };
+  } catch (error) {
+    return { success: false, error: error.response?.data?.detail || error.message || 'Failed to load feedback' };
+  }
+};
+
+// Mark a feedback item reviewed / resolved.
+export const updateFeedbackStatus = async (feedbackId, status) => {
+  try {
+    await api.patch(`/feedback/${feedbackId}`, { status });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.response?.data?.detail || error.message || 'Failed to update' };
+  }
+};
+
 // Advisor feedback on a specific estimate (voice→text or typed). Anchored to
 // the estimate context so the team knows exactly which estimate it's about.
 export const submitEstimateFeedback = async (payload) => {

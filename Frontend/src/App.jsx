@@ -8,6 +8,7 @@ import Dashboard from './components/Dashboard'
 import NewEstimate from './components/NewEstimate'
 import Estimates from './components/Estimates'
 import ReviewQueue from './components/ReviewQueue'
+import FeedbackReview from './components/FeedbackReview'
 import Customers from './components/Customers'
 import Vendors from './components/Vendors'
 import Reports from './components/Reports'
@@ -54,6 +55,7 @@ function App() {
                         <Route path="/new-estimate" element={<NewEstimate />} />
                         <Route path="/estimates" element={<Estimates />} />
                         <Route path="/review" element={<ReviewQueue />} />
+                        <Route path="/feedback" element={<FeedbackReview />} />
                         <Route path="/customers" element={<Customers />} />
                         <Route path="/vendors" element={<Vendors />} />
                         <Route path="/reports" element={<Reports />} />
