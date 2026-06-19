@@ -13,6 +13,7 @@ import {
   Cog6ToothIcon,
   ShieldExclamationIcon,
   ChatBubbleLeftRightIcon,
+  MicrophoneIcon,
 } from '@heroicons/react/24/outline'
 import logo from '../assets/logo.jpg' // सुनिश्चित करें कि आपका लोगो src/assets/ में है
 
@@ -21,6 +22,7 @@ const navLinks = [
   { text: 'New Estimate', path: '/new-estimate', icon: PlusIcon },
   { text: 'Estimates', path: '/estimates', icon: DocumentTextIcon },
   { text: 'Review Queue', path: '/review', icon: ShieldExclamationIcon },
+  { text: 'Talk to Assistant', path: '/assistant', icon: MicrophoneIcon },
   { text: 'Feedback', path: '/feedback', icon: ChatBubbleLeftRightIcon },
   { text: 'Customers', path: '/customers', icon: UserGroupIcon },
   { text: 'Vendors', path: '/vendors', icon: TagIcon },
