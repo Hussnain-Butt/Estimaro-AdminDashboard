@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { gsap } from 'gsap'
 import { ExclamationCircleIcon, TrashIcon, PlusIcon, SparklesIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline'
-import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, getAutoGenJob, submitPriceRefreshJob, pushToTekmetric, pollTekmetricJob, generateApprovalLink, createDraftEstimate, updateEstimate, submitEstimateFeedback, transcribeAudio } from '../services/api'
+import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, getAutoGenJob, submitPriceRefreshJob, pushToTekmetric, pollTekmetricJob, generateApprovalLink, createDraftEstimate, updateEstimate, submitEstimateFeedback, transcribeAudio, getVoiceAgentUrl, submitConversation } from '../services/api'
+import { useConversation, ConversationProvider } from '@elevenlabs/react'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import VendorCompareStep from './estimate-steps/VendorCompareStep'
@@ -691,86 +692,115 @@ const PartsStep = ({ data, onRefreshPrices, isRefreshingPrices }) => {
 
 // Push-to-Tekmetric lives on the Actions step now; PreviewStep keeps
 // `onSendApproval` only.
-// Voice/text feedback on THIS estimate. Voice→text runs through the backend's
-// ElevenLabs Scribe proxy (works on any browser, higher accuracy, key stays
-// server-side): we record with MediaRecorder, upload the clip, get the
-// transcript back into an EDITABLE field so the advisor can fix any mis-hearing
-// before sending. Falls back to plain typing if the mic/transcription is
-// unavailable.
-const EstimateFeedbackWidget = ({ data, total }) => {
+// Feedback on THIS estimate — two ways:
+//  1) LIVE two-way voice agent (ElevenLabs Conversational AI): the advisor talks
+//     to an assistant that listens, replies in voice, and asks clarifying
+//     questions; the whole conversation is transcribed and saved. The signed
+//     WebSocket URL is minted server-side so the API key never reaches the FE.
+//  2) Type a note (always-available fallback).
+//
+// `useConversation` (and all the convai sub-hooks) require a `ConversationProvider`
+// in the tree, so the public widget is a thin wrapper that supplies one; the real
+// logic lives in EstimateFeedbackInner.
+const EstimateFeedbackWidget = ({ data, total }) => (
+  <ConversationProvider>
+    <EstimateFeedbackInner data={data} total={total} />
+  </ConversationProvider>
+)
+
+const EstimateFeedbackInner = ({ data, total }) => {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
-  const [recording, setRecording] = useState(false)
-  const [transcribing, setTranscribing] = useState(false)
-  const [usedVoice, setUsedVoice] = useState(false)
   const [sending, setSending] = useState(false)
   const [sent, setSent] = useState(false)
-  const recRef = useRef(null)
-  const chunksRef = useRef([])
-  const streamRef = useRef(null)
+  const [callState, setCallState] = useState('idle') // idle | connecting | live | saving
+  const [turns, setTurns] = useState([])             // {role:'you'|'assistant', text}
+  const turnsRef = useRef([])
+  const convoIdRef = useRef(null)
 
-  const stopTracks = () => {
-    streamRef.current?.getTracks().forEach((t) => t.stop())
-    streamRef.current = null
+  const v = data.vehicleInfo || {}
+  const vehicleStr = [v.year, v.make, v.model].filter(Boolean).join(' ')
+
+  const ctx = () => ({
+    job_id: data.jobId || data.job_id || null,
+    estimate_id: data.estimateId || null,
+    vin: data.vin || v.vin || null,
+    vehicle: vehicleStr || null,
+    service_request: data.serviceRequest || null,
+    estimate_total: total != null ? Number(total) : null,
+    estimate_source: data.source || 'live',
+    match_tier: data.historicalMatch?.matchTier || null,
+    advisor_name: 'Sergio',
+  })
+
+  const saveConversation = async () => {
+    const t = turnsRef.current
+    if (!t.length) { setCallState('idle'); return }
+    const transcript = t.map((x) => `${x.role === 'you' ? 'Advisor' : 'Assistant'}: ${x.text}`).join('\n')
+    setCallState('saving')
+    const res = await submitConversation({
+      transcript,
+      conversation_id: typeof convoIdRef.current === 'string' ? convoIdRef.current : null,
+      ...ctx(),
+    })
+    setCallState('idle')
+    if (res.success) { setSent(true); toast.success('Conversation saved — thank you!', 'Logged') }
   }
 
-  const toggleMic = async () => {
-    if (recording) { recRef.current?.stop(); return }
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      toast.error('Mic not available here — please type your feedback instead.')
-      return
-    }
+  const conversation = useConversation({
+    onConnect: (info) => {
+      // SDK hands us the conversationId here (startSession returns void in v1.7).
+      if (info?.conversationId) convoIdRef.current = info.conversationId
+      setCallState('live')
+    },
+    onDisconnect: () => saveConversation(),
+    onError: () => { toast.error('Voice agent hiccup — you can type instead.'); setCallState('idle') },
+    onMessage: (m) => {
+      if (!m?.message) return
+      const role = m.source === 'user' ? 'you' : 'assistant'
+      turnsRef.current = [...turnsRef.current, { role, text: m.message }]
+      setTurns(turnsRef.current)
+    },
+  })
+
+  const startCall = async () => {
+    setSent(false); turnsRef.current = []; setTurns([]); convoIdRef.current = null
+    setCallState('connecting')
+    const urlRes = await getVoiceAgentUrl()
+    if (!urlRes.success) { toast.error(urlRes.error || 'Voice agent unavailable'); setCallState('idle'); return }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      streamRef.current = stream
-      const rec = new MediaRecorder(stream)
-      chunksRef.current = []
-      rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data) }
-      rec.onstop = async () => {
-        stopTracks()
-        setRecording(false)
-        const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
-        if (!blob.size) return
-        setTranscribing(true)
-        const r = await transcribeAudio(blob)
-        setTranscribing(false)
-        if (r.success) {
-          setUsedVoice(true)
-          setText((prev) => (prev ? prev.trim() + ' ' : '') + r.text)
-        } else {
-          toast.error(r.error || 'Could not transcribe — type your feedback instead.')
-        }
-      }
-      recRef.current = rec
-      setRecording(true)
-      rec.start()
+      await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch { toast.error('Mic permission needed to talk to the assistant.'); setCallState('idle'); return }
+    try {
+      // startSession returns void in v1.7 — the conversationId arrives via onConnect.
+      await conversation.startSession({
+        signedUrl: urlRes.data.signed_url,
+        connectionType: 'websocket',
+        dynamicVariables: {
+          vehicle: vehicleStr || 'this vehicle',
+          service: data.serviceRequest || 'this service',
+          total: total != null ? `$${Number(total).toFixed(2)}` : 'the estimate total',
+        },
+      })
     } catch {
-      toast.error('Mic permission denied — type your feedback instead.')
+      toast.error('Could not start the voice agent — you can type instead.')
+      setCallState('idle')
     }
   }
 
-  const send = async () => {
+  const endCall = async () => { try { await conversation.endSession() } catch { /* noop */ } }
+
+  const sendTyped = async () => {
     const msg = text.trim()
     if (!msg) { toast.error('Add your feedback first'); return }
     setSending(true)
-    const v = data.vehicleInfo || {}
-    const res = await submitEstimateFeedback({
-      message: msg,
-      input_mode: usedVoice ? 'voice' : 'text',
-      job_id: data.jobId || data.job_id || null,
-      estimate_id: data.estimateId || null,
-      vin: data.vin || v.vin || null,
-      vehicle: [v.year, v.make, v.model].filter(Boolean).join(' ') || null,
-      service_request: data.serviceRequest || null,
-      estimate_total: total != null ? Number(total) : null,
-      estimate_source: data.source || 'live',
-      match_tier: data.historicalMatch?.matchTier || null,
-      advisor_name: 'Sergio',
-    })
+    const res = await submitEstimateFeedback({ message: msg, input_mode: 'text', ...ctx() })
     setSending(false)
-    if (res.success) { setSent(true); setText(''); setUsedVoice(false); toast.success('Feedback sent — thank you!', 'Logged') }
+    if (res.success) { setSent(true); setText(''); toast.success('Feedback sent — thank you!', 'Logged') }
     else toast.error(res.error || 'Could not send feedback', 'Error')
   }
+
+  const inCall = callState === 'connecting' || callState === 'live'
 
   return (
     <div className="bg-background p-4 rounded-lg border border-border">
@@ -779,36 +809,71 @@ const EstimateFeedbackWidget = ({ data, total }) => {
         {!open && (
           <button onClick={() => { setOpen(true); setSent(false) }}
             className="text-sm px-3 py-1.5 rounded-lg border border-primary/50 text-primary hover:bg-primary/10">
-            🎙️ Tell us what to fix
+            🎙️ Give feedback
           </button>
         )}
       </div>
       {open && (
         <div className="mt-3 space-y-3">
           <p className="text-xs text-text-secondary">
-            Speak or type — exactly what's wrong or what you'd change on THIS estimate
-            ({[data.vehicleInfo?.year, data.vehicleInfo?.make, data.vehicleInfo?.model].filter(Boolean).join(' ')}).
+            Talk to the assistant about THIS estimate
+            ({vehicleStr || 'this vehicle'}) — it listens, replies, and notes everything.
           </p>
-          <div className="flex gap-2">
-            <button onClick={toggleMic} disabled={transcribing}
-              className={`px-3 py-2 rounded-lg border text-sm font-medium whitespace-nowrap disabled:opacity-50 ${recording
-                ? 'border-error/60 bg-error/15 text-error animate-pulse'
-                : 'border-border text-text-primary hover:bg-card'}`}>
-              {recording ? '⏹ Stop' : transcribing ? 'Transcribing…' : '🎙️ Speak'}
-            </button>
-            <textarea value={text} onChange={(e) => setText(e.target.value)}
-              rows={3} placeholder="e.g. The labor time is too high for this job; we don't replace the calipers on a standard brake service."
-              className="flex-1 bg-card border border-border rounded-lg p-2 text-sm text-text-primary resize-y" />
+
+          {/* Live voice agent */}
+          <div className="flex items-center gap-3 flex-wrap">
+            {!inCall ? (
+              <button onClick={startCall}
+                className="px-4 py-2 rounded-lg bg-primary text-background font-semibold flex items-center gap-2">
+                📞 Talk to assistant
+              </button>
+            ) : (
+              <button onClick={endCall}
+                className="px-4 py-2 rounded-lg bg-error text-white font-semibold flex items-center gap-2 animate-pulse">
+                ■ End call
+              </button>
+            )}
+            {callState === 'connecting' && <span className="text-xs text-text-secondary">Connecting…</span>}
+            {callState === 'live' && (
+              <span className="text-xs text-success flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-success inline-block animate-pulse" />
+                {conversation.isSpeaking ? '🔊 Assistant speaking…' : '🟢 Listening — go ahead'}
+              </span>
+            )}
+            {callState === 'saving' && <span className="text-xs text-text-secondary">Saving conversation…</span>}
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={send} disabled={sending || recording || transcribing}
-              className="px-4 py-2 rounded-lg bg-primary text-background font-semibold disabled:opacity-50">
-              {sending ? 'Sending…' : 'Send feedback'}
-            </button>
-            {sent && <span className="text-xs text-success">✓ Sent</span>}
-            {recording && <span className="text-xs text-error">● Recording… tap Stop when done</span>}
-            {transcribing && <span className="text-xs text-text-secondary">Transcribing your voice…</span>}
-          </div>
+
+          {/* Live transcript */}
+          {turns.length > 0 && (
+            <div className="max-h-44 overflow-y-auto bg-card border border-border rounded-lg p-3 space-y-1.5">
+              {turns.map((t, i) => (
+                <p key={i} className="text-xs">
+                  <span className={t.role === 'you' ? 'text-primary font-medium' : 'text-text-secondary font-medium'}>
+                    {t.role === 'you' ? 'You: ' : 'Assistant: '}
+                  </span>
+                  <span className="text-text-primary">{t.text}</span>
+                </p>
+              ))}
+            </div>
+          )}
+
+          {/* Type fallback */}
+          {!inCall && (
+            <details className="text-xs text-text-secondary">
+              <summary className="cursor-pointer">or type your feedback instead</summary>
+              <div className="mt-2 space-y-2">
+                <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3}
+                  placeholder="e.g. The labor time is too high; we don't replace the calipers on a standard brake service."
+                  className="w-full bg-card border border-border rounded-lg p-2 text-sm text-text-primary resize-y" />
+                <button onClick={sendTyped} disabled={sending}
+                  className="px-4 py-2 rounded-lg bg-surface border border-border text-text-primary font-semibold disabled:opacity-50">
+                  {sending ? 'Sending…' : 'Send typed feedback'}
+                </button>
+              </div>
+            </details>
+          )}
+
+          {sent && <p className="text-xs text-success">✓ Saved — thank you!</p>}
         </div>
       )}
     </div>

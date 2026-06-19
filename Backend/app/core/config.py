@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     # falls back to the browser's own speech recognition / typing.
     ELEVENLABS_API_KEY: str = ""
     ELEVENLABS_STT_MODEL: str = "scribe_v1"
+    # Conversational AI agent (two-way voice feedback). agent_id isn't a secret
+    # — the signed-URL mint below still needs the API key — so we ship a default
+    # and allow an env override.
+    ELEVENLABS_AGENT_ID: str = "agent_6901kvfrqgeseae9hxsjnsvz0cek"
 
     class Config:
         env_file = ".env"

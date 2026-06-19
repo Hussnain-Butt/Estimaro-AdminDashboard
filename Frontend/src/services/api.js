@@ -242,6 +242,26 @@ export const autoGenerateEstimate = async (intakeData) => {
 // AGENT QUEUE — async auto-generate with progress polling
 // ============================================================================
 
+// Mint a signed URL for the live ElevenLabs voice agent (key stays server-side).
+export const getVoiceAgentUrl = async () => {
+  try {
+    const response = await api.get('/feedback/voice-agent');
+    return { success: true, data: response.data };
+  } catch (error) {
+    return { success: false, error: error.response?.data?.detail || error.message || 'Voice agent unavailable' };
+  }
+};
+
+// Save a completed voice-agent conversation transcript as feedback.
+export const submitConversation = async (payload) => {
+  try {
+    const response = await api.post('/feedback/conversation', payload);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return { success: false, error: error.response?.data?.detail || error.message || 'Failed to save conversation' };
+  }
+};
+
 // Transcribe a recorded audio clip via the backend's ElevenLabs Scribe proxy
 // (the API key lives server-side, never in the browser). Returns the text.
 export const transcribeAudio = async (blob) => {

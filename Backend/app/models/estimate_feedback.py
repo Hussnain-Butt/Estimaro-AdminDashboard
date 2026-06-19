@@ -27,7 +27,10 @@ class EstimateFeedback(Document):
     # and/or typed. The raw, unprocessed words: the whole point is to capture
     # the domain expert's intent verbatim.
     message: str = ""
-    input_mode: str = "voice"   # "voice" | "text"
+    input_mode: str = "voice"   # "voice" | "text" | "voice_agent"
+    # Set when the feedback came from a two-way voice-agent conversation, so we
+    # can pull the full call record from ElevenLabs later if needed.
+    conversation_id: Optional[str] = None
 
     # Estimate context this feedback is anchored to — so we know EXACTLY which
     # estimate / vehicle / service the advisor is talking about.

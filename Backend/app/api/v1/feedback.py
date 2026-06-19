@@ -58,6 +58,60 @@ async def transcribe(file: UploadFile = File(...)):
             "language": data.get("language_code")}
 
 
+@router.get("/voice-agent", summary="Mint a signed URL for the voice feedback agent")
+async def voice_agent():
+    """Return the Conversational AI agent_id + a short-lived signed WebSocket URL
+    so the browser can start a live two-way voice conversation WITHOUT ever
+    seeing the API key (the mint happens here, server-side)."""
+    if not settings.ELEVENLABS_API_KEY:
+        raise HTTPException(503, "Voice agent not configured (ELEVENLABS_API_KEY unset)")
+    aid = settings.ELEVENLABS_AGENT_ID
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(
+                "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url",
+                params={"agent_id": aid},
+                headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
+            )
+    except Exception as e:
+        log.error(f"ElevenLabs signed-url request failed: {e}")
+        raise HTTPException(502, "Voice agent service unreachable")
+    if resp.status_code >= 400:
+        log.error(f"ElevenLabs signed-url {resp.status_code}: {resp.text[:200]}")
+        raise HTTPException(502, f"Voice agent unavailable ({resp.status_code})")
+    return {"agent_id": aid, "signed_url": resp.json().get("signed_url")}
+
+
+class ConversationSave(BaseModel):
+    transcript: str
+    conversation_id: Optional[str] = None
+    job_id: Optional[str] = None
+    estimate_id: Optional[str] = None
+    vin: Optional[str] = None
+    vehicle: Optional[str] = None
+    service_request: Optional[str] = None
+    estimate_total: Optional[float] = None
+    estimate_source: Optional[str] = None
+    match_tier: Optional[str] = None
+    advisor_name: Optional[str] = None
+
+
+@router.post("/conversation", summary="Save a completed voice-agent conversation as feedback")
+async def save_conversation(payload: ConversationSave):
+    """Persist the transcript of a voice-agent call as an estimate-feedback
+    record (input_mode='voice_agent') so it shows up on the Feedback page like
+    any other feedback — this is the 'note the conversation' half."""
+    msg = (payload.transcript or "").strip()
+    if not msg:
+        raise HTTPException(400, "Empty transcript")
+    d = payload.model_dump()
+    d["message"] = d.pop("transcript")
+    d["input_mode"] = "voice_agent"
+    fb = EstimateFeedback(**d)
+    await fb.insert()
+    return {"ok": True, "feedback_id": fb.feedback_id}
+
+
 class FeedbackSubmit(BaseModel):
     message: str
     input_mode: str = "voice"
