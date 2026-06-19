@@ -69,7 +69,14 @@ class Settings(BaseSettings):
 
     # Auto-Generate Worker (off-Railway, runs on VPS with Chrome + Hermes + Gemini)
     AGENT_WORKER_SECRET: str = "change-me-in-prod"
-    
+
+    # ElevenLabs — Scribe speech-to-text for advisor voice feedback. Set the
+    # real key as a Railway env var ELEVENLABS_API_KEY (never commit it). When
+    # blank, /feedback/transcribe returns "not configured" and the frontend
+    # falls back to the browser's own speech recognition / typing.
+    ELEVENLABS_API_KEY: str = ""
+    ELEVENLABS_STT_MODEL: str = "scribe_v1"
+
     class Config:
         env_file = ".env"
         case_sensitive = True

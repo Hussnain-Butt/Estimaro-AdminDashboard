@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { gsap } from 'gsap'
 import { ExclamationCircleIcon, TrashIcon, PlusIcon, SparklesIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline'
-import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, getAutoGenJob, submitPriceRefreshJob, pushToTekmetric, pollTekmetricJob, generateApprovalLink, createDraftEstimate, updateEstimate, submitEstimateFeedback } from '../services/api'
+import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, getAutoGenJob, submitPriceRefreshJob, pushToTekmetric, pollTekmetricJob, generateApprovalLink, createDraftEstimate, updateEstimate, submitEstimateFeedback, transcribeAudio } from '../services/api'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import VendorCompareStep from './estimate-steps/VendorCompareStep'
@@ -691,45 +691,62 @@ const PartsStep = ({ data, onRefreshPrices, isRefreshingPrices }) => {
 
 // Push-to-Tekmetric lives on the Actions step now; PreviewStep keeps
 // `onSendApproval` only.
-// Voice/text feedback on THIS estimate. Uses the browser's built-in Web Speech
-// API (Chrome) for voice→text — free, real-time, no audio upload; the
-// transcript stays editable so the advisor can fix any mis-hearing before
-// sending. Falls back to plain typing where speech recognition isn't available.
+// Voice/text feedback on THIS estimate. Voice→text runs through the backend's
+// ElevenLabs Scribe proxy (works on any browser, higher accuracy, key stays
+// server-side): we record with MediaRecorder, upload the clip, get the
+// transcript back into an EDITABLE field so the advisor can fix any mis-hearing
+// before sending. Falls back to plain typing if the mic/transcription is
+// unavailable.
 const EstimateFeedbackWidget = ({ data, total }) => {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
-  const [listening, setListening] = useState(false)
+  const [recording, setRecording] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
+  const [usedVoice, setUsedVoice] = useState(false)
   const [sending, setSending] = useState(false)
   const [sent, setSent] = useState(false)
   const recRef = useRef(null)
+  const chunksRef = useRef([])
+  const streamRef = useRef(null)
 
-  const SR = typeof window !== 'undefined' &&
-    (window.SpeechRecognition || window.webkitSpeechRecognition)
+  const stopTracks = () => {
+    streamRef.current?.getTracks().forEach((t) => t.stop())
+    streamRef.current = null
+  }
 
-  const toggleMic = () => {
-    if (!SR) {
-      toast.error('Voice input needs Chrome. You can type your feedback instead.')
+  const toggleMic = async () => {
+    if (recording) { recRef.current?.stop(); return }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      toast.error('Mic not available here — please type your feedback instead.')
       return
     }
-    if (listening) {
-      recRef.current?.stop()
-      return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+      const rec = new MediaRecorder(stream)
+      chunksRef.current = []
+      rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data) }
+      rec.onstop = async () => {
+        stopTracks()
+        setRecording(false)
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
+        if (!blob.size) return
+        setTranscribing(true)
+        const r = await transcribeAudio(blob)
+        setTranscribing(false)
+        if (r.success) {
+          setUsedVoice(true)
+          setText((prev) => (prev ? prev.trim() + ' ' : '') + r.text)
+        } else {
+          toast.error(r.error || 'Could not transcribe — type your feedback instead.')
+        }
+      }
+      recRef.current = rec
+      setRecording(true)
+      rec.start()
+    } catch {
+      toast.error('Mic permission denied — type your feedback instead.')
     }
-    const rec = new SR()
-    rec.lang = 'en-US'
-    rec.continuous = true
-    rec.interimResults = true
-    let base = text ? text + ' ' : ''
-    rec.onresult = (e) => {
-      let chunk = ''
-      for (let i = e.resultIndex; i < e.results.length; i++) chunk += e.results[i][0].transcript
-      setText((base + chunk).trimStart())
-    }
-    rec.onend = () => setListening(false)
-    rec.onerror = () => setListening(false)
-    recRef.current = rec
-    setListening(true)
-    rec.start()
   }
 
   const send = async () => {
@@ -739,7 +756,7 @@ const EstimateFeedbackWidget = ({ data, total }) => {
     const v = data.vehicleInfo || {}
     const res = await submitEstimateFeedback({
       message: msg,
-      input_mode: listening || recRef.current ? 'voice' : 'text',
+      input_mode: usedVoice ? 'voice' : 'text',
       job_id: data.jobId || data.job_id || null,
       estimate_id: data.estimateId || null,
       vin: data.vin || v.vin || null,
@@ -751,7 +768,7 @@ const EstimateFeedbackWidget = ({ data, total }) => {
       advisor_name: 'Sergio',
     })
     setSending(false)
-    if (res.success) { setSent(true); setText(''); recRef.current = null; toast.success('Feedback sent — thank you!', 'Logged') }
+    if (res.success) { setSent(true); setText(''); setUsedVoice(false); toast.success('Feedback sent — thank you!', 'Logged') }
     else toast.error(res.error || 'Could not send feedback', 'Error')
   }
 
@@ -773,23 +790,24 @@ const EstimateFeedbackWidget = ({ data, total }) => {
             ({[data.vehicleInfo?.year, data.vehicleInfo?.make, data.vehicleInfo?.model].filter(Boolean).join(' ')}).
           </p>
           <div className="flex gap-2">
-            <button onClick={toggleMic}
-              className={`px-3 py-2 rounded-lg border text-sm font-medium whitespace-nowrap ${listening
+            <button onClick={toggleMic} disabled={transcribing}
+              className={`px-3 py-2 rounded-lg border text-sm font-medium whitespace-nowrap disabled:opacity-50 ${recording
                 ? 'border-error/60 bg-error/15 text-error animate-pulse'
                 : 'border-border text-text-primary hover:bg-card'}`}>
-              {listening ? '⏺ Stop' : '🎙️ Speak'}
+              {recording ? '⏹ Stop' : transcribing ? 'Transcribing…' : '🎙️ Speak'}
             </button>
             <textarea value={text} onChange={(e) => setText(e.target.value)}
               rows={3} placeholder="e.g. The labor time is too high for this job; we don't replace the calipers on a standard brake service."
               className="flex-1 bg-card border border-border rounded-lg p-2 text-sm text-text-primary resize-y" />
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={send} disabled={sending}
+            <button onClick={send} disabled={sending || recording || transcribing}
               className="px-4 py-2 rounded-lg bg-primary text-background font-semibold disabled:opacity-50">
               {sending ? 'Sending…' : 'Send feedback'}
             </button>
             {sent && <span className="text-xs text-success">✓ Sent</span>}
-            {listening && <span className="text-xs text-error">Listening… speak now</span>}
+            {recording && <span className="text-xs text-error">● Recording… tap Stop when done</span>}
+            {transcribing && <span className="text-xs text-text-secondary">Transcribing your voice…</span>}
           </div>
         </div>
       )}

@@ -242,6 +242,25 @@ export const autoGenerateEstimate = async (intakeData) => {
 // AGENT QUEUE — async auto-generate with progress polling
 // ============================================================================
 
+// Transcribe a recorded audio clip via the backend's ElevenLabs Scribe proxy
+// (the API key lives server-side, never in the browser). Returns the text.
+export const transcribeAudio = async (blob) => {
+  try {
+    const form = new FormData();
+    form.append('file', blob, 'feedback.webm');
+    const response = await api.post('/feedback/transcribe', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 60000,
+    });
+    return { success: true, text: response.data.text || '' };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Transcription failed',
+    };
+  }
+};
+
 // Advisor feedback on a specific estimate (voice→text or typed). Anchored to
 // the estimate context so the team knows exactly which estimate it's about.
 export const submitEstimateFeedback = async (payload) => {
