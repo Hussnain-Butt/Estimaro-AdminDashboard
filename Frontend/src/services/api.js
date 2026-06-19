@@ -242,6 +242,20 @@ export const autoGenerateEstimate = async (intakeData) => {
 // AGENT QUEUE — async auto-generate with progress polling
 // ============================================================================
 
+// Advisor feedback on a specific estimate (voice→text or typed). Anchored to
+// the estimate context so the team knows exactly which estimate it's about.
+export const submitEstimateFeedback = async (payload) => {
+  try {
+    const response = await api.post('/feedback', payload);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to send feedback',
+    };
+  }
+};
+
 export const submitAutoGenJob = async (intake) => {
   try {
     const response = await api.post('/auto-generate/jobs', {

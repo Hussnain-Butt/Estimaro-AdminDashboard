@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { gsap } from 'gsap'
 import { ExclamationCircleIcon, TrashIcon, PlusIcon, SparklesIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline'
-import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, getAutoGenJob, submitPriceRefreshJob, pushToTekmetric, pollTekmetricJob, generateApprovalLink, createDraftEstimate, updateEstimate } from '../services/api'
+import { autoGenerateEstimate, submitAutoGenJob, pollAutoGenJob, getAutoGenJob, submitPriceRefreshJob, pushToTekmetric, pollTekmetricJob, generateApprovalLink, createDraftEstimate, updateEstimate, submitEstimateFeedback } from '../services/api'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import VendorCompareStep from './estimate-steps/VendorCompareStep'
@@ -691,6 +691,112 @@ const PartsStep = ({ data, onRefreshPrices, isRefreshingPrices }) => {
 
 // Push-to-Tekmetric lives on the Actions step now; PreviewStep keeps
 // `onSendApproval` only.
+// Voice/text feedback on THIS estimate. Uses the browser's built-in Web Speech
+// API (Chrome) for voice→text — free, real-time, no audio upload; the
+// transcript stays editable so the advisor can fix any mis-hearing before
+// sending. Falls back to plain typing where speech recognition isn't available.
+const EstimateFeedbackWidget = ({ data, total }) => {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState('')
+  const [listening, setListening] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [sent, setSent] = useState(false)
+  const recRef = useRef(null)
+
+  const SR = typeof window !== 'undefined' &&
+    (window.SpeechRecognition || window.webkitSpeechRecognition)
+
+  const toggleMic = () => {
+    if (!SR) {
+      toast.error('Voice input needs Chrome. You can type your feedback instead.')
+      return
+    }
+    if (listening) {
+      recRef.current?.stop()
+      return
+    }
+    const rec = new SR()
+    rec.lang = 'en-US'
+    rec.continuous = true
+    rec.interimResults = true
+    let base = text ? text + ' ' : ''
+    rec.onresult = (e) => {
+      let chunk = ''
+      for (let i = e.resultIndex; i < e.results.length; i++) chunk += e.results[i][0].transcript
+      setText((base + chunk).trimStart())
+    }
+    rec.onend = () => setListening(false)
+    rec.onerror = () => setListening(false)
+    recRef.current = rec
+    setListening(true)
+    rec.start()
+  }
+
+  const send = async () => {
+    const msg = text.trim()
+    if (!msg) { toast.error('Add your feedback first'); return }
+    setSending(true)
+    const v = data.vehicleInfo || {}
+    const res = await submitEstimateFeedback({
+      message: msg,
+      input_mode: listening || recRef.current ? 'voice' : 'text',
+      job_id: data.jobId || data.job_id || null,
+      estimate_id: data.estimateId || null,
+      vin: data.vin || v.vin || null,
+      vehicle: [v.year, v.make, v.model].filter(Boolean).join(' ') || null,
+      service_request: data.serviceRequest || null,
+      estimate_total: total != null ? Number(total) : null,
+      estimate_source: data.source || 'live',
+      match_tier: data.historicalMatch?.matchTier || null,
+      advisor_name: 'Sergio',
+    })
+    setSending(false)
+    if (res.success) { setSent(true); setText(''); recRef.current = null; toast.success('Feedback sent — thank you!', 'Logged') }
+    else toast.error(res.error || 'Could not send feedback', 'Error')
+  }
+
+  return (
+    <div className="bg-background p-4 rounded-lg border border-border">
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold text-text-primary">Feedback on this estimate</h3>
+        {!open && (
+          <button onClick={() => { setOpen(true); setSent(false) }}
+            className="text-sm px-3 py-1.5 rounded-lg border border-primary/50 text-primary hover:bg-primary/10">
+            🎙️ Tell us what to fix
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="mt-3 space-y-3">
+          <p className="text-xs text-text-secondary">
+            Speak or type — exactly what's wrong or what you'd change on THIS estimate
+            ({[data.vehicleInfo?.year, data.vehicleInfo?.make, data.vehicleInfo?.model].filter(Boolean).join(' ')}).
+          </p>
+          <div className="flex gap-2">
+            <button onClick={toggleMic}
+              className={`px-3 py-2 rounded-lg border text-sm font-medium whitespace-nowrap ${listening
+                ? 'border-error/60 bg-error/15 text-error animate-pulse'
+                : 'border-border text-text-primary hover:bg-card'}`}>
+              {listening ? '⏺ Stop' : '🎙️ Speak'}
+            </button>
+            <textarea value={text} onChange={(e) => setText(e.target.value)}
+              rows={3} placeholder="e.g. The labor time is too high for this job; we don't replace the calipers on a standard brake service."
+              className="flex-1 bg-card border border-border rounded-lg p-2 text-sm text-text-primary resize-y" />
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={send} disabled={sending}
+              className="px-4 py-2 rounded-lg bg-primary text-background font-semibold disabled:opacity-50">
+              {sending ? 'Sending…' : 'Send feedback'}
+            </button>
+            {sent && <span className="text-xs text-success">✓ Sent</span>}
+            {listening && <span className="text-xs text-error">Listening… speak now</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 const PreviewStep = ({ data, calculatedTotals, onSendApproval, isSending }) => {
   const PreviewRow = ({ label, value, isTotal = false }) => (
     <div
@@ -822,6 +928,11 @@ const PreviewStep = ({ data, calculatedTotals, onSendApproval, isSending }) => {
           <PreviewRow label="Total" value={`$${calculatedTotals.total}`} isTotal={true} />
         </div>
       </div>
+
+      {/* Estimate-anchored feedback — the advisor tells us, in their own words
+          (voice or text), what's wrong with THIS estimate. Turns vague
+          "make it better" into concrete, reviewable, per-estimate requirements. */}
+      <EstimateFeedbackWidget data={data} total={calculatedTotals?.total} />
 
       {/* Preview is read-only on purpose. The "Push to Tekmetric" CTA used
           to live here too, which led advisors to push and *then* discover
